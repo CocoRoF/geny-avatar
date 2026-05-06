@@ -1,6 +1,7 @@
 import { unzipSync } from "fflate";
 import type { AdapterLoadInput } from "../adapters/AvatarAdapter";
 import { detectFromFilenames } from "../adapters/AvatarRegistry";
+import { rewriteLive2DManifest, rewriteSpineAtlas } from "./rewrite";
 import type { BundleEntry, ParsedBundle } from "./types";
 
 /**
@@ -58,7 +59,7 @@ export async function parseBundle(input: File | File[]): Promise<ParsedBundle> {
   // Promote BundleEntry → adapter LoadInput by walking the manifest of
   // the chosen runtime. Each adapter has its own manifest format.
   if (detected.result.runtime === "spine") {
-    return buildSpineLoadInput(entries, map, urls, warnings, detected.result.confidence);
+    return await buildSpineLoadInput(entries, map, urls, warnings, detected.result.confidence);
   }
   if (detected.result.runtime === "live2d") {
     return await buildLive2DLoadInput(entries, map, urls, warnings, detected.result.confidence);
@@ -115,13 +116,13 @@ function makeUrl(entry: BundleEntry, sink: string[]): string {
 
 // ----- Spine -----
 
-function buildSpineLoadInput(
+async function buildSpineLoadInput(
   entries: BundleEntry[],
   map: Map<string, BundleEntry>,
   urls: string[],
   warnings: string[],
   confidence: "high" | "low",
-): ParsedBundle {
+): Promise<ParsedBundle> {
   const skel = entries.find((e) => e.name.toLowerCase().endsWith(".skel"));
   const json = entries.find(
     (e) =>
@@ -153,16 +154,18 @@ function buildSpineLoadInput(
     warnings.push("no PNG atlas pages found — render will likely be blank");
   }
 
+  // Rewrite the atlas so its page-name lines point at the PNG entries'
+  // blob URLs. Without this, spine-pixi-v8's loader resolves page names
+  // relative to the atlas URL, which fails for blob: URLs.
+  const rewrittenAtlas = await rewriteSpineAtlas(atlas, map, warnings, urls);
+  const atlasUrl = URL.createObjectURL(rewrittenAtlas);
+  urls.push(atlasUrl);
+
   const loadInput: AdapterLoadInput = {
     kind: "spine",
     skeleton: makeUrl(skeleton, urls),
-    atlas: makeUrl(atlas, urls),
+    atlas: atlasUrl,
   };
-
-  // We don't put page URLs into AdapterLoadInput today — Pixi Assets
-  // resolves atlas page filenames at load time. The page→blob mapping
-  // is exposed via `entries` for sprint 1.3b's atlas page rewrite.
-  for (const page of pages) makeUrl(page, urls);
 
   return {
     ok: true,
@@ -202,66 +205,25 @@ async function buildLive2DLoadInput(
     };
   }
 
-  // Read the manifest and check that referenced files actually exist in
-  // the bundle. Live2DModel.from() will fetch them by URL relative to
-  // the manifest URL, so we point it at the manifest's blob URL — but
-  // sibling URLs need to be resolvable. For Sprint 1.3a we just confirm
-  // they're in the bundle and warn if missing; resolution happens in 1.3b.
-  let parsed: { FileReferences?: Record<string, unknown> } = {};
-  try {
-    const text = await manifest.blob.text();
-    parsed = JSON.parse(text) as typeof parsed;
-  } catch (e) {
-    warnings.push(`could not parse model3.json: ${e instanceof Error ? e.message : String(e)}`);
+  // Rewrite the manifest so every FileReferences entry is a blob URL
+  // resolved against the bundle. Live2DModel.from() then fetches sibling
+  // assets directly by absolute blob URL — no relative-resolve needed.
+  const rewritten = await rewriteLive2DManifest(manifest, map, warnings, urls);
+  if (!rewritten) {
+    return {
+      ok: false,
+      reason: "could not parse model3.json — manifest is invalid",
+      entries: map,
+      detection: { runtime: "live2d", confidence },
+    };
   }
+  const manifestUrl = URL.createObjectURL(rewritten);
+  urls.push(manifestUrl);
 
-  const refs = parsed.FileReferences ?? {};
-  const baseDir = manifest.path.includes("/")
-    ? manifest.path.substring(0, manifest.path.lastIndexOf("/") + 1)
-    : "";
-
-  const checkRef = (relPath: string, label: string) => {
-    const fullPath = (baseDir + relPath).toLowerCase();
-    if (!map.has(fullPath) && !map.has(relPath.toLowerCase())) {
-      warnings.push(`${label} referenced as ${relPath} but not present in bundle`);
-    }
-  };
-
-  if (typeof refs.Moc === "string") checkRef(refs.Moc, "moc3");
-  if (Array.isArray(refs.Textures)) {
-    for (const t of refs.Textures) {
-      if (typeof t === "string") checkRef(t, "texture");
-    }
-  }
-  if (typeof refs.Physics === "string") checkRef(refs.Physics, "physics");
-  if (typeof refs.UserData === "string") checkRef(refs.UserData, "userdata");
-  if (typeof refs.DisplayInfo === "string") checkRef(refs.DisplayInfo, "displayinfo (cdi)");
-  if (typeof refs.Pose === "string") checkRef(refs.Pose, "pose");
-  if (refs.Motions && typeof refs.Motions === "object") {
-    for (const group of Object.values(refs.Motions)) {
-      if (!Array.isArray(group)) continue;
-      for (const m of group) {
-        if (m && typeof m === "object" && "File" in m && typeof m.File === "string") {
-          checkRef(m.File, "motion");
-        }
-      }
-    }
-  }
-
-  // For now, hand the engine the manifest's blob URL. The engine will
-  // attempt to resolve siblings via fetch on the blob URL's "directory",
-  // which won't work yet — that's the 1.3b problem. Sprint 1.3a stops
-  // at "we know what's in the bundle and which adapter wants it".
   const loadInput: AdapterLoadInput = {
     kind: "live2d",
-    model3: makeUrl(manifest, urls),
+    model3: manifestUrl,
   };
-
-  // Pre-create URLs for every sibling so 1.3b can route them.
-  for (const e of entries) {
-    if (e === manifest) continue;
-    makeUrl(e, urls);
-  }
 
   return {
     ok: true,

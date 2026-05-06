@@ -171,6 +171,13 @@ export default function Home() {
             <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload-debug</div>
             <div className="mt-1 text-sm">parseBundle 결과 뷰어 (sprint 1.3a)</div>
           </a>
+          <a
+            href="/poc/upload"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
+            <div className="mt-1 text-sm">드롭→로드→미리보기 (sprint 1.3b)</div>
+          </a>
         </div>
       </section>
 

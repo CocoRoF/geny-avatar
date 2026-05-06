@@ -33,6 +33,7 @@
 | 2026-05-06 | [17 cubism_internalModel_update_patch](2026-05-06_17_cubism_internalModel_update_patch.md) | 1 | 완료 — internalModel.update monkey-patch (after-update 윈도우, 시각 작동 확인) |
 | 2026-05-06 | [18 phase1_3_kickoff](2026-05-06_18_phase1_3_kickoff.md) | 1.3 | 완료 — sub-sprint 1.3a/b/c/d 분할 |
 | 2026-05-06 | [19 sprint_1_3a_parse_bundle](2026-05-06_19_sprint_1_3a_parse_bundle.md) | 1.3a | 완료 — fflate, parseBundle, /poc/upload-debug |
+| 2026-05-06 | [20 sprint_1_3b_dropzone_load](2026-05-06_20_sprint_1_3b_dropzone_load.md) | 1.3b | 완료 — manifest/atlas blob rewrite + 드롭→로드→미리보기 |
 
 ## 운영 규칙
 
