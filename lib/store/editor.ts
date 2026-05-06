@@ -160,5 +160,10 @@ function pushHistory(s: {
 
 // ----- selectors (cached references for stable re-renders) -----
 
-export const selectLayers = (s: EditorState) => s.avatar?.layers ?? [];
-export const selectAnimations = (s: EditorState) => s.avatar?.animations ?? [];
+// Stable empty arrays — selectors must return the same reference across calls
+// when nothing changed, otherwise useSyncExternalStore loops.
+const EMPTY_LAYERS: NonNullable<Avatar["layers"]> = [];
+const EMPTY_ANIMATIONS: NonNullable<Avatar["animations"]> = [];
+
+export const selectLayers = (s: EditorState) => s.avatar?.layers ?? EMPTY_LAYERS;
+export const selectAnimations = (s: EditorState) => s.avatar?.animations ?? EMPTY_ANIMATIONS;
