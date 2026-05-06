@@ -3,11 +3,13 @@ import { ID_PREFIX, newId } from "../avatar/id";
 import type {
   Avatar,
   AvatarSource,
+  Texture as DomainTexture,
   Layer,
   LayerId,
   Parameter,
   RGBA,
   TextureId,
+  TextureSlice,
 } from "../avatar/types";
 import type {
   AdapterCapabilities,
@@ -65,6 +67,10 @@ export class Live2DAdapter implements AvatarAdapter {
   /** original internalModel.update bound to the model — kept so destroy()
    *  can restore it. */
   private originalInternalUpdate: ((...args: unknown[]) => unknown) | null = null;
+
+  /** atlas page bitmaps keyed by the textureId we mint at load. Layer
+   *  thumbnails crop these via `getTextureSource`. */
+  private textureSourcesById = new Map<TextureId, TextureSourceInfo>();
 
   // diagnostic counters (one-shot logs to keep console quiet after first frame)
   private _hookFireCount = 0;
@@ -191,6 +197,46 @@ export class Live2DAdapter implements AvatarAdapter {
       }
     }
 
+    // ----- texture page catalog + per-part region bbox -----
+    // The engine exposes loaded Pixi textures on `model.textures`. We turn
+    // each into a Domain texture entry, then compute one UV bbox per part
+    // (over its drawables on the dominant page). UV space is GL-style with
+    // v=0 at the bottom, so y is flipped before storing the pixel rect.
+    const textures: DomainTexture[] = [];
+    const textureIdByPageIndex = new Map<number, TextureId>();
+    // biome-ignore lint/suspicious/noExplicitAny: engine internals
+    const pixiTextures: unknown[] = ((model as any).textures ?? []) as unknown[];
+    pixiTextures.forEach((tex, idx) => {
+      const info = pixiTextureToSourceInfo(tex);
+      if (!info) return;
+      const id = newId(ID_PREFIX.texture);
+      textureIdByPageIndex.set(idx, id);
+      this.textureSourcesById.set(id, info);
+      textures.push({
+        id,
+        pageIndex: idx,
+        origin: "original",
+        pixelSize: { w: info.width, h: info.height },
+        data: { kind: "url", url: input.model3 },
+      });
+    });
+
+    if (coreModel && textureIdByPageIndex.size > 0) {
+      let withSlice = 0;
+      for (const [partIdx, layer] of this.layerByPartIndex.entries()) {
+        const drawableList = this.partToDrawables.get(partIdx);
+        if (!drawableList || drawableList.length === 0) continue;
+        const slice = this.buildPartSlice(coreModel, drawableList, textureIdByPageIndex);
+        if (slice) {
+          layer.texture = slice;
+          withSlice++;
+        }
+      }
+      console.info(
+        `[Live2DAdapter] populated Layer.texture for ${withSlice}/${this.layerByPartIndex.size} parts (pages=${textureIdByPageIndex.size})`,
+      );
+    }
+
     // motions are read off the manifest settings, not the core model
     const motionGroups: { group: string; files: { kind: "url"; url: string }[] }[] = [];
     const animationsRefs: Avatar["animations"] = [];
@@ -251,6 +297,7 @@ export class Live2DAdapter implements AvatarAdapter {
       parameters,
       metadata: { createdAt: now, updatedAt: now, schemaVersion: 1 },
     };
+    avatar.textures = textures;
     return avatar;
   }
 
@@ -366,11 +413,8 @@ export class Live2DAdapter implements AvatarAdapter {
     this.coreModel?.setParameterValueById?.(paramId, value);
   }
 
-  getTextureSource(_textureId: TextureId): TextureSourceInfo | null {
-    // Cubism drawable UV-bbox extraction lands in sprint 2.2 — until then
-    // Live2D layers don't have texture slices and the layers panel falls
-    // back to "no thumb".
-    return null;
+  getTextureSource(textureId: TextureId): TextureSourceInfo | null {
+    return this.textureSourcesById.get(textureId) ?? null;
   }
 
   getParameters(): Parameter[] {
@@ -402,10 +446,100 @@ export class Live2DAdapter implements AvatarAdapter {
     }
     this.partOpacityOverrides.clear();
     this.partToDrawables.clear();
+    this.textureSourcesById.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
     this.layerByPartIndex.clear();
+  }
+
+  // ----- texture / region helpers -----
+
+  /**
+   * Compute the atlas region rect for a Cubism part by walking its
+   * drawables' UVs. We pick the texture page that the most drawables
+   * sit on (parts can technically span pages but most don't), union
+   * UVs across drawables, then convert to pixel coords on that page.
+   *
+   * Cubism UV space has v=0 at the bottom; canvas pixel y is top-down,
+   * so the v range is flipped when computing the rect.
+   */
+  private buildPartSlice(
+    // biome-ignore lint/suspicious/noExplicitAny: cubism core model
+    coreModel: any,
+    drawableList: number[],
+    textureIdByPageIndex: Map<number, TextureId>,
+  ): TextureSlice | null {
+    const drawablesByPage = new Map<number, number[]>();
+    for (const d of drawableList) {
+      const pageIdx: number | undefined = coreModel.getDrawableTextureIndex?.(d);
+      if (typeof pageIdx !== "number" || pageIdx < 0) continue;
+      let arr = drawablesByPage.get(pageIdx);
+      if (!arr) {
+        arr = [];
+        drawablesByPage.set(pageIdx, arr);
+      }
+      arr.push(d);
+    }
+    if (drawablesByPage.size === 0) return null;
+
+    let bestPage = -1;
+    let bestCount = 0;
+    for (const [pi, arr] of drawablesByPage) {
+      if (arr.length > bestCount) {
+        bestPage = pi;
+        bestCount = arr.length;
+      }
+    }
+    if (bestPage < 0) return null;
+    const textureId = textureIdByPageIndex.get(bestPage);
+    if (!textureId) return null;
+    const srcInfo = this.textureSourcesById.get(textureId);
+    if (!srcInfo) return null;
+
+    const drawablesOnPage = drawablesByPage.get(bestPage);
+    if (!drawablesOnPage) return null;
+
+    let minU = Number.POSITIVE_INFINITY;
+    let minV = Number.POSITIVE_INFINITY;
+    let maxU = Number.NEGATIVE_INFINITY;
+    let maxV = Number.NEGATIVE_INFINITY;
+    let sawAny = false;
+
+    for (const d of drawablesOnPage) {
+      const uvs = coreModel.getDrawableVertexUvs?.(d) as Float32Array | undefined;
+      if (!uvs || uvs.length < 2) continue;
+      for (let i = 0; i + 1 < uvs.length; i += 2) {
+        const u = uvs[i];
+        const v = uvs[i + 1];
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+        sawAny = true;
+      }
+    }
+    if (!sawAny || maxU <= minU || maxV <= minV) return null;
+
+    // clamp to [0,1] then convert to canvas pixel space (top-left origin)
+    const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
+    minU = clamp01(minU);
+    maxU = clamp01(maxU);
+    minV = clamp01(minV);
+    maxV = clamp01(maxV);
+    const w = srcInfo.width;
+    const h = srcInfo.height;
+    const x = Math.max(0, Math.floor(minU * w));
+    const y = Math.max(0, Math.floor((1 - maxV) * h));
+    const rectW = Math.min(w - x, Math.ceil((maxU - minU) * w));
+    const rectH = Math.min(h - y, Math.ceil((maxV - minV) * h));
+    if (rectW <= 0 || rectH <= 0) return null;
+
+    return {
+      textureId,
+      rect: { x, y, w: rectW, h: rectH },
+      rotated: false,
+    };
   }
 
   // ----- helpers -----
@@ -468,6 +602,33 @@ export class Live2DAdapter implements AvatarAdapter {
     const base = url.replace(/\.model3\.json$/, "");
     return `${base}${suffix}`;
   }
+}
+
+/**
+ * Pull a drawable bitmap + dimensions out of a Pixi v8 Texture without
+ * coupling this file to Pixi types. Pixi v8 stores the source bitmap on
+ * `texture.source.resource` (HTMLImageElement / ImageBitmap / etc.) and
+ * the page dimensions on `texture.source.width/height`.
+ */
+function pixiTextureToSourceInfo(tex: unknown): TextureSourceInfo | null {
+  // biome-ignore lint/suspicious/noExplicitAny: pixi internals
+  const t = tex as any;
+  const source = t?.source;
+  const resource = source?.resource;
+  if (!isCanvasImageSource(resource)) return null;
+  const width: number = source.width ?? source.pixelWidth ?? 0;
+  const height: number = source.height ?? source.pixelHeight ?? 0;
+  if (!width || !height) return null;
+  return { image: resource, width, height };
+}
+
+function isCanvasImageSource(v: unknown): v is CanvasImageSource {
+  if (!v) return false;
+  if (typeof HTMLImageElement !== "undefined" && v instanceof HTMLImageElement) return true;
+  if (typeof ImageBitmap !== "undefined" && v instanceof ImageBitmap) return true;
+  if (typeof HTMLCanvasElement !== "undefined" && v instanceof HTMLCanvasElement) return true;
+  if (typeof OffscreenCanvas !== "undefined" && v instanceof OffscreenCanvas) return true;
+  return false;
 }
 
 /**
