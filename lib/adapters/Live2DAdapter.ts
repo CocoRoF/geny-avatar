@@ -63,9 +63,18 @@ export class Live2DAdapter implements AvatarAdapter {
   /** part-index → opacity multiplier (0 = hide, 1 = show). 1.0 means "no
    *  override needed", so we delete instead of storing 1. */
   private partOpacityOverrides = new Map<number, number>();
-  /** part-index → drawable indices that should follow the part's override.
-   *  Includes drawables under descendant parts (Cubism part trees nest). */
-  private partToDrawables = new Map<number, number[]>();
+  /**
+   * part-index → drawables whose `parentPartIndex` *is* this part. Used
+   * for the part's own footprint (thumbnail, DecomposeStudio, Layer.texture).
+   * Pure container parts have an empty list here.
+   */
+  private partToDirectDrawables = new Map<number, number[]>();
+  /**
+   * part-index → drawables under this part *or any descendant part*. Used
+   * by visibility hiding so toggling a parent off cascades into children
+   * the way Cubism semantics expect.
+   */
+  private partToDescendantDrawables = new Map<number, number[]>();
   /** original internalModel.update bound to the model — kept so destroy()
    *  can restore it. */
   private originalInternalUpdate: ((...args: unknown[]) => unknown) | null = null;
@@ -116,6 +125,13 @@ export class Live2DAdapter implements AvatarAdapter {
     // the same URL hits the cache.
     await this.preloadTextures(input.model3);
 
+    // Pull human-readable part names out of the puppet's cdi3.json when
+    // the manifest references one. cdi3 is the only standard Cubism file
+    // that maps engine ids ("PartArtMesh1") to artist-authored display
+    // names ("頬"); we override Layer.name with that when available.
+    // Empty map when the puppet ships without a DisplayInfo file.
+    const partDisplayNames = await this.loadCdi3PartNames(input.model3);
+
     const model = await Live2DModel.from(input.model3);
     this.model = model;
 
@@ -138,7 +154,7 @@ export class Live2DAdapter implements AvatarAdapter {
         const layer: Layer = {
           id: newId(ID_PREFIX.layer),
           externalId,
-          name: externalId,
+          name: partDisplayNames.get(externalId) ?? externalId,
           geometry: "other",
           defaults: {
             visible: opacity > 0.01,
@@ -180,14 +196,27 @@ export class Live2DAdapter implements AvatarAdapter {
       for (let d = 0; d < drawableCount; d++) {
         const directPart = drawableParent(d);
         if (directPart < 0) continue;
+
+        // Direct: drawable belongs to its immediate parent part only.
+        // Used for the part's own footprint (no atlas neighbors).
+        let directList = this.partToDirectDrawables.get(directPart);
+        if (!directList) {
+          directList = [];
+          this.partToDirectDrawables.set(directPart, directList);
+        }
+        directList.push(d);
+
+        // Descendant: drawable also contributes to every ancestor part.
+        // Used for visibility hide so a container toggle cascades to
+        // its children the way Cubism semantics expect.
         const chain = ancestorChains[directPart] ?? [directPart];
         for (const partIdx of chain) {
-          let arr = this.partToDrawables.get(partIdx);
-          if (!arr) {
-            arr = [];
-            this.partToDrawables.set(partIdx, arr);
+          let descList = this.partToDescendantDrawables.get(partIdx);
+          if (!descList) {
+            descList = [];
+            this.partToDescendantDrawables.set(partIdx, descList);
           }
-          arr.push(d);
+          descList.push(d);
         }
       }
 
@@ -238,7 +267,10 @@ export class Live2DAdapter implements AvatarAdapter {
     if (coreModel && textureIdByPageIndex.size > 0) {
       let withSlice = 0;
       for (const [partIdx, layer] of this.layerByPartIndex.entries()) {
-        const drawableList = this.partToDrawables.get(partIdx);
+        // Footprint = the part's *own* drawables only. Container parts
+        // with empty `partToDirectDrawables` get no slice (they're also
+        // filtered out of `Avatar.layers` further down).
+        const drawableList = this.partToDirectDrawables.get(partIdx);
         if (!drawableList || drawableList.length === 0) continue;
         const slice = this.buildPartSlice(coreModel, drawableList, textureIdByPageIndex);
         if (slice) {
@@ -282,7 +314,7 @@ export class Live2DAdapter implements AvatarAdapter {
         return result;
       };
       console.info(
-        `[Live2DAdapter] patched internalModel.update · parts=${partCount} drawables=${drawableCount} partsMapped=${this.partToDrawables.size} nativeDrawables=${!!getNativeDrawables(coreModel)}`,
+        `[Live2DAdapter] patched internalModel.update · parts=${partCount} drawables=${drawableCount} partsWithDirect=${this.partToDirectDrawables.size} partsWithDescendants=${this.partToDescendantDrawables.size} nativeDrawables=${!!getNativeDrawables(coreModel)}`,
       );
     } else {
       console.error(
@@ -298,12 +330,29 @@ export class Live2DAdapter implements AvatarAdapter {
       motions: motionGroups,
     };
 
+    // Pre-2.5: every Cubism part appeared in the layers list, including
+    // pure container parts (no own drawables) whose UV bbox covered all
+    // descendants. Now we expose only parts with at least one *direct*
+    // drawable — they're the ones that map to a real atlas footprint
+    // and can host a thumbnail / DecomposeStudio mask. Container parts
+    // remain in `layerByPartIndex` so visibility cascading still works
+    // for any code path that targets them by id.
+    const exposedLayers = layers.filter((_, partIdx) => {
+      return (this.partToDirectDrawables.get(partIdx)?.length ?? 0) > 0;
+    });
+    const hiddenContainerCount = layers.length - exposedLayers.length;
+    if (hiddenContainerCount > 0) {
+      console.info(
+        `[Live2DAdapter] hid ${hiddenContainerCount}/${layers.length} pure container parts from the layers list`,
+      );
+    }
+
     const now = Date.now();
     const avatar: Avatar = {
       id: newId(ID_PREFIX.avatar),
       name: this.deriveName(input.model3),
       source,
-      layers,
+      layers: exposedLayers,
       groups: [],
       variants: [],
       textures: [],
@@ -344,7 +393,9 @@ export class Live2DAdapter implements AvatarAdapter {
 
     for (const [partIdx, multiplier] of this.partOpacityOverrides) {
       if (multiplier === 1) continue;
-      const list = this.partToDrawables.get(partIdx);
+      // Visibility cascades down the part tree — hiding a parent must
+      // hide every drawable underneath, not just the parent's direct ones.
+      const list = this.partToDescendantDrawables.get(partIdx);
       if (!list) continue;
       for (const d of list) {
         opacities[d] *= multiplier;
@@ -355,7 +406,7 @@ export class Live2DAdapter implements AvatarAdapter {
       const first = this.partOpacityOverrides.entries().next().value;
       if (first) {
         const [idx] = first;
-        const list = this.partToDrawables.get(idx) ?? [];
+        const list = this.partToDescendantDrawables.get(idx) ?? [];
         const sample = list[0];
         if (typeof sample === "number") {
           console.log(
@@ -440,7 +491,10 @@ export class Live2DAdapter implements AvatarAdapter {
     if (!layer?.texture) return null;
     const targetPageIdx = this.pageIndexByTextureId.get(layer.texture.textureId);
     if (targetPageIdx == null) return null;
-    const drawables = this.partToDrawables.get(partIdx);
+    // Footprint = the part's *direct* drawables only. Pre-2.5 used
+    // descendants here, which made every container part appear to own
+    // its children's atlas regions — confusing in DecomposeStudio.
+    const drawables = this.partToDirectDrawables.get(partIdx);
     if (!drawables || drawables.length === 0) return null;
 
     // Collect triangle UVs from drawables on the target page only. Cubism
@@ -512,7 +566,8 @@ export class Live2DAdapter implements AvatarAdapter {
       this.originalInternalUpdate = null;
     }
     this.partOpacityOverrides.clear();
-    this.partToDrawables.clear();
+    this.partToDirectDrawables.clear();
+    this.partToDescendantDrawables.clear();
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
     this.pageIndexByTextureId.clear();
@@ -650,6 +705,52 @@ export class Live2DAdapter implements AvatarAdapter {
     console.info(`[Live2DAdapter] preloaded ${preloaded}/${total} textures`);
   }
 
+  /**
+   * Read part display names from the puppet's `.cdi3.json` (Cubism
+   * Display Info) when the manifest references one. Cubism Editor lets
+   * artists author per-part Japanese / Korean names and stashes them in
+   * cdi3 — pulling them in turns LayersPanel rows from `PartArtMesh1`
+   * into something a human can scan.
+   *
+   * Pure data lookup with a fully-defined source: no heuristic, no name
+   * guessing. Returns an empty map (silently) when the puppet ships
+   * without a DisplayInfo file or when the file is malformed — callers
+   * fall back to the raw engine id.
+   */
+  private async loadCdi3PartNames(manifestUrl: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    try {
+      const manifestRes = await fetch(manifestUrl);
+      const manifest = (await manifestRes.json()) as {
+        FileReferences?: { DisplayInfo?: string };
+      };
+      const rel = manifest?.FileReferences?.DisplayInfo;
+      if (typeof rel !== "string" || rel.length === 0) {
+        console.info("[Live2DAdapter] no cdi3 DisplayInfo in manifest");
+        return out;
+      }
+      const cdi3Url = resolveSiblingUrl(manifestUrl, rel);
+      const cdi3Res = await fetch(cdi3Url);
+      if (!cdi3Res.ok) {
+        console.warn(`[Live2DAdapter] cdi3 fetch failed: ${cdi3Res.status} ${cdi3Url}`);
+        return out;
+      }
+      const cdi3 = (await cdi3Res.json()) as {
+        Parts?: { Id?: unknown; Name?: unknown }[];
+      };
+      const parts = Array.isArray(cdi3?.Parts) ? cdi3.Parts : [];
+      for (const p of parts) {
+        if (typeof p?.Id === "string" && typeof p?.Name === "string" && p.Name.length > 0) {
+          out.set(p.Id, p.Name);
+        }
+      }
+      console.info(`[Live2DAdapter] cdi3 part display names: ${out.size}`);
+    } catch (e) {
+      console.warn("[Live2DAdapter] cdi3 load failed (continuing with engine ids)", e);
+    }
+    return out;
+  }
+
   private async waitForCubismCore(timeoutMs = 5000): Promise<void> {
     const start = performance.now();
     while (performance.now() - start < timeoutMs) {
@@ -671,6 +772,19 @@ export class Live2DAdapter implements AvatarAdapter {
     const base = url.replace(/\.model3\.json$/, "");
     return `${base}${suffix}`;
   }
+}
+
+/**
+ * Resolve a path relative to a manifest URL — `model3.json`'s file
+ * references are siblings (e.g. "Hiyori.cdi3.json" lives next to
+ * "Hiyori.model3.json"). We strip the manifest's filename and append
+ * the relative path. Works for both absolute (`/samples/.../`) and
+ * blob URLs whose querystring carries the original path.
+ */
+function resolveSiblingUrl(manifestUrl: string, relPath: string): string {
+  const slashIdx = manifestUrl.lastIndexOf("/");
+  const base = slashIdx >= 0 ? manifestUrl.substring(0, slashIdx + 1) : "";
+  return base + relPath;
 }
 
 /**
