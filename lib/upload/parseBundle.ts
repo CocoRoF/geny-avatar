@@ -40,6 +40,17 @@ export async function parseBundle(input: File | File[] | BundleEntry[]): Promise
   // texture comes back null with "we don't know how to parse it".
   entries = entries.map(ensureBlobType);
 
+  // One-shot diagnostic — confirms the normalization actually ran and
+  // that texture entries got an image/* MIME. If this prints empty
+  // types, the rewriter / IndexedDB layer is bypassing us somewhere.
+  if (typeof console !== "undefined") {
+    const sample = entries.slice(0, 3).map((e) => `${e.path} → ${e.blob.type || "(empty)"}`);
+    const pngCount = entries.filter((e) => e.blob.type === "image/png").length;
+    console.info(
+      `[parseBundle] normalized ${entries.length} entries (${pngCount} png) · sample: ${sample.join(" | ")}`,
+    );
+  }
+
   if (entries.length === 0) {
     return {
       ok: false,
@@ -131,18 +142,21 @@ async function unpackZip(zipFile: File): Promise<BundleEntry[]> {
 }
 
 /**
- * If a BundleEntry's Blob has no MIME type, wrap it in a new Blob whose
- * type is inferred from the path. Used for IndexedDB replay (older saves
- * may have type-less Blobs) and for plain folder drops where File.type
- * was empty for unrecognized extensions.
+ * Always wrap entry.blob with a path-derived MIME type. Even if the
+ * incoming Blob already has a type, IndexedDB replays of older saves can
+ * carry a wrong / stale type — a PNG persisted before the MIME-fix
+ * shipped will have type="" or "application/octet-stream", and Pixi's
+ * loader then can't pick a parser. Authoritative source is the path
+ * extension; mimic the wrap unconditionally when it'd differ.
  *
- * The wrap shares the underlying memory — no copy. Free, just necessary.
+ * The wrap shares underlying memory — no byte copy.
  */
 function ensureBlobType(entry: BundleEntry): BundleEntry {
-  if (entry.blob.type) return entry;
+  const desired = mimeForPath(entry.path);
+  if (entry.blob.type === desired) return entry;
   return {
     ...entry,
-    blob: new Blob([entry.blob], { type: mimeForPath(entry.path) }),
+    blob: new Blob([entry.blob], { type: desired }),
   };
 }
 

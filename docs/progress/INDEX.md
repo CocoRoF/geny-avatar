@@ -38,6 +38,7 @@
 | 2026-05-06 | [22 sprint_1_3d_origin_close](2026-05-06_22_sprint_1_3d_origin_close.md) | 1.3d | 완료 — origin select, test assets 가이드, Phase 1.3 마무리 |
 | 2026-05-06 | [23 zip_filename_mojibake](2026-05-06_23_zip_filename_mojibake.md) | 1.3 fix | 완료 — UTF-8/GBK/Shift_JIS/EUC-KR 자동 복원 |
 | 2026-05-06 | [24 blob_mime_type](2026-05-06_24_blob_mime_type.md) | 1.3 fix | 완료 — Blob type 부여로 Pixi parser 인식 |
+| 2026-05-06 | [25 blob_mime_force_and_diagnostic](2026-05-06_25_blob_mime_force_and_diagnostic.md) | 1.3 fix | 완료 — 옛 IndexedDB save 강제 normalize + 진단 로그 |
 
 ## 운영 규칙
 
