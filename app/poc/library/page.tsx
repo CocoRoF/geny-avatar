@@ -88,7 +88,7 @@ export default function LibraryPage() {
                 className="flex flex-col rounded border border-[var(--color-border)] bg-[var(--color-panel)]"
               >
                 <a
-                  href={`/poc/upload?puppet=${p.id}`}
+                  href={`/edit/${p.id}`}
                   className="flex flex-1 flex-col p-4 hover:bg-[var(--color-bg)]"
                 >
                   <div className="mb-1 flex items-baseline gap-2">

@@ -19,11 +19,13 @@
     "@esotericsoftware/spine-pixi-v8": "^4.2.114",
     "dexie": "^4.4.2",
     "fflate": "^0.8.2",
+    "immer": "^11.1.6",
     "next": "^15.0.0",
     "pixi.js": "^8.18.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "untitled-pixi-live2d-engine": "^1.1.0"
+    "untitled-pixi-live2d-engine": "^1.1.0",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",

@@ -17,6 +17,9 @@ importers:
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
+      immer:
+        specifier: ^11.1.6
+        version: 11.1.6
       next:
         specifier: ^15.0.0
         version: 15.5.15(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -32,6 +35,9 @@ importers:
       untitled-pixi-live2d-engine:
         specifier: ^1.1.0
         version: 1.1.0(@pixi/sound@6.0.1(pixi.js@8.18.1))(pixi.js@8.18.1)
+      zustand:
+        specifier: ^5.0.13
+        version: 5.0.13(@types/react@19.2.14)(immer@11.1.6)(react@19.2.5)
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.0.0
@@ -518,6 +524,9 @@ packages:
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
+  immer@11.1.6:
+    resolution: {integrity: sha512-uwrF08UBQfxk49i9WcUeCx045wjB1zXEHNJmbYHPVVspxmjwSeWCoKbB8DEIvs3XkBJV6lcRAyLaWJ2+u3MMCw==}
+
   ismobilejs@1.1.1:
     resolution: {integrity: sha512-VaFW53yt8QO61k2WJui0dHf4SlL8lxBofUuUmwBo0ljPk0Drz2TiuDW4jo3wDcv41qy/SxrJ+VAzJ/qYqsmzRw==}
 
@@ -713,6 +722,24 @@ packages:
     peerDependencies:
       '@pixi/sound': ^6.0.1
       pixi.js: ^8.13.1
+
+  zustand@5.0.13:
+    resolution: {integrity: sha512-efI2tVaVQPqtOh114loML/Z80Y4NP3yc+Ff0fYiZJPauNeWZeIp/bRFD7I9bfmCOYBh/PHxlglQ9+wvlwnPikQ==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
 
 snapshots:
 
@@ -1035,6 +1062,8 @@ snapshots:
 
   graceful-fs@4.2.11: {}
 
+  immer@11.1.6: {}
+
   ismobilejs@1.1.1: {}
 
   jiti@2.7.0: {}
@@ -1215,3 +1244,9 @@ snapshots:
     dependencies:
       '@pixi/sound': 6.0.1(pixi.js@8.18.1)
       pixi.js: 8.18.1
+
+  zustand@5.0.13(@types/react@19.2.14)(immer@11.1.6)(react@19.2.5):
+    optionalDependencies:
+      '@types/react': 19.2.14
+      immer: 11.1.6
+      react: 19.2.5

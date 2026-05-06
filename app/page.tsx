@@ -183,9 +183,16 @@ export default function Home() {
             className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
           >
             <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
-            <div className="mt-1 text-sm">저장된 puppet 목록 (sprint 1.3c)</div>
+            <div className="mt-1 text-sm">저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로</div>
           </a>
         </div>
+        <p className="mt-4 text-xs text-[var(--color-fg-dim)]">
+          본 에디터는{" "}
+          <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">
+            /edit/[avatarId]
+          </code>{" "}
+          (sprint 1.4a). 라이브러리 카드 클릭으로 진입.
+        </p>
       </section>
 
       <footer className="mt-16 border-t border-[var(--color-border)] pt-6 text-xs text-[var(--color-fg-dim)]">

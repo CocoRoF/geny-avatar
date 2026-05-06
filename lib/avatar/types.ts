@@ -20,9 +20,9 @@ export type RGBA = { r: number; g: number; b: number; a: number };
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
-export type Polygon = { points: ReadonlyArray<{ x: number; y: number }> };
+export type Polygon = { points: { x: number; y: number }[] };
 
-export type UVIsland = { points: ReadonlyArray<{ u: number; v: number }> };
+export type UVIsland = { points: { u: number; v: number }[] };
 
 // ----- Source / runtime metadata -----
 

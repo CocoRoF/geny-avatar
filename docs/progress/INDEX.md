@@ -40,6 +40,8 @@
 | 2026-05-06 | [24 blob_mime_type](2026-05-06_24_blob_mime_type.md) | 1.3 fix | 완료 — Blob type 부여로 Pixi parser 인식 |
 | 2026-05-06 | [25 blob_mime_force_and_diagnostic](2026-05-06_25_blob_mime_force_and_diagnostic.md) | 1.3 fix | 완료 — 옛 IndexedDB save 강제 normalize + 진단 로그 |
 | 2026-05-06 | [26 pixi_assets_blob_url_detector](2026-05-06_26_pixi_assets_blob_url_detector.md) | 1.3 fix | 완료 — Live2DAdapter가 텍스처를 명시적 loadParser로 preload |
+| 2026-05-06 | [27 phase1_4_kickoff](2026-05-06_27_phase1_4_kickoff.md) | 1.4 | 완료 — sub-sprint 분할 (1.4a/b) |
+| 2026-05-06 | [28 sprint_1_4a_store_components_edit](2026-05-06_28_sprint_1_4a_store_components_edit.md) | 1.4a | 완료 — Zustand store, 본 컴포넌트, /edit/[id] 페이지 |
 
 ## 운영 규칙
 
