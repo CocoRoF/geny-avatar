@@ -1,4 +1,4 @@
-import type { Container } from "pixi.js";
+import { Assets, type Container } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
 import type { Avatar, AvatarSource, Layer, LayerId, Parameter, RGBA } from "../avatar/types";
 import type {
@@ -81,6 +81,17 @@ export class Live2DAdapter implements AvatarAdapter {
 
     const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine/cubism");
     configureCubismSDK({ memorySizeMB: 32 });
+
+    // Pre-register textures referenced by the manifest with an explicit
+    // loadParser. Pixi v8's Assets detectors look at URL extensions to
+    // pick a parser; blob: URLs (which is what parseBundle hands us)
+    // have no extension, so the detector silently picks nothing and
+    // every texture comes back null with "we don't know how to parse it".
+    //
+    // Pre-loading with `loadParser: 'loadTextures'` bypasses detection
+    // entirely. The Cubism engine's later Assets.load(textureUrl) for
+    // the same URL hits the cache.
+    await this.preloadTextures(input.model3);
 
     const model = await Live2DModel.from(input.model3);
     this.model = model;
@@ -388,6 +399,36 @@ export class Live2DAdapter implements AvatarAdapter {
       if (layer.id === layerId) return index;
     }
     return null;
+  }
+
+  /**
+   * Fetch the manifest, walk its texture references, and pre-load each
+   * one through Pixi Assets with an explicit `loadParser`. This runs
+   * before Live2DModel.from() so the engine's eventual texture fetches
+   * hit the asset cache instead of the failing-detector path.
+   */
+  private async preloadTextures(manifestUrl: string): Promise<void> {
+    let preloaded = 0;
+    let total = 0;
+    try {
+      const res = await fetch(manifestUrl);
+      const text = await res.text();
+      const manifest = JSON.parse(text) as { FileReferences?: { Textures?: unknown[] } };
+      const refs = manifest.FileReferences?.Textures ?? [];
+      total = refs.length;
+      for (const ref of refs) {
+        if (typeof ref !== "string") continue;
+        try {
+          await Assets.load({ src: ref, loadParser: "loadTextures" });
+          preloaded++;
+        } catch (e) {
+          console.warn(`[Live2DAdapter] preload texture failed (${ref.slice(0, 60)}…)`, e);
+        }
+      }
+    } catch (e) {
+      console.warn("[Live2DAdapter] could not preload textures from manifest", e);
+    }
+    console.info(`[Live2DAdapter] preloaded ${preloaded}/${total} textures`);
   }
 
   private async waitForCubismCore(timeoutMs = 5000): Promise<void> {

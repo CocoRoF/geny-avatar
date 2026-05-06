@@ -39,6 +39,7 @@
 | 2026-05-06 | [23 zip_filename_mojibake](2026-05-06_23_zip_filename_mojibake.md) | 1.3 fix | 완료 — UTF-8/GBK/Shift_JIS/EUC-KR 자동 복원 |
 | 2026-05-06 | [24 blob_mime_type](2026-05-06_24_blob_mime_type.md) | 1.3 fix | 완료 — Blob type 부여로 Pixi parser 인식 |
 | 2026-05-06 | [25 blob_mime_force_and_diagnostic](2026-05-06_25_blob_mime_force_and_diagnostic.md) | 1.3 fix | 완료 — 옛 IndexedDB save 강제 normalize + 진단 로그 |
+| 2026-05-06 | [26 pixi_assets_blob_url_detector](2026-05-06_26_pixi_assets_blob_url_detector.md) | 1.3 fix | 완료 — Live2DAdapter가 텍스처를 명시적 loadParser로 preload |
 
 ## 운영 규칙
 
