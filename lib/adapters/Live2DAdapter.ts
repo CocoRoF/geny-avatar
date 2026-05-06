@@ -22,16 +22,20 @@ const CAPABILITIES: AdapterCapabilities = {
  * Wraps `untitled-pixi-live2d-engine`. Cubism Core (loaded via the layout
  * script tag) must be on window before load() runs.
  *
- * Layer (part) overrides are enforced through two channels — both applied
- * inside the engine's `beforeModelUpdate` event so motion can't overwrite
- * them later in the same frame:
+ * Layer (part) overrides hide drawables by mutating
+ * `coreModel._model.drawables.opacities` (the Float32Array view that the
+ * renderer reads) *after* the engine's per-frame update completes — that's
+ * the only window where motion + parameter→drawable propagation are done
+ * but render hasn't happened yet.
  *
- *   1. coreModel.setPartOpacity(idx, value) — feeds the propagation step
- *   2. drawables.opacities[d] *= multiplier — direct render-input mutation
+ * We get there by monkey-patching `internalModel.update(dt, now)`: call
+ * the original (which runs motions, parameters, moc propagation, GL
+ * vertex update etc.), then mutate. The next render call sees our values.
  *
- * Some Cubism models bind drawable opacity to parameters rather than parts,
- * so setPartOpacity alone has no visible effect on those models. The
- * drawable mutation is a robust fallback for that case.
+ * The earlier `beforeModelUpdate` event was the *wrong* hook — it fires
+ * before propagation runs, so propagation overwrites our mutation. The
+ * d.ts only declares before-events, no after-update event, hence the
+ * patch.
  */
 export class Live2DAdapter implements AvatarAdapter {
   readonly runtime = "live2d" as const;
@@ -49,12 +53,12 @@ export class Live2DAdapter implements AvatarAdapter {
   /** part-index → drawable indices that should follow the part's override.
    *  Includes drawables under descendant parts (Cubism part trees nest). */
   private partToDrawables = new Map<number, number[]>();
-  /** Cached so destroy() can off() the listener. */
-  private beforeModelUpdateHandler: (() => void) | null = null;
+  /** original internalModel.update bound to the model — kept so destroy()
+   *  can restore it. */
+  private originalInternalUpdate: ((...args: unknown[]) => unknown) | null = null;
 
   // diagnostic counters (one-shot logs to keep console quiet after first frame)
   private _hookFireCount = 0;
-  private _loggedSetCheck = false;
   private _loggedDrawableMutate = false;
 
   static detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null {
@@ -184,15 +188,26 @@ export class Live2DAdapter implements AvatarAdapter {
       }
     }
 
-    // ----- per-frame override hook -----
-    if (internal && typeof internal.on === "function") {
-      this.beforeModelUpdateHandler = () => this.applyOverridesInsideHook();
-      internal.on("beforeModelUpdate", this.beforeModelUpdateHandler);
+    // ----- monkey-patch internalModel.update so we can mutate AFTER it -----
+    if (internal && typeof internal.update === "function") {
+      const original = internal.update.bind(internal) as (...args: unknown[]) => unknown;
+      this.originalInternalUpdate = original;
+      // biome-ignore lint/suspicious/noExplicitAny: replacing engine method
+      (internal as any).update = (...args: unknown[]) => {
+        const result = original(...args);
+        // After motion + propagation + moc.update — drawable opacities
+        // are now finalized for this frame and the renderer will read
+        // them next. Mutate here so our override is the last word.
+        this.applyOverridesAfterUpdate();
+        return result;
+      };
       console.info(
-        `[Live2DAdapter] hooked beforeModelUpdate · parts=${partCount} drawables=${drawableCount} partsMapped=${this.partToDrawables.size} nativeDrawables=${!!getNativeDrawables(coreModel)} hasSetPartOpacity=${typeof coreModel?.setPartOpacity === "function"}`,
+        `[Live2DAdapter] patched internalModel.update · parts=${partCount} drawables=${drawableCount} partsMapped=${this.partToDrawables.size} nativeDrawables=${!!getNativeDrawables(coreModel)}`,
       );
     } else {
-      console.error("[Live2DAdapter] internalModel.on() not available — overrides will not apply");
+      console.error(
+        "[Live2DAdapter] internalModel.update is not a function — overrides will not apply",
+      );
     }
 
     const source: AvatarSource = {
@@ -220,74 +235,52 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   /**
-   * Runs every frame inside the engine's beforeModelUpdate event. This is
-   * the only point in the per-frame cycle where motion has finished writing
-   * parameters but the propagation that turns them into drawable state
-   * hasn't run yet, so anything we do here either feeds the propagation
-   * (setPartOpacity) or sits where the renderer reads it (drawable opacity
-   * Float32Array).
+   * Called immediately after `internalModel.update(dt, now)` completes.
+   * At this point the engine has run motions, propagated parameters into
+   * parts, parts into drawables, and called moc.update — drawable
+   * opacities are finalized for this frame. We mutate them here so the
+   * upcoming render uses our values.
+   *
+   * (We don't call coreModel.setPartOpacity at all; this build doesn't
+   * expose it — `hasSetPartOpacity=false` in the diagnostic. Direct
+   * drawable mutation is the only working channel.)
    */
-  private applyOverridesInsideHook(): void {
+  private applyOverridesAfterUpdate(): void {
     this._hookFireCount++;
     const cm = this.coreModel;
     if (!cm) return;
     if (this.partOpacityOverrides.size === 0) return;
 
-    if (this._hookFireCount === 1 || this._hookFireCount % 120 === 0) {
+    if (this._hookFireCount === 1 || this._hookFireCount % 240 === 0) {
       console.log(
-        `[Live2DAdapter] hook fire #${this._hookFireCount}, applying ${this.partOpacityOverrides.size} overrides`,
+        `[Live2DAdapter] post-update fire #${this._hookFireCount}, applying ${this.partOpacityOverrides.size} overrides`,
       );
     }
 
-    // Channel 1 — setPartOpacity (Cubism's intended way; works for models
-    // whose part has direct drawable bindings, ignored by models that bind
-    // drawable opacity to parameters instead).
-    if (cm.setPartOpacity) {
-      for (const [partIdx, value] of this.partOpacityOverrides) {
-        cm.setPartOpacity(partIdx, value);
-      }
+    const drawables = getNativeDrawables(cm);
+    const opacities: Float32Array | undefined = drawables?.opacities;
+    if (!opacities) return;
 
-      if (!this._loggedSetCheck && cm.getPartOpacity) {
-        const first = this.partOpacityOverrides.entries().next().value;
-        if (first) {
-          const [idx, want] = first;
-          const got = cm.getPartOpacity(idx);
-          console.log(
-            `[Live2DAdapter] setPartOpacity verify part[${idx}]: want=${want}, read-back=${got}`,
-          );
-          this._loggedSetCheck = true;
-        }
+    for (const [partIdx, multiplier] of this.partOpacityOverrides) {
+      if (multiplier === 1) continue;
+      const list = this.partToDrawables.get(partIdx);
+      if (!list) continue;
+      for (const d of list) {
+        opacities[d] *= multiplier;
       }
     }
 
-    // Channel 2 — direct drawable opacity mutation, by far the most reliable
-    // because it sits between propagation (which we hooked just before) and
-    // render. For models that ignore part opacity, this is the path that
-    // actually hides anything.
-    const drawables = getNativeDrawables(cm);
-    const opacities: Float32Array | undefined = drawables?.opacities;
-    if (opacities) {
-      for (const [partIdx, multiplier] of this.partOpacityOverrides) {
-        if (multiplier === 1) continue;
-        const list = this.partToDrawables.get(partIdx);
-        if (!list) continue;
-        for (const d of list) {
-          opacities[d] *= multiplier;
-        }
-      }
-
-      if (!this._loggedDrawableMutate) {
-        const first = this.partOpacityOverrides.entries().next().value;
-        if (first) {
-          const [idx] = first;
-          const list = this.partToDrawables.get(idx) ?? [];
-          const sample = list[0];
-          if (typeof sample === "number") {
-            console.log(
-              `[Live2DAdapter] drawable mutate verify: part[${idx}] → drawable[${sample}] opacity now=${opacities[sample]}`,
-            );
-            this._loggedDrawableMutate = true;
-          }
+    if (!this._loggedDrawableMutate) {
+      const first = this.partOpacityOverrides.entries().next().value;
+      if (first) {
+        const [idx] = first;
+        const list = this.partToDrawables.get(idx) ?? [];
+        const sample = list[0];
+        if (typeof sample === "number") {
+          console.log(
+            `[Live2DAdapter] post-update verify: part[${idx}] → drawable[${sample}] opacity now=${opacities[sample]}`,
+          );
+          this._loggedDrawableMutate = true;
         }
       }
     }
@@ -299,15 +292,15 @@ export class Live2DAdapter implements AvatarAdapter {
 
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
     const idx = this.findPartIndex(layerId);
-    console.log(`[Live2DAdapter] setLayerVisibility(${layerId}, ${visible}) → partIdx=${idx}`);
     if (idx == null) return;
     if (visible) {
       this.partOpacityOverrides.delete(idx);
     } else {
       this.partOpacityOverrides.set(idx, 0);
     }
-    // synchronous one-shot so we don't have to wait a tick for first feedback
-    this.coreModel?.setPartOpacity?.(idx, visible ? 1 : 0);
+    // The patched internalModel.update will run our applyOverridesAfterUpdate
+    // on the next tick — no synchronous mutation here. setPartOpacity is
+    // not exposed on this engine build anyway.
   }
 
   setLayerColor(layerId: LayerId, color: RGBA): void {
@@ -318,7 +311,6 @@ export class Live2DAdapter implements AvatarAdapter {
     } else {
       this.partOpacityOverrides.set(idx, color.a);
     }
-    this.coreModel?.setPartOpacity?.(idx, color.a);
   }
 
   /**
@@ -373,12 +365,13 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   destroy(): void {
-    if (this.beforeModelUpdateHandler) {
+    if (this.originalInternalUpdate) {
       const internal = this.model?.internalModel;
-      if (internal && typeof internal.off === "function") {
-        internal.off("beforeModelUpdate", this.beforeModelUpdateHandler);
+      if (internal) {
+        // biome-ignore lint/suspicious/noExplicitAny: restoring engine method
+        (internal as any).update = this.originalInternalUpdate;
       }
-      this.beforeModelUpdateHandler = null;
+      this.originalInternalUpdate = null;
     }
     this.partOpacityOverrides.clear();
     this.partToDrawables.clear();

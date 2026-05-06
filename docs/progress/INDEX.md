@@ -29,7 +29,8 @@
 | 2026-05-06 | [13 cubism_native_handle_fallback](2026-05-06_13_cubism_native_handle_fallback.md) | 1 | 완료 — native Live2DCubismCore handle fallback + 진단 로그 |
 | 2026-05-06 | [14 cubism_ticker_priority_and_dynamic_flags](2026-05-06_14_cubism_ticker_priority_and_dynamic_flags.md) | 1 | 완료 — Pixi ticker LOW priority + dynamicFlags IsVisible bit |
 | 2026-05-06 | [15 cubism_beforeModelUpdate_hook](2026-05-06_15_cubism_beforeModelUpdate_hook.md) | 1 | 완료 — 엔진의 beforeModelUpdate 이벤트 직접 hook (정공법) |
-| 2026-05-06 | [16 cubism_dual_channel_with_diagnostics](2026-05-06_16_cubism_dual_channel_with_diagnostics.md) | 1 | 진행 중 — setPartOpacity + drawable mutate 동시 + 모든 단계 진단 로그 |
+| 2026-05-06 | [16 cubism_dual_channel_with_diagnostics](2026-05-06_16_cubism_dual_channel_with_diagnostics.md) | 1 | 완료 — setPartOpacity 부재 + drawable mutate 작동 확인 |
+| 2026-05-06 | [17 cubism_internalModel_update_patch](2026-05-06_17_cubism_internalModel_update_patch.md) | 1 | 완료 — internalModel.update monkey-patch (after-update 윈도우) |
 
 ## 운영 규칙
 
