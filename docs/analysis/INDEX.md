@@ -15,6 +15,7 @@
 | 07 | [sample_sources](07_sample_sources.md) | 무료 뼈대를 어디서 받는가, 라이선스 제약은 무엇인가 |
 | 08 | [competitive_reference](08_competitive_reference.md) | NIKKE visualiser 분해 — 무엇을 빌려오고 무엇을 안 빌려오는가 |
 | 09 | [open_questions](09_open_questions.md) | 검증 안 끝난 질문 모음 (`[VERIFY]`, `[OPEN]`) |
+| 10 | [test_assets](10_test_assets.md) | V1 자산 다양성 회귀 — 5종 80% 검증용 시드 가이드 |
 
 ## 작성 규칙
 

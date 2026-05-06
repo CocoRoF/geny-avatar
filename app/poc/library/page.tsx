@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { deletePuppet, listPuppets, type PuppetRow } from "@/lib/persistence/db";
+import type { AssetOriginNote } from "@/lib/avatar/types";
+import { deletePuppet, listPuppets, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
+
+const ORIGIN_OPTIONS: { value: AssetOriginNote["source"]; label: string }[] = [
+  { value: "unknown", label: "unknown" },
+  { value: "live2d-official", label: "Live2D 공식 샘플" },
+  { value: "spine-official", label: "Spine 공식 샘플" },
+  { value: "inochi2d-official", label: "Inochi2D 공식" },
+  { value: "community", label: "커뮤니티 (서드파티)" },
+  { value: "self-made", label: "자체 제작" },
+];
 
 export default function LibraryPage() {
   const [puppets, setPuppets] = useState<PuppetRow[] | null>(null);
@@ -23,6 +33,15 @@ export default function LibraryPage() {
     if (!confirm("Delete this puppet from the library? This can't be undone.")) return;
     try {
       await deletePuppet(id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onOriginChange(id: string, source: AssetOriginNote["source"]) {
+    try {
+      await updatePuppet(id, { origin: { source } });
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -93,11 +112,26 @@ export default function LibraryPage() {
                     {formatRelative(p.updatedAt)}
                   </div>
                 </a>
-                <div className="flex shrink-0 border-t border-[var(--color-border)] text-xs">
+                <div className="flex shrink-0 items-center gap-2 border-t border-[var(--color-border)] px-3 py-1.5 text-xs">
+                  <span className="text-[var(--color-fg-dim)]">origin:</span>
+                  <select
+                    value={p.origin?.source ?? "unknown"}
+                    onChange={(e) =>
+                      onOriginChange(p.id, e.target.value as AssetOriginNote["source"])
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                  >
+                    {ORIGIN_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
                     onClick={() => onDelete(p.id)}
-                    className="flex-1 px-3 py-1.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg)] hover:text-red-400"
+                    className="rounded border border-transparent px-2 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-border)] hover:text-red-400"
                   >
                     delete
                   </button>
