@@ -20,6 +20,7 @@
 | 2026-05-06 | [04 phase0_cubism_poc](2026-05-06_04_phase0_cubism_poc.md) | 0 | 완료 — engine 1.1.0 설치, Hiyori 마운트, Part 토글 + Motion |
 | 2026-05-06 | [05 phase0_dual_mount](2026-05-06_05_phase0_dual_mount.md) | 0 | 완료 — T-rt1 정적 검증, 어댑터 인터페이스 1차안 확정 |
 | 2026-05-06 | [06 poc_layout_fix](2026-05-06_06_poc_layout_fix.md) | 0 | 완료 — 사이드바 vh 고정 + 내부 스크롤, 검색·bulk |
+| 2026-05-06 | [07 phase1_adapter_interface](2026-05-06_07_phase1_adapter_interface.md) | 1 | 완료 — 도메인 타입, 어댑터 인터페이스, Spine·Live2D 어댑터 클래스 |
 
 ## 운영 규칙
 
