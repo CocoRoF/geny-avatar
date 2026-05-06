@@ -46,6 +46,7 @@
 | 2026-05-06 | [30 phase2_kickoff_thumbnails](2026-05-06_30_phase2_kickoff_thumbnails.md) | 2.0 | 완료 — Phase 2 sub-sprint 분할 + puppet 썸네일 (extract → webp → IDB) |
 | 2026-05-06 | [31 sprint_2_1_spine_atlas_layer_thumbs](2026-05-06_31_sprint_2_1_spine_atlas_layer_thumbs.md) | 2.1 | 완료 — Spine atlas region → Layer.texture, LayersPanel 행 썸네일 (Cubism은 2.2) |
 | 2026-05-06 | [32 sprint_2_2_cubism_uv_bbox_thumbs](2026-05-06_32_sprint_2_2_cubism_uv_bbox_thumbs.md) | 2.2 | 완료 — Cubism drawable UV bbox → Layer.texture, LayersPanel에 모든 puppet 썸네일 |
+| 2026-05-06 | [33 sprint_2_3_decompose_studio_v1](2026-05-06_33_sprint_2_3_decompose_studio_v1.md) | 2.3 | 완료 — DecomposeStudio 모달 (alpha threshold + 브러시 paint/erase + save→PNG blob) |
 
 ## 운영 규칙
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { DecomposeStudio } from "@/components/DecomposeStudio";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
 import { useLayerThumbnail } from "@/lib/avatar/useLayerThumbnail";
@@ -28,6 +29,10 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
   const visibility = useEditorStore((s) => s.visibilityOverrides);
   const filter = useEditorStore((s) => s.layerFilter);
   const setFilter = useEditorStore((s) => s.setLayerFilter);
+  const studioLayerId = useEditorStore((s) => s.studioLayerId);
+  const setStudioLayer = useEditorStore((s) => s.setStudioLayer);
+  const layerMasks = useEditorStore((s) => s.layerMasks);
+  const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -80,7 +85,9 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
               layer={layer}
               index={i}
               visible={visible}
+              hasMask={!!layerMasks[layer.id]}
               onToggle={() => onToggleLayer(layer.id, !visible)}
+              onOpenStudio={() => setStudioLayer(layer.id)}
             />
           );
         })}
@@ -91,6 +98,8 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
           <li className="px-2 py-4 text-center text-xs text-[var(--color-fg-dim)]">no layers</li>
         )}
       </ul>
+
+      {studioLayer && <DecomposeStudio adapter={adapter} layer={studioLayer} />}
     </div>
   );
 }
@@ -100,17 +109,28 @@ type LayerRowProps = {
   layer: Layer;
   index: number;
   visible: boolean;
+  hasMask: boolean;
   onToggle: () => void;
+  onOpenStudio: () => void;
 };
 
-function LayerRow({ adapter, layer, index, visible, onToggle }: LayerRowProps) {
+function LayerRow({
+  adapter,
+  layer,
+  index,
+  visible,
+  hasMask,
+  onToggle,
+  onOpenStudio,
+}: LayerRowProps) {
   const thumbUrl = useLayerThumbnail(adapter, layer);
+  const canDecompose = !!layer.texture;
   return (
-    <li>
+    <li className="group flex items-center gap-1 pr-1">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
+        className="flex flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
@@ -131,7 +151,26 @@ function LayerRow({ adapter, layer, index, visible, onToggle }: LayerRowProps) {
           {String(index).padStart(2, "0")}
         </span>
         <span className="truncate">{layer.name}</span>
+        {hasMask && (
+          <span
+            className="ml-auto rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
+            title="this layer has a refined mask saved"
+          >
+            mask
+          </span>
+        )}
       </button>
+      {canDecompose && (
+        <button
+          type="button"
+          onClick={onOpenStudio}
+          title="open in DecomposeStudio"
+          aria-label={`decompose ${layer.name}`}
+          className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-fg-dim)] opacity-0 transition-opacity hover:text-[var(--color-fg)] group-hover:opacity-100"
+        >
+          edit
+        </button>
+      )}
     </li>
   );
 }

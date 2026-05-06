@@ -30,6 +30,13 @@ export type EditorState = {
   /** snapshots ahead of current (filled by undo, drained by redo) */
   future: VisibilitySnapshot[];
 
+  /** Layer currently open in DecomposeStudio. null = studio closed. */
+  studioLayerId: LayerId | null;
+  /** Refined mask blobs per layer (PNG, white=visible, black/transparent=masked).
+   *  In-memory only for now; IDB persistence lands when DecomposeStudio
+   *  promotes from v1 to a feature you can rely on. */
+  layerMasks: Record<LayerId, Blob>;
+
   // ----- actions -----
 
   setAvatar(avatar: Avatar | null): void;
@@ -52,6 +59,11 @@ export type EditorState = {
   /** Replay the most recent undone snapshot. No-op if future is empty. */
   redo(): void;
 
+  /** Open / close DecomposeStudio for a layer. */
+  setStudioLayer(id: LayerId | null): void;
+  /** Save (or clear with `null`) the refined mask for a layer. */
+  setLayerMask(id: LayerId, blob: Blob | null): void;
+
   // ----- selectors / read-helpers -----
 
   canUndo(): boolean;
@@ -67,6 +79,8 @@ export const useEditorStore = create<EditorState>()(
     visibilityOverrides: {},
     past: [],
     future: [],
+    studioLayerId: null,
+    layerMasks: {},
 
     setAvatar: (avatar) =>
       set((s) => {
@@ -79,6 +93,8 @@ export const useEditorStore = create<EditorState>()(
           : {};
         s.past = [];
         s.future = [];
+        s.studioLayerId = null;
+        s.layerMasks = {};
       }),
 
     setLayerVisibility: (id, visible) =>
@@ -145,6 +161,17 @@ export const useEditorStore = create<EditorState>()(
 
     canUndo: () => get().past.length > 0,
     canRedo: () => get().future.length > 0,
+
+    setStudioLayer: (id) =>
+      set((s) => {
+        s.studioLayerId = id;
+      }),
+
+    setLayerMask: (id, blob) =>
+      set((s) => {
+        if (blob == null) delete s.layerMasks[id];
+        else s.layerMasks[id] = blob;
+      }),
   })),
 );
 
