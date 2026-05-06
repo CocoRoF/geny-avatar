@@ -26,6 +26,7 @@
 | 2026-05-06 | [10 cubism_id_handle_coerce](2026-05-06_10_cubism_id_handle_coerce.md) | 1 | 완료 — Cubism ID handle을 어댑터 경계에서 string 변환 |
 | 2026-05-06 | [11 cubism_scale_and_override_loop](2026-05-06_11_cubism_scale_and_override_loop.md) | 1 | 완료 — fit-to-canvas + 모션 무력화 RAF override loop |
 | 2026-05-06 | [12 cubism_drawable_opacity_override](2026-05-06_12_cubism_drawable_opacity_override.md) | 1 | 완료 — 진짜 hide-all 작동 (drawable opacity 직접 mutate) |
+| 2026-05-06 | [13 cubism_native_handle_fallback](2026-05-06_13_cubism_native_handle_fallback.md) | 1 | 완료 — native Live2DCubismCore handle fallback + 진단 로그 |
 
 ## 운영 규칙
 

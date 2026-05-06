@@ -109,24 +109,42 @@ export class Live2DAdapter implements AvatarAdapter {
       }
 
       // Build part → drawable mapping including descendants. Cubism parts
-      // can nest, so a drawable under part X is also under any ancestor of
-      // X. We walk every drawable's direct parent and propagate up the
-      // ancestor chain so a hide-X override hides every drawable in X's
-      // subtree.
+      // can nest, so a drawable under part X is also under any ancestor of X.
+      //
+      // We prefer the native model handle's typed-array fields when they're
+      // exposed, falling back to the wrapper methods. Different Cubism
+      // Framework versions / engine wrappers expose only one of the two,
+      // and quietly returning -1 from a missing wrapper method silently
+      // empties this map (the bug we're fixing here).
+      const drawables = getNativeDrawables(coreModel);
+      const parts = getNativeParts(coreModel);
+
+      const partParent = (i: number): number => {
+        const v = parts?.parentIndices?.[i];
+        if (typeof v === "number") return v;
+        const m = coreModel.getPartParentPartIndex?.(i);
+        return typeof m === "number" ? m : -1;
+      };
+      const drawableParent = (d: number): number => {
+        const v = drawables?.parentPartIndices?.[d];
+        if (typeof v === "number") return v;
+        const m = coreModel.getDrawableParentPartIndex?.(d);
+        return typeof m === "number" ? m : -1;
+      };
+
       const ancestorChains: number[][] = [];
       for (let i = 0; i < partCount; i++) {
         const chain: number[] = [i];
-        let p: number = coreModel.getPartParentPartIndex?.(i) ?? -1;
-        // guard against cycles or absurd depth; Cubism trees are tiny
+        let p = partParent(i);
         for (let depth = 0; p >= 0 && depth < 64; depth++) {
           chain.push(p);
-          p = coreModel.getPartParentPartIndex?.(p) ?? -1;
+          p = partParent(p);
         }
         ancestorChains.push(chain);
       }
-      const drawableCount: number = coreModel.getDrawableCount?.() ?? 0;
+      const drawableCount: number = coreModel.getDrawableCount?.() ?? drawables?.count ?? 0;
       for (let d = 0; d < drawableCount; d++) {
-        const directPart: number = coreModel.getDrawableParentPartIndex?.(d) ?? -1;
+        const directPart = drawableParent(d);
         if (directPart < 0) continue;
         const chain = ancestorChains[directPart] ?? [directPart];
         for (const partIdx of chain) {
@@ -137,6 +155,14 @@ export class Live2DAdapter implements AvatarAdapter {
           }
           arr.push(d);
         }
+      }
+
+      // One-shot diagnostic — if this prints "0 mapped" then no override
+      // can ever take effect; the engine isn't exposing parent indices.
+      if (typeof console !== "undefined") {
+        console.info(
+          `[Live2DAdapter] partToDrawables: ${this.partToDrawables.size} parts mapped (drawables=${drawableCount}, parts=${partCount}, native=${!!drawables})`,
+        );
       }
 
       const paramCount: number = coreModel.getParameterCount?.() ?? 0;
@@ -333,18 +359,24 @@ export class Live2DAdapter implements AvatarAdapter {
         return;
       }
       const cm = this.coreModel;
-      const opacities: Float32Array | undefined = cm?.getDrawableOpacities?.();
+      // Prefer the native typed array on Live2DCubismCore.Model.drawables.
+      // Wrapper methods (getDrawableOpacities) sometimes return a copy
+      // instead of a view, which means our mutation is discarded.
+      const drawables = getNativeDrawables(cm);
+      const opacities: Float32Array | undefined =
+        drawables?.opacities ?? cm?.getDrawableOpacities?.();
       if (opacities) {
         for (const [partIdx, multiplier] of this.partOpacityOverrides) {
-          if (multiplier === 1) continue; // identity, no-op
-          const drawables = this.partToDrawables.get(partIdx);
-          if (!drawables) continue;
-          for (const d of drawables) {
+          if (multiplier === 1) continue;
+          const list = this.partToDrawables.get(partIdx);
+          if (!list) continue;
+          for (const d of list) {
             opacities[d] *= multiplier;
           }
         }
       } else if (cm?.setPartOpacity) {
-        // engine build doesn't expose the opacity buffer — best-effort fallback
+        // last-ditch fallback for engine builds with neither the buffer
+        // nor a typed-array view exposed.
         for (const [index, value] of this.partOpacityOverrides) {
           cm.setPartOpacity(index, value);
         }
@@ -375,6 +407,47 @@ export class Live2DAdapter implements AvatarAdapter {
     const base = url.replace(/\.model3\.json$/, "");
     return `${base}${suffix}`;
   }
+}
+
+/**
+ * Reach the native `Live2DCubismCore.Model.drawables` handle through a
+ * Cubism Framework wrapper. Different engine versions / wrapper layers
+ * expose the native handle at different paths; we probe each.
+ *
+ * Returns the object containing `opacities: Float32Array`,
+ * `parentPartIndices: Int32Array`, etc. Mutating `opacities` is the only
+ * reliable way to override Cubism's per-frame opacity computation
+ * because it sits after the parameter→part→drawable propagation that
+ * motions feed into.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: probing engine internals
+function getNativeDrawables(coreModel: any): any | null {
+  if (!coreModel) return null;
+  const candidates = [
+    coreModel._model?.drawables,
+    coreModel.model?.drawables,
+    coreModel._coreModel?._model?.drawables,
+    coreModel.drawables,
+  ];
+  for (const c of candidates) {
+    if (c?.opacities) return c;
+  }
+  return null;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: probing engine internals
+function getNativeParts(coreModel: any): any | null {
+  if (!coreModel) return null;
+  const candidates = [
+    coreModel._model?.parts,
+    coreModel.model?.parts,
+    coreModel._coreModel?._model?.parts,
+    coreModel.parts,
+  ];
+  for (const c of candidates) {
+    if (c) return c;
+  }
+  return null;
 }
 
 /**
