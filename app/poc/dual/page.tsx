@@ -78,9 +78,18 @@ export default function DualMountPocPage() {
           if (display) {
             // biome-ignore lint/suspicious/noExplicitAny: engine display object
             const d = display as any;
-            d.anchor?.set?.(0.5, 0.5);
-            d.position?.set?.(app.screen.width * 0.75, app.screen.height * 0.5);
-            d.scale?.set?.((app.screen.height * 0.85) / 1500);
+            d.scale?.set?.(1);
+            const native = cubismAdapter.getNativeSize();
+            const baseW = native?.width ?? d.width ?? 800;
+            const baseH = native?.height ?? d.height ?? 1200;
+            // dual layout reserves the right half of the canvas
+            const targetH = app.screen.height * 0.85;
+            const targetW = app.screen.width * 0.45;
+            const factor = Math.min(targetW / baseW, targetH / baseH);
+            d.scale?.set?.(factor);
+            if (d.anchor?.set) d.anchor.set(0.5, 0.5);
+            else if (d.pivot?.set) d.pivot.set(baseW / 2, baseH / 2);
+            d.position?.set?.(app.screen.width * 0.75, app.screen.height / 2);
             rightHost.addChild(display);
           }
           const idle = avatar.animations.find((a) => a.name === "Idle") ?? avatar.animations[0];

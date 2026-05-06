@@ -24,6 +24,7 @@
 | 2026-05-06 | [08 cubism_modern_subexport](2026-05-06_08_cubism_modern_subexport.md) | 1 | 완료 — engine /cubism sub-export로 전환 (Cubism 2 런타임 회피) |
 | 2026-05-06 | [09 phase1_registry_and_poc_refactor](2026-05-06_09_phase1_registry_and_poc_refactor.md) | 1 | 완료 — Registry, usePuppet 훅, 세 PoC 페이지 어댑터 사용 리팩터 |
 | 2026-05-06 | [10 cubism_id_handle_coerce](2026-05-06_10_cubism_id_handle_coerce.md) | 1 | 완료 — Cubism ID handle을 어댑터 경계에서 string 변환 |
+| 2026-05-06 | [11 cubism_scale_and_override_loop](2026-05-06_11_cubism_scale_and_override_loop.md) | 1 | 완료 — fit-to-canvas + 모션 무력화 RAF override loop |
 
 ## 운영 규칙
 

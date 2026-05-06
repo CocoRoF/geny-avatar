@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { AdapterLoadInput } from "@/lib/adapters/AvatarAdapter";
+import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import type { LayerId } from "@/lib/avatar/types";
 import { usePuppet } from "@/lib/avatar/usePuppet";
 
@@ -11,6 +12,47 @@ const INPUT: AdapterLoadInput = {
 };
 
 type LayerVisible = { id: LayerId; visible: boolean };
+
+function fitLive2DModel(
+  // biome-ignore lint/suspicious/noExplicitAny: engine display object
+  display: any,
+  adapter: Live2DAdapter,
+  screen: { width: number; height: number },
+  occupy = 0.9,
+) {
+  // First reset our scale so we can read the model's natural Pixi-space size.
+  if (display.scale?.set) display.scale.set(1);
+
+  // Try the adapter's native-size accessor (Cubism canvas units), then fall
+  // back to the engine's reported width/height (already pixi-space).
+  const native = adapter.getNativeSize();
+  let baseH = 0;
+  let baseW = 0;
+  if (native) {
+    baseW = native.width;
+    baseH = native.height;
+  } else if (typeof display.width === "number" && typeof display.height === "number") {
+    baseW = display.width;
+    baseH = display.height;
+  }
+  if (baseH <= 0 || baseW <= 0) {
+    // last-resort: a value that's at least sane on a 1080p canvas
+    baseW = 800;
+    baseH = 1200;
+  }
+
+  const factor = Math.min((screen.width * occupy) / baseW, (screen.height * occupy) / baseH);
+  display.scale?.set?.(factor);
+
+  // anchor first; if not present, pivot via the natural bounds.
+  if (display.anchor?.set) {
+    display.anchor.set(0.5, 0.5);
+  } else if (display.pivot?.set) {
+    display.pivot.set(baseW / 2, baseH / 2);
+  }
+
+  display.position?.set?.(screen.width / 2, screen.height / 2);
+}
 
 export default function CubismPoCPage() {
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -22,16 +64,7 @@ export default function CubismPoCPage() {
     host,
     onMount: (avatar, adapter, app) => {
       const display = adapter.getDisplayObject();
-      if (display) {
-        // Live2DModel exposes anchor/position; cast loosely to avoid pulling
-        // engine types into the page.
-        // biome-ignore lint/suspicious/noExplicitAny: engine display object
-        const d = display as any;
-        d.anchor?.set?.(0.5, 0.5);
-        d.position?.set?.(app.screen.width / 2, app.screen.height / 2);
-        const scaleByH = (app.screen.height * 0.9) / 1500;
-        d.scale?.set?.(scaleByH);
-      }
+      if (display) fitLive2DModel(display, adapter as Live2DAdapter, app.screen);
       setLayerVisible(avatar.layers.map((l) => ({ id: l.id, visible: l.defaults.visible })));
       const idle = avatar.animations.find((a) => a.name === "Idle") ?? avatar.animations[0];
       if (idle) adapter.playAnimation(idle.name);

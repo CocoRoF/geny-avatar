@@ -37,6 +37,12 @@ export class Live2DAdapter implements AvatarAdapter {
   private coreModel: any = null;
   private layerByPartIndex = new Map<number, Layer>();
 
+  /** part-index → forced opacity. The adapter re-applies these every frame
+   *  so they survive motion updates (motions write part opacity through
+   *  parameter graphs and would otherwise overwrite our overrides). */
+  private partOpacityOverrides = new Map<number, number>();
+  private rafHandle: number | null = null;
+
   static detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null {
     const lower = filenames.map((f) => f.toLowerCase());
     if (lower.some((f) => f.endsWith(".model3.json"))) {
@@ -161,24 +167,41 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
-    if (!this.coreModel?.setPartOpacity) return;
-    for (const [index, layer] of this.layerByPartIndex.entries()) {
-      if (layer.id === layerId) {
-        this.coreModel.setPartOpacity(index, visible ? 1 : 0);
-        return;
-      }
-    }
+    const idx = this.findPartIndex(layerId);
+    if (idx == null) return;
+    this.partOpacityOverrides.set(idx, visible ? 1 : 0);
+    this.ensureOverrideLoop();
   }
 
   setLayerColor(layerId: LayerId, color: RGBA): void {
     // Part-level honors only alpha (capability: opacity-only).
-    if (!this.coreModel?.setPartOpacity) return;
-    for (const [index, layer] of this.layerByPartIndex.entries()) {
-      if (layer.id === layerId) {
-        this.coreModel.setPartOpacity(index, color.a);
-        return;
+    const idx = this.findPartIndex(layerId);
+    if (idx == null) return;
+    this.partOpacityOverrides.set(idx, color.a);
+    this.ensureOverrideLoop();
+  }
+
+  /**
+   * Bounding box of the model in its own world units. Useful for caller-side
+   * fit-to-canvas math; the engine's Pixi-level width/height varies between
+   * builds, so we stick to native Cubism units.
+   */
+  getNativeSize(): { width: number; height: number } | null {
+    const internal = this.model?.internalModel;
+    const size = internal?.layout ?? internal?.canvasInfo;
+    if (!size) {
+      // fall back to display object dims if exposed (pixi-live2d-display compat)
+      // biome-ignore lint/suspicious/noExplicitAny: engine display surface
+      const m = this.model as any;
+      if (typeof m?.width === "number" && typeof m?.height === "number") {
+        return { width: m.width, height: m.height };
       }
+      return null;
     }
+    return {
+      width: size.width ?? size.canvasWidth ?? 1,
+      height: size.height ?? size.canvasHeight ?? 1,
+    };
   }
 
   playAnimation(name: string): void {
@@ -214,6 +237,11 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   destroy(): void {
+    if (this.rafHandle != null) {
+      cancelAnimationFrame(this.rafHandle);
+      this.rafHandle = null;
+    }
+    this.partOpacityOverrides.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
@@ -221,6 +249,35 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   // ----- helpers -----
+
+  private findPartIndex(layerId: LayerId): number | null {
+    for (const [index, layer] of this.layerByPartIndex.entries()) {
+      if (layer.id === layerId) return index;
+    }
+    return null;
+  }
+
+  /**
+   * Start a RAF loop that re-applies our part-opacity overrides every frame.
+   * Cubism motions write to part opacity through their parameter graph, so
+   * a one-shot setPartOpacity gets clobbered on the next motion update.
+   *
+   * Pixi's ticker also runs on RAF, so applying after the tick keeps our
+   * override visible when the next frame renders.
+   */
+  private ensureOverrideLoop(): void {
+    if (this.rafHandle != null) return;
+    const tick = () => {
+      const cm = this.coreModel;
+      if (cm?.setPartOpacity) {
+        for (const [index, value] of this.partOpacityOverrides) {
+          cm.setPartOpacity(index, value);
+        }
+      }
+      this.rafHandle = requestAnimationFrame(tick);
+    };
+    this.rafHandle = requestAnimationFrame(tick);
+  }
 
   private async waitForCubismCore(timeoutMs = 5000): Promise<void> {
     const start = performance.now();
