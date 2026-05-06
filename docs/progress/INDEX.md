@@ -49,6 +49,7 @@
 | 2026-05-06 | [33 sprint_2_3_decompose_studio_v1](2026-05-06_33_sprint_2_3_decompose_studio_v1.md) | 2.3 | 완료 — DecomposeStudio 모달 (alpha threshold + 브러시 paint/erase + save→PNG blob) |
 | 2026-05-06 | [34 sprint_2_4_clipped_studio_live_masks](2026-05-06_34_sprint_2_4_clipped_studio_live_masks.md) | 2.4 | 완료 — 삼각형 clip으로 footprint만 표시 + 마스크 라이브 렌더 적용 (GPU 재업로드) |
 | 2026-05-07 | [35 sprint_2_5_cubism_part_dedup](2026-05-07_35_sprint_2_5_cubism_part_dedup.md) | 2.5 | 완료 — Cubism part 중복 해소 (direct/descendant 분리 + container hide + cdi3 display names) |
+| 2026-05-07 | [36 sprint_2_6_clip_mask_filter](2026-05-07_36_sprint_2_6_clip_mask_filter.md) | 2.6 | 완료 — pure-clip part 필터 (getDrawableMasks reverse lookup) + multi-page 진단 |
 
 ## 운영 규칙
 

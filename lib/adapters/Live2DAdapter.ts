@@ -75,6 +75,14 @@ export class Live2DAdapter implements AvatarAdapter {
    * the way Cubism semantics expect.
    */
   private partToDescendantDrawables = new Map<number, number[]>();
+  /**
+   * Drawables that are referenced as a clipping mask by ≥1 other drawable.
+   * Built once at load via the reverse lookup of `getDrawableMasks()`.
+   * Used to filter "pure-clip" parts whose drawables exist only to shape
+   * other layers — they have UVs in the atlas but nothing visible in the
+   * final render, so they're noise in the layers panel.
+   */
+  private maskDrawables = new Set<number>();
   /** original internalModel.update bound to the model — kept so destroy()
    *  can restore it. */
   private originalInternalUpdate: ((...args: unknown[]) => unknown) | null = null;
@@ -220,6 +228,26 @@ export class Live2DAdapter implements AvatarAdapter {
         }
       }
 
+      // Build the "drawable is used as a clipping mask" set. Cubism's
+      // mask relation is forward — each drawable has a list of mask
+      // drawables (`getDrawableMasks()[d]`). Reversing it gives us the
+      // set of drawables that *exist as masks* for ≥1 other drawable.
+      // Parts whose direct drawables are entirely in this set are
+      // pure-clip parts and get filtered from `Avatar.layers` below.
+      const drawableMaskLists = coreModel.getDrawableMasks?.() as Int32Array[] | undefined;
+      if (Array.isArray(drawableMaskLists)) {
+        for (let d = 0; d < drawableMaskLists.length; d++) {
+          const list = drawableMaskLists[d];
+          if (!list) continue;
+          for (let i = 0; i < list.length; i++) {
+            const maskIdx = list[i];
+            if (typeof maskIdx === "number" && maskIdx >= 0) {
+              this.maskDrawables.add(maskIdx);
+            }
+          }
+        }
+      }
+
       const paramCount: number = coreModel.getParameterCount?.() ?? 0;
       for (let i = 0; i < paramCount; i++) {
         const id = coerceCubismId(coreModel.getParameterId?.(i), `param_${i}`);
@@ -330,20 +358,50 @@ export class Live2DAdapter implements AvatarAdapter {
       motions: motionGroups,
     };
 
-    // Pre-2.5: every Cubism part appeared in the layers list, including
-    // pure container parts (no own drawables) whose UV bbox covered all
-    // descendants. Now we expose only parts with at least one *direct*
-    // drawable — they're the ones that map to a real atlas footprint
-    // and can host a thumbnail / DecomposeStudio mask. Container parts
-    // remain in `layerByPartIndex` so visibility cascading still works
-    // for any code path that targets them by id.
+    // Filter the panel-visible layer list down to parts that own real
+    // visible content. Two structural exclusions, both decided from
+    // Cubism's own data — no heuristic:
+    //   1. Pure container parts (zero direct drawables). They group
+    //      children, they have no atlas footprint of their own, and
+    //      our deeper code paths (thumbnail / DecomposeStudio) have
+    //      nothing to render for them. Remain in `layerByPartIndex`
+    //      so id-keyed visibility still reaches them if needed.
+    //   2. Pure-clip parts: every direct drawable is referenced as a
+    //      clipping mask by some other drawable. These exist to define
+    //      clip shapes — Cubism may render them but the artist intent
+    //      is "I'm a stencil for someone else", and we surface them as
+    //      ghosts in DecomposeStudio. Filter them out.
+    let hiddenContainerCount = 0;
+    let hiddenClipCount = 0;
+    let multiPagePartCount = 0;
     const exposedLayers = layers.filter((_, partIdx) => {
-      return (this.partToDirectDrawables.get(partIdx)?.length ?? 0) > 0;
+      const direct = this.partToDirectDrawables.get(partIdx);
+      if (!direct || direct.length === 0) {
+        hiddenContainerCount++;
+        return false;
+      }
+      const allMasks = direct.every((d) => this.maskDrawables.has(d));
+      if (allMasks) {
+        hiddenClipCount++;
+        return false;
+      }
+      // Diagnostic: parts whose direct drawables span >1 atlas page get
+      // partial coverage in DecomposeStudio (we crop the dominant page
+      // only). Logged for debugging; not filtered — partial is better
+      // than nothing, and authors rarely produce these.
+      if (coreModel) {
+        const pages = new Set<number>();
+        for (const d of direct) {
+          const p: number | undefined = coreModel.getDrawableTextureIndex?.(d);
+          if (typeof p === "number" && p >= 0) pages.add(p);
+        }
+        if (pages.size > 1) multiPagePartCount++;
+      }
+      return true;
     });
-    const hiddenContainerCount = layers.length - exposedLayers.length;
-    if (hiddenContainerCount > 0) {
+    if (hiddenContainerCount > 0 || hiddenClipCount > 0 || multiPagePartCount > 0) {
       console.info(
-        `[Live2DAdapter] hid ${hiddenContainerCount}/${layers.length} pure container parts from the layers list`,
+        `[Live2DAdapter] hidden ${hiddenContainerCount} containers + ${hiddenClipCount} clip-only parts of ${layers.length}; ${multiPagePartCount} parts span multi-page (dominant page only)`,
       );
     }
 
@@ -568,6 +626,7 @@ export class Live2DAdapter implements AvatarAdapter {
     this.partOpacityOverrides.clear();
     this.partToDirectDrawables.clear();
     this.partToDescendantDrawables.clear();
+    this.maskDrawables.clear();
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
     this.pageIndexByTextureId.clear();
