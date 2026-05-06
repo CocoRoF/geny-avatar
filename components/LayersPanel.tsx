@@ -1,10 +1,15 @@
 "use client";
 
 import { useMemo } from "react";
-import type { LayerId } from "@/lib/avatar/types";
+import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import type { Layer, LayerId } from "@/lib/avatar/types";
+import { useLayerThumbnail } from "@/lib/avatar/useLayerThumbnail";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
 
 type Props = {
+  /** Adapter held by the parent page. Used to read texture page bitmaps
+   *  for layer thumbnails. */
+  adapter: AvatarAdapter | null;
   /** Called when the user clicks a layer row. Caller is responsible for
    *  updating the store and the adapter together. */
   onToggleLayer: (id: LayerId, nextVisible: boolean) => void;
@@ -18,7 +23,7 @@ type Props = {
  * map from the store; reports clicks back through the parent so the page
  * can mirror the change to the adapter.
  */
-export function LayersPanel({ onToggleLayer, onBulkSet }: Props) {
+export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
   const layers = useEditorStore(selectLayers);
   const visibility = useEditorStore((s) => s.visibilityOverrides);
   const filter = useEditorStore((s) => s.layerFilter);
@@ -66,26 +71,17 @@ export function LayersPanel({ onToggleLayer, onBulkSet }: Props) {
       </div>
 
       <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        {filtered.map((l, i) => {
-          const visible = visibility[l.id] ?? l.defaults.visible;
+        {filtered.map((layer, i) => {
+          const visible = visibility[layer.id] ?? layer.defaults.visible;
           return (
-            <li key={l.id}>
-              <button
-                type="button"
-                onClick={() => onToggleLayer(l.id, !visible)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
-              >
-                <span
-                  className={`h-2 w-2 shrink-0 rounded-full ${
-                    visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
-                  }`}
-                />
-                <span className="font-mono text-xs text-[var(--color-fg-dim)]">
-                  {String(i).padStart(2, "0")}
-                </span>
-                <span className="truncate">{l.name}</span>
-              </button>
-            </li>
+            <LayerRow
+              key={layer.id}
+              adapter={adapter}
+              layer={layer}
+              index={i}
+              visible={visible}
+              onToggle={() => onToggleLayer(layer.id, !visible)}
+            />
           );
         })}
         {filtered.length === 0 && layers.length > 0 && (
@@ -96,5 +92,46 @@ export function LayersPanel({ onToggleLayer, onBulkSet }: Props) {
         )}
       </ul>
     </div>
+  );
+}
+
+type LayerRowProps = {
+  adapter: AvatarAdapter | null;
+  layer: Layer;
+  index: number;
+  visible: boolean;
+  onToggle: () => void;
+};
+
+function LayerRow({ adapter, layer, index, visible, onToggle }: LayerRowProps) {
+  const thumbUrl = useLayerThumbnail(adapter, layer);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
+      >
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${
+            visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
+          }`}
+        />
+        {thumbUrl ? (
+          // biome-ignore lint/performance/noImgElement: blob URLs aren't compatible with next/image optimization
+          <img
+            src={thumbUrl}
+            alt=""
+            className="h-7 w-7 shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] object-contain"
+          />
+        ) : (
+          <span className="h-7 w-7 shrink-0 rounded border border-dashed border-[var(--color-border)] bg-[var(--color-bg)]" />
+        )}
+        <span className="font-mono text-xs text-[var(--color-fg-dim)]">
+          {String(index).padStart(2, "0")}
+        </span>
+        <span className="truncate">{layer.name}</span>
+      </button>
+    </li>
   );
 }

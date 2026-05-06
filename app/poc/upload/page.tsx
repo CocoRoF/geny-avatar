@@ -212,7 +212,11 @@ export default function UploadPocPage() {
 
       <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
-        <LayersPanel onToggleLayer={toggleLayer} onBulkSet={bulkSetLayerVisibility} />
+        <LayersPanel
+          adapter={adapter}
+          onToggleLayer={toggleLayer}
+          onBulkSet={bulkSetLayerVisibility}
+        />
       </aside>
     </main>
   );

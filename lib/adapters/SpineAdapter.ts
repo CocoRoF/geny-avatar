@@ -1,12 +1,22 @@
 import { Spine } from "@esotericsoftware/spine-pixi-v8";
 import { Assets, type Container } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
-import type { Avatar, AvatarSource, Layer, LayerId, RGBA } from "../avatar/types";
+import type {
+  Avatar,
+  AvatarSource,
+  Texture as DomainTexture,
+  Layer,
+  LayerId,
+  RGBA,
+  TextureId,
+  TextureSlice,
+} from "../avatar/types";
 import type {
   AdapterCapabilities,
   AdapterLoadInput,
   AvatarAdapter,
   FormatDetectionResult,
+  TextureSourceInfo,
 } from "./AvatarAdapter";
 
 const CAPABILITIES: AdapterCapabilities = {
@@ -31,6 +41,7 @@ export class SpineAdapter implements AvatarAdapter {
   private spine: Spine | null = null;
   private layerByExternalId = new Map<string, Layer>();
   private slotIndexByExternalId = new Map<string, number>();
+  private textureSourcesById = new Map<TextureId, TextureSourceInfo>();
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -62,11 +73,35 @@ export class SpineAdapter implements AvatarAdapter {
     const spine = Spine.from({ skeleton: skelAlias, atlas: atlasAlias });
     this.spine = spine;
 
+    // Walk the parsed atlas pages once to build the texture catalog. The
+    // atlas object lives in Pixi Assets cache after load; SpineTexture
+    // wraps a Pixi Texture which we extract for the source bitmap.
+    const atlas = Assets.get(atlasAlias) as SpineAtlasLike | undefined;
+    const textures: DomainTexture[] = [];
+    const textureIdByPageName = new Map<string, TextureId>();
+    if (atlas?.pages) {
+      atlas.pages.forEach((page, idx) => {
+        const info = pageToSourceInfo(page);
+        if (!info) return;
+        const id = newId(ID_PREFIX.texture);
+        textureIdByPageName.set(page.name, id);
+        this.textureSourcesById.set(id, info);
+        textures.push({
+          id,
+          pageIndex: idx,
+          origin: "original",
+          pixelSize: { w: info.width, h: info.height },
+          data: { kind: "url", url: input.atlas },
+        });
+      });
+    }
+
     const layers: Layer[] = spine.skeleton.slots.map((slot, i) => {
       const id = newId(ID_PREFIX.layer);
       const externalId = slot.data.name;
       const attachment = slot.getAttachment();
       this.slotIndexByExternalId.set(externalId, i);
+      const slice = sliceFromAttachment(attachment, textureIdByPageName);
       const layer: Layer = {
         id,
         externalId,
@@ -74,6 +109,7 @@ export class SpineAdapter implements AvatarAdapter {
         // Attachment shape determines geometry. spine-pixi attachments expose
         // .type via instanceof at runtime; we keep this loose for now.
         geometry: attachment ? "region" : "other",
+        texture: slice ?? undefined,
         defaults: {
           visible: !!attachment,
           color: { r: 1, g: 1, b: 1, a: 1 },
@@ -106,12 +142,16 @@ export class SpineAdapter implements AvatarAdapter {
       layers,
       groups: [],
       variants: [],
-      textures: [],
+      textures,
       animations,
       parameters: [],
       metadata: { createdAt: now, updatedAt: now, schemaVersion: 1 },
     };
     return avatar;
+  }
+
+  getTextureSource(textureId: TextureId): TextureSourceInfo | null {
+    return this.textureSourcesById.get(textureId) ?? null;
   }
 
   getDisplayObject(): Container | null {
@@ -167,6 +207,7 @@ export class SpineAdapter implements AvatarAdapter {
     this.spine = null;
     this.layerByExternalId.clear();
     this.slotIndexByExternalId.clear();
+    this.textureSourcesById.clear();
   }
 
   // ----- helpers -----
@@ -182,4 +223,81 @@ export class SpineAdapter implements AvatarAdapter {
     const file = url.split("/").pop() ?? url;
     return file.replace(/\.(skel|json)$/, "");
   }
+}
+
+// ----- duck-typed atlas helpers -----
+
+/**
+ * Subset of `TextureAtlas` (from `@esotericsoftware/spine-core`) that we
+ * touch. Inlined to avoid pulling spine-core into this file's import
+ * surface — spine-pixi-v8 already loads it transitively.
+ */
+type SpineAtlasLike = {
+  pages: SpineAtlasPageLike[];
+  regions: SpineAtlasRegionLike[];
+};
+
+type SpineAtlasPageLike = {
+  name: string;
+  width: number;
+  height: number;
+  /** SpineTexture at runtime — `.texture` is a Pixi `Texture`. */
+  texture: { texture: { source?: { resource?: unknown; width?: number; height?: number } } } | null;
+};
+
+type SpineAtlasRegionLike = {
+  name: string;
+  page: SpineAtlasPageLike;
+  /** top-left in atlas pixels, even when `degrees != 0` */
+  x: number;
+  y: number;
+  /** on-page (post-rotation) dimensions */
+  width: number;
+  height: number;
+  /** pre-rotation dimensions; used when we want to display upright */
+  originalWidth: number;
+  originalHeight: number;
+  /** 0 or 90 in v4 atlases */
+  degrees: number;
+};
+
+function pageToSourceInfo(page: SpineAtlasPageLike): TextureSourceInfo | null {
+  const pixiSource = page.texture?.texture?.source;
+  const resource = pixiSource?.resource;
+  if (!isCanvasImageSource(resource)) return null;
+  const width = pixiSource?.width ?? page.width;
+  const height = pixiSource?.height ?? page.height;
+  return { image: resource, width, height };
+}
+
+function isCanvasImageSource(v: unknown): v is CanvasImageSource {
+  if (!v) return false;
+  if (typeof HTMLImageElement !== "undefined" && v instanceof HTMLImageElement) return true;
+  if (typeof ImageBitmap !== "undefined" && v instanceof ImageBitmap) return true;
+  if (typeof HTMLCanvasElement !== "undefined" && v instanceof HTMLCanvasElement) return true;
+  if (typeof OffscreenCanvas !== "undefined" && v instanceof OffscreenCanvas) return true;
+  return false;
+}
+
+/**
+ * Pull the atlas region off an attachment (Region or Mesh) and translate
+ * it into our domain `TextureSlice`. We use post-rotation `width/height`
+ * for the atlas rect (matches the actual pixels on the page) and flip
+ * `rotated: true` when the region is stored sideways so renderers can
+ * un-rotate when displaying upright.
+ */
+function sliceFromAttachment(
+  attachment: unknown,
+  textureIdByPageName: Map<string, TextureId>,
+): TextureSlice | null {
+  const a = attachment as { region?: SpineAtlasRegionLike } | null;
+  const region = a?.region;
+  if (!region?.page) return null;
+  const textureId = textureIdByPageName.get(region.page.name);
+  if (!textureId) return null;
+  return {
+    textureId,
+    rect: { x: region.x, y: region.y, w: region.width, h: region.height },
+    rotated: region.degrees !== 0,
+  };
 }

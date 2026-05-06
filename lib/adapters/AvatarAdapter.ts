@@ -11,7 +11,25 @@
  */
 
 import type { Container } from "pixi.js";
-import type { Avatar, AvatarSourceRuntime, LayerId, Parameter, RGBA } from "../avatar/types";
+import type {
+  Avatar,
+  AvatarSourceRuntime,
+  LayerId,
+  Parameter,
+  RGBA,
+  TextureId,
+} from "../avatar/types";
+
+/**
+ * Drawable image + dimensions for a texture page. Used by the layer
+ * thumbnail pipeline to crop region rects out of the atlas. The image
+ * is anything that can be passed to `CanvasRenderingContext2D.drawImage`.
+ */
+export type TextureSourceInfo = {
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+};
 
 // ----- capability flags -----
 
@@ -90,6 +108,14 @@ export interface AvatarAdapter {
 
   /** read parameters — empty for runtimes without a parameter graph */
   getParameters(): Parameter[];
+
+  /**
+   * Bitmap source for a texture page referenced by `Avatar.textures`. The
+   * layers panel uses this to crop region thumbnails. Returns null if the
+   * adapter doesn't know about that id (e.g. Cubism build that hasn't
+   * wired UV bbox extraction yet).
+   */
+  getTextureSource(textureId: TextureId): TextureSourceInfo | null;
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;

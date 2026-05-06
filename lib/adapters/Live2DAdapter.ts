@@ -1,11 +1,20 @@
 import { Assets, type Container } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
-import type { Avatar, AvatarSource, Layer, LayerId, Parameter, RGBA } from "../avatar/types";
+import type {
+  Avatar,
+  AvatarSource,
+  Layer,
+  LayerId,
+  Parameter,
+  RGBA,
+  TextureId,
+} from "../avatar/types";
 import type {
   AdapterCapabilities,
   AdapterLoadInput,
   AvatarAdapter,
   FormatDetectionResult,
+  TextureSourceInfo,
 } from "./AvatarAdapter";
 
 const CAPABILITIES: AdapterCapabilities = {
@@ -355,6 +364,13 @@ export class Live2DAdapter implements AvatarAdapter {
 
   setParameter(paramId: string, value: number): void {
     this.coreModel?.setParameterValueById?.(paramId, value);
+  }
+
+  getTextureSource(_textureId: TextureId): TextureSourceInfo | null {
+    // Cubism drawable UV-bbox extraction lands in sprint 2.2 — until then
+    // Live2D layers don't have texture slices and the layers panel falls
+    // back to "no thumb".
+    return null;
   }
 
   getParameters(): Parameter[] {
