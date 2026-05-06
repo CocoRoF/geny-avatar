@@ -37,10 +37,19 @@ export class Live2DAdapter implements AvatarAdapter {
   private coreModel: any = null;
   private layerByPartIndex = new Map<number, Layer>();
 
-  /** part-index → forced opacity. The adapter re-applies these every frame
-   *  so they survive motion updates (motions write part opacity through
-   *  parameter graphs and would otherwise overwrite our overrides). */
+  /** part-index → forced opacity multiplier (0 = hide, 1 = show).
+   *
+   *  We can't rely on coreModel.setPartOpacity — motions write the part
+   *  opacity through the parameter graph and overwrite our value on every
+   *  model.update(). Instead we keep the multiplier here and apply it as
+   *  a *post-update* mutation on the drawable opacities Float32Array, which
+   *  motions don't touch directly.
+   */
   private partOpacityOverrides = new Map<number, number>();
+  /** part-index → list of drawable indices that should follow that part's
+   *  override. Includes drawables under descendant parts (Cubism parts can
+   *  nest), built once at load(). */
+  private partToDrawables = new Map<number, number[]>();
   private rafHandle: number | null = null;
 
   static detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null {
@@ -97,6 +106,37 @@ export class Live2DAdapter implements AvatarAdapter {
         };
         layers.push(layer);
         this.layerByPartIndex.set(i, layer);
+      }
+
+      // Build part → drawable mapping including descendants. Cubism parts
+      // can nest, so a drawable under part X is also under any ancestor of
+      // X. We walk every drawable's direct parent and propagate up the
+      // ancestor chain so a hide-X override hides every drawable in X's
+      // subtree.
+      const ancestorChains: number[][] = [];
+      for (let i = 0; i < partCount; i++) {
+        const chain: number[] = [i];
+        let p: number = coreModel.getPartParentPartIndex?.(i) ?? -1;
+        // guard against cycles or absurd depth; Cubism trees are tiny
+        for (let depth = 0; p >= 0 && depth < 64; depth++) {
+          chain.push(p);
+          p = coreModel.getPartParentPartIndex?.(p) ?? -1;
+        }
+        ancestorChains.push(chain);
+      }
+      const drawableCount: number = coreModel.getDrawableCount?.() ?? 0;
+      for (let d = 0; d < drawableCount; d++) {
+        const directPart: number = coreModel.getDrawableParentPartIndex?.(d) ?? -1;
+        if (directPart < 0) continue;
+        const chain = ancestorChains[directPart] ?? [directPart];
+        for (const partIdx of chain) {
+          let arr = this.partToDrawables.get(partIdx);
+          if (!arr) {
+            arr = [];
+            this.partToDrawables.set(partIdx, arr);
+          }
+          arr.push(d);
+        }
       }
 
       const paramCount: number = coreModel.getParameterCount?.() ?? 0;
@@ -169,16 +209,25 @@ export class Live2DAdapter implements AvatarAdapter {
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
     const idx = this.findPartIndex(layerId);
     if (idx == null) return;
-    this.partOpacityOverrides.set(idx, visible ? 1 : 0);
-    this.ensureOverrideLoop();
+    if (visible) {
+      // returning to default — no override needed; let the loop drain.
+      this.partOpacityOverrides.delete(idx);
+    } else {
+      this.partOpacityOverrides.set(idx, 0);
+      this.ensureOverrideLoop();
+    }
   }
 
   setLayerColor(layerId: LayerId, color: RGBA): void {
     // Part-level honors only alpha (capability: opacity-only).
     const idx = this.findPartIndex(layerId);
     if (idx == null) return;
-    this.partOpacityOverrides.set(idx, color.a);
-    this.ensureOverrideLoop();
+    if (color.a >= 1) {
+      this.partOpacityOverrides.delete(idx);
+    } else {
+      this.partOpacityOverrides.set(idx, color.a);
+      this.ensureOverrideLoop();
+    }
   }
 
   /**
@@ -242,6 +291,7 @@ export class Live2DAdapter implements AvatarAdapter {
       this.rafHandle = null;
     }
     this.partOpacityOverrides.clear();
+    this.partToDrawables.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
@@ -258,18 +308,43 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   /**
-   * Start a RAF loop that re-applies our part-opacity overrides every frame.
-   * Cubism motions write to part opacity through their parameter graph, so
-   * a one-shot setPartOpacity gets clobbered on the next motion update.
+   * Start a RAF loop that re-applies our overrides on the *drawable* opacity
+   * Float32Array. Why drawable, not part:
    *
-   * Pixi's ticker also runs on RAF, so applying after the tick keeps our
-   * override visible when the next frame renders.
+   *   coreModel.setPartOpacity writes to the part-opacities array, which the
+   *   next model.update() recomputes from parameters → motions overwrite our
+   *   value every frame. Drawable opacities, by contrast, are computed at
+   *   the very end of update() (parameters → parts → drawables) and aren't
+   *   read again until render. Mutating that array post-update lets the
+   *   render see our value without touching the parameter graph at all.
+   *
+   * Pixi's ticker registers its RAF first; we register ours later, so our
+   * callback runs after model.update() has already filled drawable
+   * opacities for the current frame.
+   *
+   * The loop self-stops when partOpacityOverrides empties, so toggling all
+   * layers back to visible has zero ongoing cost.
    */
   private ensureOverrideLoop(): void {
     if (this.rafHandle != null) return;
     const tick = () => {
+      if (this.partOpacityOverrides.size === 0) {
+        this.rafHandle = null;
+        return;
+      }
       const cm = this.coreModel;
-      if (cm?.setPartOpacity) {
+      const opacities: Float32Array | undefined = cm?.getDrawableOpacities?.();
+      if (opacities) {
+        for (const [partIdx, multiplier] of this.partOpacityOverrides) {
+          if (multiplier === 1) continue; // identity, no-op
+          const drawables = this.partToDrawables.get(partIdx);
+          if (!drawables) continue;
+          for (const d of drawables) {
+            opacities[d] *= multiplier;
+          }
+        }
+      } else if (cm?.setPartOpacity) {
+        // engine build doesn't expose the opacity buffer — best-effort fallback
         for (const [index, value] of this.partOpacityOverrides) {
           cm.setPartOpacity(index, value);
         }
