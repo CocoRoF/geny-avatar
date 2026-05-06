@@ -1,7 +1,7 @@
 "use client";
 
-import type { TextureSourceInfo } from "../adapters/AvatarAdapter";
-import type { Rect } from "./types";
+import type { AvatarAdapter, TextureSourceInfo } from "../adapters/AvatarAdapter";
+import type { Layer, Rect } from "./types";
 
 /**
  * Crop a region out of an atlas page bitmap into its own canvas, at
@@ -50,4 +50,84 @@ export function extractRegionCanvas(
   }
 
   return out;
+}
+
+/**
+ * Build a `Path2D` describing the layer's actual atlas footprint, in
+ * the local coord space of the upright `extractRegionCanvas` output.
+ * Used by DecomposeStudio to clip both the source preview and the
+ * brush — so the user only sees / paints pixels that belong to the
+ * layer (instead of bbox neighbors).
+ *
+ * Returns `null` when the adapter doesn't expose triangles for this
+ * layer (e.g. an attachment we don't recognize).
+ */
+export function buildLayerClipPath(
+  adapter: AvatarAdapter,
+  layer: Layer,
+  source: TextureSourceInfo,
+): Path2D | null {
+  if (!layer.texture) return null;
+  const triangles = adapter.getLayerTriangles(layer.id);
+  if (!triangles || triangles.uvs.length < 6) return null;
+  if (triangles.textureId !== layer.texture.textureId) return null;
+
+  const pageW = source.width;
+  const pageH = source.height;
+  const r = layer.texture.rect;
+  const rotated = layer.texture.rotated ?? false;
+
+  const path = new Path2D();
+  const uvs = triangles.uvs;
+  for (let i = 0; i + 5 < uvs.length; i += 6) {
+    for (let v = 0; v < 3; v++) {
+      const u = uvs[i + v * 2];
+      const vv = uvs[i + v * 2 + 1];
+      const px = u * pageW;
+      const py = vv * pageH;
+      // Map atlas-page pixel → upright canvas-local pixel. See the math
+      // worked out in extractRegionCanvas (we invert its draw transform).
+      const lx = rotated ? py - r.y : px - r.x;
+      const ly = rotated ? r.x + r.w - px : py - r.y;
+      if (v === 0) path.moveTo(lx, ly);
+      else path.lineTo(lx, ly);
+    }
+    path.closePath();
+  }
+  return path;
+}
+
+/**
+ * Extract a layer's footprint as an upright canvas, with non-layer
+ * pixels (atlas neighbors that fall inside the bbox) clipped out.
+ * Falls back to the rectangular bbox crop when the adapter can't
+ * report triangles for the layer.
+ */
+export function extractLayerCanvas(
+  adapter: AvatarAdapter,
+  layer: Layer,
+): { canvas: HTMLCanvasElement; clip: Path2D | null } | null {
+  if (!layer.texture) return null;
+  const source = adapter.getTextureSource(layer.texture.textureId);
+  if (!source) return null;
+  const bboxCanvas = extractRegionCanvas(
+    source,
+    layer.texture.rect,
+    layer.texture.rotated ?? false,
+  );
+  if (!bboxCanvas) return null;
+
+  const clip = buildLayerClipPath(adapter, layer, source);
+  if (!clip) return { canvas: bboxCanvas, clip: null };
+
+  const out = document.createElement("canvas");
+  out.width = bboxCanvas.width;
+  out.height = bboxCanvas.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return { canvas: bboxCanvas, clip };
+  ctx.save();
+  ctx.clip(clip);
+  ctx.drawImage(bboxCanvas, 0, 0);
+  ctx.restore();
+  return { canvas: out, clip };
 }

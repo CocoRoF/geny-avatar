@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AvatarAdapter, TextureSourceInfo } from "../adapters/AvatarAdapter";
+import type { AvatarAdapter } from "../adapters/AvatarAdapter";
+import { extractLayerCanvas } from "./regionExtract";
 import type { Layer } from "./types";
 
 const THUMB_PX = 48;
@@ -29,17 +30,14 @@ export function useLayerThumbnail(adapter: AvatarAdapter | null, layer: Layer): 
       setUrl(null);
       return;
     }
-    const source = adapter.getTextureSource(slice.textureId);
-    if (!source) {
-      setUrl(null);
-      return;
-    }
 
     let cancelled = false;
     let created: string | null = null;
     void (async () => {
       try {
-        const blob = await cropAtlasRegion(source, slice.rect, slice.rotated ?? false);
+        const extracted = extractLayerCanvas(adapter, layer);
+        if (!extracted) return;
+        const blob = await downscaleToBlob(extracted.canvas);
         if (cancelled || !blob) return;
         created = URL.createObjectURL(blob);
         setUrl(created);
@@ -52,33 +50,22 @@ export function useLayerThumbnail(adapter: AvatarAdapter | null, layer: Layer): 
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [adapter, slice, layerName]);
+  }, [adapter, slice, layer, layerName]);
 
   return url;
 }
 
 /**
- * Crop a sub-rect from `source.image` into a square thumbnail. When the
- * region was packed 90 degrees clockwise into the atlas (`rotated`), the
- * canvas is rotated counter-clockwise so the thumbnail shows the layer
- * upright.
+ * Resample an upright (already triangle-clipped) layer canvas down to
+ * a square webp thumbnail. The hard work — atlas crop, rotation, clip —
+ * is done by `extractLayerCanvas` so this is a pure scale + encode.
  */
-async function cropAtlasRegion(
-  source: TextureSourceInfo,
-  rect: { x: number; y: number; w: number; h: number },
-  rotated: boolean,
-): Promise<Blob | null> {
-  if (rect.w <= 0 || rect.h <= 0) return null;
+async function downscaleToBlob(layerCanvas: HTMLCanvasElement): Promise<Blob | null> {
+  if (!layerCanvas.width || !layerCanvas.height) return null;
 
-  // Unrotated display dimensions: when the region is rotated 90deg on
-  // the page, the on-page width/height are swapped relative to the
-  // upright image we want to render.
-  const upW = rotated ? rect.h : rect.w;
-  const upH = rotated ? rect.w : rect.h;
-
-  const scale = Math.min(THUMB_PX / upW, THUMB_PX / upH, 1);
-  const drawW = Math.max(1, Math.round(upW * scale));
-  const drawH = Math.max(1, Math.round(upH * scale));
+  const scale = Math.min(THUMB_PX / layerCanvas.width, THUMB_PX / layerCanvas.height, 1);
+  const drawW = Math.max(1, Math.round(layerCanvas.width * scale));
+  const drawH = Math.max(1, Math.round(layerCanvas.height * scale));
   const dx = Math.round((THUMB_PX - drawW) / 2);
   const dy = Math.round((THUMB_PX - drawH) / 2);
 
@@ -87,28 +74,7 @@ async function cropAtlasRegion(
   out.height = THUMB_PX;
   const ctx = out.getContext("2d");
   if (!ctx) return null;
-
-  if (rotated) {
-    // Pixels at (rect.x, rect.y, rect.w, rect.h) are sideways. Rotating
-    // the canvas -90deg (CCW) before drawing makes them land upright.
-    ctx.save();
-    ctx.translate(dx + drawW / 2, dy + drawH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.drawImage(
-      source.image,
-      rect.x,
-      rect.y,
-      rect.w,
-      rect.h,
-      -drawH / 2,
-      -drawW / 2,
-      drawH,
-      drawW,
-    );
-    ctx.restore();
-  } else {
-    ctx.drawImage(source.image, rect.x, rect.y, rect.w, rect.h, dx, dy, drawW, drawH);
-  }
+  ctx.drawImage(layerCanvas, 0, 0, layerCanvas.width, layerCanvas.height, dx, dy, drawW, drawH);
 
   return await new Promise<Blob | null>((resolve) => {
     out.toBlob((b) => resolve(b), "image/webp", QUALITY);

@@ -1,4 +1,4 @@
-import { Assets, type Container } from "pixi.js";
+import { Assets, type Container, type Texture as PixiTexture } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
 import type {
   Avatar,
@@ -16,8 +16,10 @@ import type {
   AdapterLoadInput,
   AvatarAdapter,
   FormatDetectionResult,
+  LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
+import { applyLayerMasks } from "./applyMask";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "part",
@@ -71,6 +73,12 @@ export class Live2DAdapter implements AvatarAdapter {
   /** atlas page bitmaps keyed by the textureId we mint at load. Layer
    *  thumbnails crop these via `getTextureSource`. */
   private textureSourcesById = new Map<TextureId, TextureSourceInfo>();
+  /** Live Pixi Texture per page — `setLayerMasks` swaps `.source.resource`
+   *  to push masked pixels to the GPU. */
+  private pixiTextureById = new Map<TextureId, PixiTexture>();
+  /** Reverse of `textureIdByPageIndex` — used by `getLayerTriangles` to
+   *  filter drawables to those that live on the layer's dominant page. */
+  private pageIndexByTextureId = new Map<TextureId, number>();
 
   // diagnostic counters (one-shot logs to keep console quiet after first frame)
   private _hookFireCount = 0;
@@ -211,7 +219,13 @@ export class Live2DAdapter implements AvatarAdapter {
       if (!info) return;
       const id = newId(ID_PREFIX.texture);
       textureIdByPageIndex.set(idx, id);
+      this.pageIndexByTextureId.set(id, idx);
       this.textureSourcesById.set(id, info);
+      // Pixi Texture handle for live mutation. Some engine builds expose
+      // `tex.texture` (wrapper) — we duck-type to find the actual Pixi
+      // Texture (it has `.source.resource`).
+      const pixiTex = (isPixiTexture(tex) ? tex : null) as PixiTexture | null;
+      if (pixiTex) this.pixiTextureById.set(id, pixiTex);
       textures.push({
         id,
         pageIndex: idx,
@@ -417,6 +431,59 @@ export class Live2DAdapter implements AvatarAdapter {
     return this.textureSourcesById.get(textureId) ?? null;
   }
 
+  getLayerTriangles(layerId: LayerId): LayerTriangles | null {
+    const cm = this.coreModel;
+    if (!cm) return null;
+    const partIdx = this.findPartIndex(layerId);
+    if (partIdx == null) return null;
+    const layer = this.layerByPartIndex.get(partIdx);
+    if (!layer?.texture) return null;
+    const targetPageIdx = this.pageIndexByTextureId.get(layer.texture.textureId);
+    if (targetPageIdx == null) return null;
+    const drawables = this.partToDrawables.get(partIdx);
+    if (!drawables || drawables.length === 0) return null;
+
+    // Collect triangle UVs from drawables on the target page only. Cubism
+    // UV space has v=0 at the bottom; we flip to top-down so consumers
+    // match Spine + atlas-page-bitmap conventions.
+    const tris: number[] = [];
+    for (const d of drawables) {
+      const dPageIdx: number | undefined = cm.getDrawableTextureIndex?.(d);
+      if (dPageIdx !== targetPageIdx) continue;
+      const uvs = cm.getDrawableVertexUvs?.(d) as Float32Array | undefined;
+      const indices = cm.getDrawableVertexIndices?.(d) as Uint16Array | Uint32Array | undefined;
+      if (!uvs || !indices) continue;
+      for (let i = 0; i < indices.length; i++) {
+        const v = indices[i];
+        const u = uvs[v * 2];
+        const vv = uvs[v * 2 + 1];
+        if (typeof u !== "number" || typeof vv !== "number") continue;
+        tris.push(u, 1 - vv);
+      }
+    }
+    if (tris.length === 0) return null;
+    return {
+      textureId: layer.texture.textureId,
+      uvs: new Float32Array(tris),
+    };
+  }
+
+  async setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void> {
+    await applyLayerMasks(
+      masks,
+      (id) => this.findLayerByLayerId(id),
+      this.textureSourcesById,
+      this.pixiTextureById,
+    );
+  }
+
+  private findLayerByLayerId(layerId: LayerId): import("../avatar/types").Layer | null {
+    for (const layer of this.layerByPartIndex.values()) {
+      if (layer.id === layerId) return layer;
+    }
+    return null;
+  }
+
   getParameters(): Parameter[] {
     if (!this.coreModel) return [];
     const out: Parameter[] = [];
@@ -447,6 +514,8 @@ export class Live2DAdapter implements AvatarAdapter {
     this.partOpacityOverrides.clear();
     this.partToDrawables.clear();
     this.textureSourcesById.clear();
+    this.pixiTextureById.clear();
+    this.pageIndexByTextureId.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
@@ -629,6 +698,19 @@ function isCanvasImageSource(v: unknown): v is CanvasImageSource {
   if (typeof HTMLCanvasElement !== "undefined" && v instanceof HTMLCanvasElement) return true;
   if (typeof OffscreenCanvas !== "undefined" && v instanceof OffscreenCanvas) return true;
   return false;
+}
+
+/**
+ * Heuristic for "is this a live Pixi v8 Texture instance?". We can't
+ * `instanceof Texture` here without coupling this file to pixi, and the
+ * engine's `model.textures` array shape varies subtly across builds.
+ * Anything with a `source.resource` qualifies — that's all the swap
+ * code needs.
+ */
+function isPixiTexture(v: unknown): boolean {
+  // biome-ignore lint/suspicious/noExplicitAny: probing pixi shape
+  const t = v as any;
+  return !!t?.source && (t.source.resource !== undefined || typeof t.source.update === "function");
 }
 
 /**

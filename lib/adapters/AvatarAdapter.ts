@@ -31,6 +31,21 @@ export type TextureSourceInfo = {
   height: number;
 };
 
+/**
+ * Triangle soup describing a layer's atlas footprint. Each consecutive
+ * 6 floats are one triangle: `[u0, v0, u1, v1, u2, v2]`. UVs are in
+ * `[0, 1]` of the page identified by `textureId`, with **(0, 0) at
+ * top-left** — adapters flip Cubism's bottom-origin v before exposing.
+ *
+ * DecomposeStudio uses this to clip rendering and brush input to only
+ * the pixels that actually belong to the layer (instead of the bbox
+ * rect that covers atlas neighbors too).
+ */
+export type LayerTriangles = {
+  textureId: import("../avatar/types").TextureId;
+  uvs: Float32Array;
+};
+
 // ----- capability flags -----
 
 export type Tinting = "rgba" | "multiply-rgb" | "opacity-only";
@@ -116,6 +131,26 @@ export interface AvatarAdapter {
    * wired UV bbox extraction yet).
    */
   getTextureSource(textureId: TextureId): TextureSourceInfo | null;
+
+  /**
+   * Triangles that make up the layer's actual footprint on the atlas.
+   * Used by DecomposeStudio to clip rendering and brush input so the user
+   * only sees / paints the layer's own pixels (not atlas neighbors that
+   * happen to fall inside the bbox rect).
+   */
+  getLayerTriangles(layerId: LayerId): LayerTriangles | null;
+
+  /**
+   * Push refined per-layer masks into the live runtime. Each blob is a
+   * PNG sized to the layer's `texture.rect` (un-rotated), with alpha
+   * encoding "how much to hide" (0 = keep, 255 = hide). The adapter
+   * composites masks into the relevant texture pages with `destination-out`
+   * and re-uploads to GPU so the rendered puppet matches what the user
+   * baked in DecomposeStudio.
+   *
+   * Passing `{}` restores the original atlas (unmasked).
+   */
+  setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void>;
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;

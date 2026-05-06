@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
-import { extractRegionCanvas } from "@/lib/avatar/regionExtract";
+import { extractLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { useEditorStore } from "@/lib/store/editor";
 
@@ -32,6 +32,10 @@ export function DecomposeStudio({ adapter, layer }: Props) {
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
+  /** Path describing the layer's true footprint inside the bbox crop.
+   *  When present, the brush is clipped to it so paint outside doesn't
+   *  reach atlas neighbors that aren't part of this layer. */
+  const clipPathRef = useRef<Path2D | null>(null);
   const paintingRef = useRef(false);
 
   const [ready, setReady] = useState(false);
@@ -50,26 +54,18 @@ export function DecomposeStudio({ adapter, layer }: Props) {
       setError("layer has no texture region");
       return;
     }
-    const src = adapter.getTextureSource(layer.texture.textureId);
-    if (!src) {
-      setError("texture page bitmap not available on this adapter");
-      return;
-    }
-    const sourceCanvas = extractRegionCanvas(
-      src,
-      layer.texture.rect,
-      layer.texture.rotated ?? false,
-    );
-    if (!sourceCanvas) {
+    const extracted = extractLayerCanvas(adapter, layer);
+    if (!extracted) {
       setError("region rect is empty / unrenderable");
       return;
     }
-    sourceCanvasRef.current = sourceCanvas;
+    sourceCanvasRef.current = extracted.canvas;
+    clipPathRef.current = extracted.clip;
 
     // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked
     const mask = document.createElement("canvas");
-    mask.width = sourceCanvas.width;
-    mask.height = sourceCanvas.height;
+    mask.width = extracted.canvas.width;
+    mask.height = extracted.canvas.height;
     maskCanvasRef.current = mask;
 
     if (existingMask) {
@@ -113,7 +109,11 @@ export function DecomposeStudio({ adapter, layer }: Props) {
       const sa = srcData.data[i + 3];
       const ma = maskData.data[i + 3];
       // threshold cutoff: pixels below threshold treated as masked
-      const thresholded = sa < threshold ? 255 : 0;
+      // Only count as masked when there's actual source alpha to mask.
+      // Otherwise threshold > 0 would also mark pixels outside the
+      // layer's footprint (already alpha=0 after clipping) as masked,
+      // and `setLayerMasks` would erase atlas neighbors.
+      const thresholded = sa > 0 && sa < threshold ? 255 : 0;
       const effective = Math.max(thresholded, ma);
       const out = (sa * (255 - effective)) / 255;
       srcData.data[i + 3] = out;
@@ -138,12 +138,16 @@ export function DecomposeStudio({ adapter, layer }: Props) {
 
       const maskCtx = mask.getContext("2d");
       if (!maskCtx) return;
+      maskCtx.save();
+      // Clip to the layer's actual footprint so the brush can't paint
+      // (or erase from) atlas neighbors that happen to fall in the bbox.
+      if (clipPathRef.current) maskCtx.clip(clipPathRef.current);
       maskCtx.globalCompositeOperation = mode === "paint" ? "source-over" : "destination-out";
       maskCtx.fillStyle = "rgba(255, 80, 80, 1)";
       maskCtx.beginPath();
       maskCtx.arc(sx, sy, brushSize / 2, 0, Math.PI * 2);
       maskCtx.fill();
-      maskCtx.globalCompositeOperation = "source-over";
+      maskCtx.restore();
       setDirty(true);
       redraw();
     },
@@ -195,7 +199,11 @@ export function DecomposeStudio({ adapter, layer }: Props) {
     for (let i = 0; i < srcData.data.length; i += 4) {
       const sa = srcData.data[i + 3];
       const ma = maskData.data[i + 3];
-      const thresholded = sa < threshold ? 255 : 0;
+      // Only count as masked when there's actual source alpha to mask.
+      // Otherwise threshold > 0 would also mark pixels outside the
+      // layer's footprint (already alpha=0 after clipping) as masked,
+      // and `setLayerMasks` would erase atlas neighbors.
+      const thresholded = sa > 0 && sa < threshold ? 255 : 0;
       const effective = Math.max(thresholded, ma);
       out.data[i] = 0;
       out.data[i + 1] = 0;

@@ -1,5 +1,5 @@
 import { Spine } from "@esotericsoftware/spine-pixi-v8";
-import { Assets, type Container } from "pixi.js";
+import { Assets, type Container, type Texture as PixiTexture } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
 import type {
   Avatar,
@@ -16,8 +16,10 @@ import type {
   AdapterLoadInput,
   AvatarAdapter,
   FormatDetectionResult,
+  LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
+import { applyLayerMasks } from "./applyMask";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "slot",
@@ -42,6 +44,9 @@ export class SpineAdapter implements AvatarAdapter {
   private layerByExternalId = new Map<string, Layer>();
   private slotIndexByExternalId = new Map<string, number>();
   private textureSourcesById = new Map<TextureId, TextureSourceInfo>();
+  /** Live Pixi Texture per page — its `.source.resource` is what we
+   *  swap out when masks are applied so the GPU re-uploads. */
+  private pixiTextureById = new Map<TextureId, PixiTexture>();
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -86,6 +91,8 @@ export class SpineAdapter implements AvatarAdapter {
         const id = newId(ID_PREFIX.texture);
         textureIdByPageName.set(page.name, id);
         this.textureSourcesById.set(id, info);
+        const pixiTex = page.texture?.texture as PixiTexture | undefined;
+        if (pixiTex) this.pixiTextureById.set(id, pixiTex);
         textures.push({
           id,
           pageIndex: idx,
@@ -154,6 +161,59 @@ export class SpineAdapter implements AvatarAdapter {
     return this.textureSourcesById.get(textureId) ?? null;
   }
 
+  getLayerTriangles(layerId: LayerId): LayerTriangles | null {
+    const spine = this.spine;
+    if (!spine) return null;
+    const layer = this.findLayerById(layerId);
+    if (!layer?.texture) return null;
+    const slotIndex = this.slotIndexByExternalId.get(layer.externalId);
+    if (slotIndex == null) return null;
+    const slot = spine.skeleton.slots[slotIndex];
+    const attachment = slot.getAttachment() as SpineAttachmentLike | null;
+    if (!attachment) return null;
+    const region = attachment.region;
+    if (!region?.page) return null;
+
+    const pageW = region.page.width;
+    const pageH = region.page.height;
+    if (!pageW || !pageH) return null;
+
+    // MeshAttachment carries its own UV array + triangle indices; we use
+    // those verbatim. RegionAttachment is just the on-page rect, so we
+    // fabricate a quad (2 triangles).
+    const meshUVs = attachment.regionUVs;
+    const meshTris = attachment.triangles;
+    if (meshUVs && meshTris && meshUVs.length >= 6 && meshTris.length >= 3) {
+      const out = new Float32Array(meshTris.length * 2);
+      for (let i = 0; i < meshTris.length; i++) {
+        const v = meshTris[i];
+        out[i * 2] = meshUVs[v * 2];
+        out[i * 2 + 1] = meshUVs[v * 2 + 1];
+      }
+      return { textureId: layer.texture.textureId, uvs: out };
+    }
+
+    // RegionAttachment fallback — quad covering the on-page rect.
+    const u1 = region.x / pageW;
+    const v1 = region.y / pageH;
+    const u2 = (region.x + region.width) / pageW;
+    const v2 = (region.y + region.height) / pageH;
+    return {
+      textureId: layer.texture.textureId,
+      // prettier-ignore
+      uvs: new Float32Array([u1, v1, u2, v1, u2, v2, u1, v1, u2, v2, u1, v2]),
+    };
+  }
+
+  async setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void> {
+    await applyLayerMasks(
+      masks,
+      (id) => this.findLayerById(id) ?? null,
+      this.textureSourcesById,
+      this.pixiTextureById,
+    );
+  }
+
   getDisplayObject(): Container | null {
     return this.spine;
   }
@@ -208,6 +268,7 @@ export class SpineAdapter implements AvatarAdapter {
     this.layerByExternalId.clear();
     this.slotIndexByExternalId.clear();
     this.textureSourcesById.clear();
+    this.pixiTextureById.clear();
   }
 
   // ----- helpers -----
@@ -259,6 +320,21 @@ type SpineAtlasRegionLike = {
   originalHeight: number;
   /** 0 or 90 in v4 atlases */
   degrees: number;
+};
+
+/**
+ * Subset of `RegionAttachment` / `MeshAttachment` that we read for
+ * triangle extraction. Mesh attachments expose `regionUVs` (per-vertex
+ * UVs into the atlas page) and `triangles` (vertex indices). Region
+ * attachments lack those — we synthesize a quad from the atlas region
+ * itself.
+ */
+type SpineAttachmentLike = {
+  region?: SpineAtlasRegionLike | null;
+  /** Mesh: per-vertex UVs interleaved as `[u0, v0, u1, v1, ...]`. */
+  regionUVs?: ArrayLike<number> | null;
+  /** Mesh: triangle vertex indices, 3 per triangle. */
+  triangles?: ArrayLike<number> | null;
 };
 
 function pageToSourceInfo(page: SpineAtlasPageLike): TextureSourceInfo | null {

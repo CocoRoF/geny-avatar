@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { DecomposeStudio } from "@/components/DecomposeStudio";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
@@ -33,6 +33,21 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
   const setStudioLayer = useEditorStore((s) => s.setStudioLayer);
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
+
+  // Push masks into the runtime whenever they change so the live render
+  // matches what the user baked in DecomposeStudio. This is the only
+  // place that calls setLayerMasks — keeps the data flow one-way:
+  //   user paints → store.setLayerMask → this effect → adapter → GPU.
+  useEffect(() => {
+    if (!adapter) return;
+    let cancelled = false;
+    adapter.setLayerMasks(layerMasks).catch((e) => {
+      if (!cancelled) console.warn("[LayersPanel] setLayerMasks failed", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter, layerMasks]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();

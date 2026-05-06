@@ -47,6 +47,7 @@
 | 2026-05-06 | [31 sprint_2_1_spine_atlas_layer_thumbs](2026-05-06_31_sprint_2_1_spine_atlas_layer_thumbs.md) | 2.1 | 완료 — Spine atlas region → Layer.texture, LayersPanel 행 썸네일 (Cubism은 2.2) |
 | 2026-05-06 | [32 sprint_2_2_cubism_uv_bbox_thumbs](2026-05-06_32_sprint_2_2_cubism_uv_bbox_thumbs.md) | 2.2 | 완료 — Cubism drawable UV bbox → Layer.texture, LayersPanel에 모든 puppet 썸네일 |
 | 2026-05-06 | [33 sprint_2_3_decompose_studio_v1](2026-05-06_33_sprint_2_3_decompose_studio_v1.md) | 2.3 | 완료 — DecomposeStudio 모달 (alpha threshold + 브러시 paint/erase + save→PNG blob) |
+| 2026-05-06 | [34 sprint_2_4_clipped_studio_live_masks](2026-05-06_34_sprint_2_4_clipped_studio_live_masks.md) | 2.4 | 완료 — 삼각형 clip으로 footprint만 표시 + 마스크 라이브 렌더 적용 (GPU 재업로드) |
 
 ## 운영 규칙
 
