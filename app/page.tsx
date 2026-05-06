@@ -138,6 +138,35 @@ export default function Home() {
         </ol>
       </section>
 
+      <section className="mt-16">
+        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+          Phase 0 PoC
+        </h2>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <a
+            href="/poc/spine"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/spine</div>
+            <div className="mt-1 text-sm">spineboy + slot toggle</div>
+          </a>
+          <a
+            href="/poc/cubism"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/cubism</div>
+            <div className="mt-1 text-sm">Hiyori + part toggle</div>
+          </a>
+          <a
+            href="/poc/dual"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
+            <div className="mt-1 text-sm">T-rt1 — 두 런타임 동시 마운트</div>
+          </a>
+        </div>
+      </section>
+
       <footer className="mt-16 border-t border-[var(--color-border)] pt-6 text-xs text-[var(--color-fg-dim)]">
         설계 문서는{" "}
         <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">docs/</code> —
