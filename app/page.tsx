@@ -176,7 +176,14 @@ export default function Home() {
             className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
           >
             <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
-            <div className="mt-1 text-sm">드롭→로드→미리보기 (sprint 1.3b)</div>
+            <div className="mt-1 text-sm">드롭→로드→미리보기 + 자동 저장 (1.3b/1.3c)</div>
+          </a>
+          <a
+            href="/poc/library"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
+            <div className="mt-1 text-sm">저장된 puppet 목록 (sprint 1.3c)</div>
           </a>
         </div>
       </section>

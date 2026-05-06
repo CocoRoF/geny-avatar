@@ -5,27 +5,33 @@ import { rewriteLive2DManifest, rewriteSpineAtlas } from "./rewrite";
 import type { BundleEntry, ParsedBundle } from "./types";
 
 /**
- * Parse a dropped file or set of files into a ParsedBundle that an adapter
- * can immediately load.
+ * Parse a dropped file/set of files OR a previously-stored BundleEntry[]
+ * (from IndexedDB) into a ParsedBundle that an adapter can immediately
+ * load.
  *
  * Accepts:
  *   - A single ZIP File (auto-extracted via fflate)
- *   - A flat array of File objects (from a directory drop)
+ *   - A flat array of File objects (folder drop / file picker)
+ *   - An array of pre-built BundleEntry objects (IndexedDB replay)
  *
  * Pipeline:
- *   1. Normalize input → BundleEntry[] with blob + path
+ *   1. Normalize input → BundleEntry[]
  *   2. Filename-only detection (which adapter)
- *   3. Confirm via manifest read — model3.json for Live2D, atlas/skel for Spine
- *   4. Build the adapter LoadInput pointing at blob URLs
+ *   3. Walk the manifest, rewrite to blob URLs, validate references
+ *   4. Build the adapter LoadInput
  */
-export async function parseBundle(input: File | File[]): Promise<ParsedBundle> {
-  const files = Array.isArray(input) ? input : [input];
+export async function parseBundle(input: File | File[] | BundleEntry[]): Promise<ParsedBundle> {
   let entries: BundleEntry[];
 
-  if (files.length === 1 && files[0].name.toLowerCase().endsWith(".zip")) {
-    entries = await unpackZip(files[0]);
+  if (Array.isArray(input) && input.length > 0 && isBundleEntryArray(input)) {
+    entries = input;
   } else {
-    entries = files.map(fileToEntry);
+    const files = Array.isArray(input) ? (input as File[]) : [input as File];
+    if (files.length === 1 && files[0].name.toLowerCase().endsWith(".zip")) {
+      entries = await unpackZip(files[0]);
+    } else {
+      entries = files.map(fileToEntry);
+    }
   }
 
   if (entries.length === 0) {
@@ -83,6 +89,17 @@ export function disposeBundle(parsed: ParsedBundle): void {
 }
 
 // ----- internals -----
+
+function isBundleEntryArray(arr: unknown[]): arr is BundleEntry[] {
+  // narrow heuristic — first element has `path` string + `blob` Blob.
+  const first = arr[0] as Partial<BundleEntry> | undefined;
+  return !!(
+    first &&
+    typeof first.path === "string" &&
+    first.blob instanceof Blob &&
+    !(first instanceof File)
+  );
+}
 
 function fileToEntry(file: File): BundleEntry {
   // browsers may put a relative path in webkitRelativePath when a folder

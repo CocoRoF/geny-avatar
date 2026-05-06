@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import type { AdapterLoadInput } from "@/lib/adapters/AvatarAdapter";
 import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import type { LayerId } from "@/lib/avatar/types";
 import { usePuppet } from "@/lib/avatar/usePuppet";
+import { loadPuppet, type PuppetId, savePuppet } from "@/lib/persistence/db";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -39,11 +41,24 @@ function fitDisplayObject(
 }
 
 export default function UploadPocPage() {
+  return (
+    <Suspense fallback={null}>
+      <UploadPocInner />
+    </Suspense>
+  );
+}
+
+function UploadPocInner() {
+  const searchParams = useSearchParams();
+  const requestedPuppetId = searchParams.get("puppet") as PuppetId | null;
+
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const [bundle, setBundle] = useState<ParsedBundle | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [layerVisible, setLayerVisible] = useState<LayerVisible[]>([]);
   const [filter, setFilter] = useState("");
+  const [savedId, setSavedId] = useState<PuppetId | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
 
@@ -68,16 +83,49 @@ export default function UploadPocPage() {
     };
   }, [bundle]);
 
+  // load from IndexedDB if URL has ?puppet=...
+  useEffect(() => {
+    if (!requestedPuppetId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await loadPuppet(requestedPuppetId);
+        if (cancelled || !result) {
+          if (!cancelled) setParseError(`puppet ${requestedPuppetId} not found in library`);
+          return;
+        }
+        const parsed = await parseBundle(result.entries);
+        if (cancelled) return;
+        if (parsed.ok) {
+          setBundle(parsed);
+          setSavedId(result.row.id);
+          setSaveStatus("saved");
+        } else {
+          setParseError(parsed.reason);
+        }
+      } catch (e) {
+        if (!cancelled) setParseError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedPuppetId]);
+
   async function handleFiles(files: File[]) {
     if (bundle) disposeBundle(bundle);
     setParseError(null);
     setLayerVisible([]);
+    setSavedId(null);
+    setSaveStatus("idle");
     try {
       const input: File | File[] =
         files.length === 1 && files[0].name.toLowerCase().endsWith(".zip") ? files[0] : files;
       const parsed = await parseBundle(input);
       if (parsed.ok) {
         setBundle(parsed);
+        // best-effort persist; never block the UI on save
+        autoSave(parsed, files);
       } else {
         setBundle(null);
         setParseError(parsed.reason);
@@ -88,11 +136,33 @@ export default function UploadPocPage() {
     }
   }
 
+  async function autoSave(parsed: ParsedBundle, originalFiles: File[]) {
+    if (!parsed.ok) return;
+    setSaveStatus("saving");
+    try {
+      const entries = Array.from(parsed.entries.values());
+      const inferredName = inferBundleName(originalFiles, entries, parsed.detection.runtime);
+      const id = await savePuppet({
+        name: inferredName,
+        runtime: parsed.detection.runtime,
+        version: parsed.detection.version,
+        entries,
+      });
+      setSavedId(id);
+      setSaveStatus("saved");
+    } catch (e) {
+      console.error("[upload] save failed", e);
+      setSaveStatus("error");
+    }
+  }
+
   function clear() {
     if (bundle) disposeBundle(bundle);
     setBundle(null);
     setParseError(null);
     setLayerVisible([]);
+    setSavedId(null);
+    setSaveStatus("idle");
   }
 
   const layers = avatar?.layers ?? [];
@@ -146,6 +216,20 @@ export default function UploadPocPage() {
         <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
           <span className="font-mono text-[var(--color-accent)]">PoC · Upload</span>
           <span className="ml-3">{headerStatus}</span>
+          {saveStatus !== "idle" && (
+            <span
+              className={`ml-3 ${
+                saveStatus === "saved"
+                  ? "text-[var(--color-accent)]"
+                  : saveStatus === "error"
+                    ? "text-red-400"
+                    : "text-[var(--color-fg-dim)]"
+              }`}
+            >
+              · saved={saveStatus}
+              {savedId && saveStatus === "saved" && ` (${savedId.slice(-6)})`}
+            </span>
+          )}
           {bundle && (
             <button
               type="button"
@@ -155,6 +239,12 @@ export default function UploadPocPage() {
               clear
             </button>
           )}
+          <a
+            href="/poc/library"
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+          >
+            library →
+          </a>
         </header>
 
         {!bundle && (
@@ -264,4 +354,37 @@ export default function UploadPocPage() {
       </aside>
     </main>
   );
+}
+
+function inferBundleName(
+  files: File[],
+  entries: { name: string; path: string }[],
+  runtime: "spine" | "live2d",
+): string {
+  // Prefer a manifest filename, then a ZIP name, then the bundle's
+  // common parent folder, then a fallback.
+  if (runtime === "live2d") {
+    const manifest = entries.find((e) => e.name.toLowerCase().endsWith(".model3.json"));
+    if (manifest) return manifest.name.replace(/\.model3\.json$/i, "");
+  } else {
+    const skel = entries.find((e) => e.name.toLowerCase().endsWith(".skel"));
+    if (skel) return skel.name.replace(/\.skel$/i, "");
+    const json = entries.find(
+      (e) =>
+        e.name.toLowerCase().endsWith(".json") && !e.name.toLowerCase().endsWith(".model3.json"),
+    );
+    if (json) return json.name.replace(/\.json$/i, "");
+  }
+
+  const zip = files.find((f) => f.name.toLowerCase().endsWith(".zip"));
+  if (zip) return zip.name.replace(/\.zip$/i, "");
+
+  // common parent folder if all entries share one
+  const firstSlash = entries[0]?.path.indexOf("/") ?? -1;
+  if (firstSlash > 0) {
+    const prefix = entries[0].path.substring(0, firstSlash);
+    if (entries.every((e) => e.path.startsWith(`${prefix}/`))) return prefix;
+  }
+
+  return runtime === "live2d" ? "Cubism puppet" : "Spine puppet";
 }
