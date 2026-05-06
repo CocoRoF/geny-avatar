@@ -89,7 +89,9 @@ export default function DualMountPocPage() {
             throw new Error("Live2DCubismCore not available");
           }
 
-          const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine");
+          const { configureCubismSDK, Live2DModel } = await import(
+            "untitled-pixi-live2d-engine/cubism"
+          );
           configureCubismSDK({ memorySizeMB: 32 });
           const model = await Live2DModel.from(CUBISM_MODEL);
           if (cancelled) return;

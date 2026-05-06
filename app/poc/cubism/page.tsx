@@ -47,7 +47,11 @@ export default function CubismPoCPage() {
           );
         }
 
-        const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine");
+        // /cubism sub-export = Cubism Modern (4/5) only — avoids the
+        // combined bundle requiring live2d.min.js (Cubism 2 runtime).
+        const { configureCubismSDK, Live2DModel } = await import(
+          "untitled-pixi-live2d-engine/cubism"
+        );
 
         await app.init({
           background: "#0b0d10",

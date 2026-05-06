@@ -55,7 +55,10 @@ export class Live2DAdapter implements AvatarAdapter {
 
     await this.waitForCubismCore();
 
-    const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine");
+    // /cubism sub-export = Cubism Modern (4/5) only — the combined default
+    // bundle requires live2d.min.js (Cubism 2 legacy runtime) at startup,
+    // which we don't ship. Cubism 2/3 best-effort would import /cubism-legacy.
+    const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine/cubism");
     configureCubismSDK({ memorySizeMB: 32 });
 
     const model = await Live2DModel.from(input.model3);
