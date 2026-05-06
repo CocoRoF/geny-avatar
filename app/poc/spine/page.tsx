@@ -2,7 +2,7 @@
 
 import { Spine } from "@esotericsoftware/spine-pixi-v8";
 import { Application, Assets } from "pixi.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type SlotInfo = {
   index: number;
@@ -23,6 +23,7 @@ export default function SpinePoCPage() {
   const [activeAnim, setActiveAnim] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("loading…");
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -103,27 +104,33 @@ export default function SpinePoCPage() {
     };
   }, []);
 
-  function toggleSlot(index: number) {
+  const filteredSlots = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return slots;
+    return slots.filter((s) => s.name.toLowerCase().includes(f));
+  }, [slots, filter]);
+
+  function setSlotVisibility(index: number, visible: boolean) {
     const spine = spineRef.current;
     if (!spine) return;
     const slot = spine.skeleton.slots[index];
-    setSlots((prev) =>
-      prev.map((s) => {
-        if (s.index !== index) return s;
-        const next = !s.visible;
-        if (next) {
-          // restore from data slot
-          slot.setAttachment(
-            slot.data.attachmentName
-              ? spine.skeleton.getAttachment(index, slot.data.attachmentName)
-              : null,
-          );
-        } else {
-          slot.setAttachment(null);
-        }
-        return { ...s, visible: next };
-      }),
-    );
+    if (visible) {
+      const name = slot.data.attachmentName;
+      slot.setAttachment(name ? spine.skeleton.getAttachment(index, name) : null);
+    } else {
+      slot.setAttachment(null);
+    }
+    setSlots((prev) => prev.map((s) => (s.index === index ? { ...s, visible } : s)));
+  }
+
+  function toggleSlot(index: number) {
+    const current = slots.find((s) => s.index === index);
+    if (!current) return;
+    setSlotVisibility(index, !current.visible);
+  }
+
+  function bulkSet(visible: boolean) {
+    for (const s of filteredSlots) setSlotVisibility(s.index, visible);
   }
 
   function playAnim(name: string) {
@@ -134,19 +141,19 @@ export default function SpinePoCPage() {
   }
 
   return (
-    <main className="grid h-screen grid-cols-[1fr_320px] bg-[var(--color-bg)]">
-      <div className="flex flex-col">
-        <div className="border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
+    <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
+      <section className="flex min-h-0 min-w-0 flex-col">
+        <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
           <span className="font-mono text-[var(--color-accent)]">PoC · Spine</span>
           <span className="ml-3">spineboy-pro · {status}</span>
           {error && <span className="ml-3 text-red-400">error: {error}</span>}
-        </div>
-        <div ref={canvasHostRef} className="flex-1" />
-      </div>
+        </header>
+        <div ref={canvasHostRef} className="min-h-0 flex-1" />
+      </section>
 
-      <aside className="flex flex-col border-l border-[var(--color-border)]">
-        <div className="border-b border-[var(--color-border)] px-4 py-3">
-          <div className="mb-1 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
+      <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
+        <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
             Animations
           </div>
           <div className="flex flex-wrap gap-1">
@@ -155,10 +162,10 @@ export default function SpinePoCPage() {
                 key={name}
                 type="button"
                 onClick={() => playAnim(name)}
-                className={`rounded border px-2 py-1 text-xs ${
+                className={`rounded border px-2 py-1 text-xs transition-colors ${
                   name === activeAnim
                     ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                    : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                    : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
                 }`}
               >
                 {name}
@@ -167,37 +174,66 @@ export default function SpinePoCPage() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="px-4 py-3 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
-            Slots ({slots.length})
+        <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
+          <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
+            <span>
+              Slots ({filteredSlots.length}/{slots.length})
+            </span>
           </div>
-          <ul className="px-2 pb-4">
-            {slots.map((s) => (
-              <li key={s.index}>
-                <button
-                  type="button"
-                  onClick={() => toggleSlot(s.index)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-[var(--color-panel)]"
-                >
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${
-                      s.visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
-                    }`}
-                  />
-                  <span className="font-mono text-xs text-[var(--color-fg-dim)]">
-                    {String(s.index).padStart(2, "0")}
-                  </span>
-                  <span className="truncate">{s.name}</span>
-                  {s.attachment && s.attachment !== s.name && (
-                    <span className="ml-auto truncate text-xs text-[var(--color-fg-dim)]">
-                      → {s.attachment}
-                    </span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <input
+            type="text"
+            placeholder="search slot…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+          />
+          <div className="mt-2 flex gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => bulkSet(true)}
+              className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              show all
+            </button>
+            <button
+              type="button"
+              onClick={() => bulkSet(false)}
+              className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              hide all
+            </button>
+          </div>
         </div>
+
+        <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {filteredSlots.map((s) => (
+            <li key={s.index}>
+              <button
+                type="button"
+                onClick={() => toggleSlot(s.index)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    s.visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
+                  }`}
+                />
+                <span className="font-mono text-xs text-[var(--color-fg-dim)]">
+                  {String(s.index).padStart(2, "0")}
+                </span>
+                <span className="truncate">{s.name}</span>
+                {s.attachment && s.attachment !== s.name && (
+                  <span className="ml-auto truncate text-xs text-[var(--color-fg-dim)]">
+                    → {s.attachment}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+          {filteredSlots.length === 0 && (
+            <li className="px-2 py-4 text-center text-xs text-[var(--color-fg-dim)]">no match</li>
+          )}
+        </ul>
       </aside>
     </main>
   );

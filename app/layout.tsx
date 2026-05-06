@@ -15,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ko">
-      <body className="min-h-screen">
+      <body className="h-full">
         {/* Live2D Cubism Core — closed binary from vendor/, synced into
             public/runtime/ at predev/prebuild. Loaded as a global script
             because untitled-pixi-live2d-engine reads it from window. */}

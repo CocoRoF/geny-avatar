@@ -134,22 +134,22 @@ export default function DualMountPocPage() {
   }
 
   return (
-    <main className="flex h-screen flex-col bg-[var(--color-bg)]">
-      <div className="border-b border-[var(--color-border)] px-4 py-2 text-xs">
+    <main className="flex h-full flex-col overflow-hidden bg-[var(--color-bg)]">
+      <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs">
         <span className="font-mono text-[var(--color-accent)]">PoC · Dual Mount (T-rt1)</span>
         <span className="ml-3 font-mono text-[var(--color-fg-dim)]">
           {badge("pixi", status.pixi)} · {badge("spine", status.spine)} ·{" "}
           {badge("cubism", status.cubism)}
         </span>
         {status.detail && <span className="ml-3 text-red-400">{status.detail}</span>}
-      </div>
-      <div className="grid flex-1 grid-cols-2">
+      </header>
+      <div className="grid shrink-0 grid-cols-2 border-b border-[var(--color-border)]">
         <div className="border-r border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
           Spine spineboy
         </div>
         <div className="px-4 py-2 text-xs text-[var(--color-fg-dim)]">Cubism Hiyori</div>
       </div>
-      <div ref={canvasHostRef} className="flex-1" />
+      <div ref={canvasHostRef} className="min-h-0 flex-1" />
     </main>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { Application } from "pixi.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const MODEL_URL = "/samples/hiyori/Hiyori.model3.json";
 
@@ -24,6 +24,7 @@ export default function CubismPoCPage() {
   const [parts, setParts] = useState<PartInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("loading…");
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -34,7 +35,6 @@ export default function CubismPoCPage() {
 
     (async () => {
       try {
-        // wait until Cubism Core (loaded via <Script> in layout) is on window
         for (let i = 0; i < 50; i++) {
           // biome-ignore lint/suspicious/noExplicitAny: window global injected by Cubism Core script
           if (typeof (globalThis as any).Live2DCubismCore !== "undefined") break;
@@ -71,15 +71,12 @@ export default function CubismPoCPage() {
         model.anchor.set(0.5, 0.5);
         model.position.set(app.screen.width / 2, app.screen.height / 2);
 
-        // fit-to-canvas roughly — Hiyori native is ~1280×1500 in model space
         const scaleByH = (app.screen.height * 0.9) / 1500;
         model.scale.set(scaleByH);
 
         app.stage.addChild(model);
         modelRef.current = model;
 
-        // Engine exposes the core model under model.internalModel.coreModel — same
-        // shape as pixi-live2d-display. Walk it to enumerate parts / drawables.
         // biome-ignore lint/suspicious/noExplicitAny: engine internals
         const internal = (model as any).internalModel;
         // biome-ignore lint/suspicious/noExplicitAny: engine internals
@@ -109,12 +106,11 @@ export default function CubismPoCPage() {
           setParts(partList);
         }
 
-        // Try to start an Idle motion if available.
         try {
           // biome-ignore lint/suspicious/noExplicitAny: engine method
           (model as any).motion?.("Idle");
         } catch {
-          // ignore — engine has no motion shortcut, will surface in API exploration
+          // engine has no motion shortcut — surface in API exploration if relevant
         }
 
         setStatus("loaded");
@@ -138,20 +134,32 @@ export default function CubismPoCPage() {
     };
   }, []);
 
-  function togglePart(index: number) {
+  const filteredParts = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return parts;
+    return parts.filter((p) => p.id.toLowerCase().includes(f));
+  }, [parts, filter]);
+
+  function setPartVisibility(index: number, visible: boolean) {
     const model = modelRef.current;
     if (!model) return;
     // biome-ignore lint/suspicious/noExplicitAny: engine internals
     const coreModel = (model as any).internalModel?.coreModel;
     if (!coreModel?.setPartOpacity) return;
+    coreModel.setPartOpacity(index, visible ? 1 : 0);
     setParts((prev) =>
-      prev.map((p) => {
-        if (p.index !== index) return p;
-        const next = !p.visible;
-        coreModel.setPartOpacity(index, next ? 1 : 0);
-        return { ...p, visible: next, opacity: next ? 1 : 0 };
-      }),
+      prev.map((p) => (p.index === index ? { ...p, visible, opacity: visible ? 1 : 0 } : p)),
     );
+  }
+
+  function togglePart(index: number) {
+    const current = parts.find((p) => p.index === index);
+    if (!current) return;
+    setPartVisibility(index, !current.visible);
+  }
+
+  function bulkSet(visible: boolean) {
+    for (const p of filteredParts) setPartVisibility(p.index, visible);
   }
 
   function playMotion(group: string) {
@@ -166,19 +174,19 @@ export default function CubismPoCPage() {
   }
 
   return (
-    <main className="grid h-screen grid-cols-[1fr_320px] bg-[var(--color-bg)]">
-      <div className="flex flex-col">
-        <div className="border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
+    <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
+      <section className="flex min-h-0 min-w-0 flex-col">
+        <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
           <span className="font-mono text-[var(--color-accent)]">PoC · Cubism</span>
           <span className="ml-3">Hiyori · {status}</span>
           {error && <span className="ml-3 text-red-400">error: {error}</span>}
-        </div>
-        <div ref={canvasHostRef} className="flex-1" />
-      </div>
+        </header>
+        <div ref={canvasHostRef} className="min-h-0 flex-1" />
+      </section>
 
-      <aside className="flex flex-col border-l border-[var(--color-border)]">
+      <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
         {info && (
-          <div className="border-b border-[var(--color-border)] px-4 py-3 text-xs text-[var(--color-fg-dim)]">
+          <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3 text-xs text-[var(--color-fg-dim)]">
             <div>
               params <span className="text-[var(--color-fg)]">{info.parameterCount}</span> · parts{" "}
               <span className="text-[var(--color-fg)]">{info.partCount}</span> · drawables{" "}
@@ -191,8 +199,8 @@ export default function CubismPoCPage() {
         )}
 
         {info && info.motionGroups.length > 0 && (
-          <div className="border-b border-[var(--color-border)] px-4 py-3">
-            <div className="mb-1 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
+          <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
+            <div className="mb-2 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
               Motions
             </div>
             <div className="flex flex-wrap gap-1">
@@ -201,7 +209,7 @@ export default function CubismPoCPage() {
                   key={m.group}
                   type="button"
                   onClick={() => playMotion(m.group)}
-                  className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                  className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
                 >
                   {m.group} ({m.count})
                 </button>
@@ -210,32 +218,61 @@ export default function CubismPoCPage() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="px-4 py-3 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
-            Parts ({parts.length})
+        <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
+          <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
+            <span>
+              Parts ({filteredParts.length}/{parts.length})
+            </span>
           </div>
-          <ul className="px-2 pb-4">
-            {parts.map((p) => (
-              <li key={p.index}>
-                <button
-                  type="button"
-                  onClick={() => togglePart(p.index)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-[var(--color-panel)]"
-                >
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${
-                      p.visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
-                    }`}
-                  />
-                  <span className="font-mono text-xs text-[var(--color-fg-dim)]">
-                    {String(p.index).padStart(2, "0")}
-                  </span>
-                  <span className="truncate">{p.id}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <input
+            type="text"
+            placeholder="search part…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+          />
+          <div className="mt-2 flex gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => bulkSet(true)}
+              className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              show all
+            </button>
+            <button
+              type="button"
+              onClick={() => bulkSet(false)}
+              className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              hide all
+            </button>
+          </div>
         </div>
+
+        <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {filteredParts.map((p) => (
+            <li key={p.index}>
+              <button
+                type="button"
+                onClick={() => togglePart(p.index)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--color-panel)]"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    p.visible ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]"
+                  }`}
+                />
+                <span className="font-mono text-xs text-[var(--color-fg-dim)]">
+                  {String(p.index).padStart(2, "0")}
+                </span>
+                <span className="truncate">{p.id}</span>
+              </button>
+            </li>
+          ))}
+          {filteredParts.length === 0 && (
+            <li className="px-2 py-4 text-center text-xs text-[var(--color-fg-dim)]">no match</li>
+          )}
+        </ul>
       </aside>
     </main>
   );
