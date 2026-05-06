@@ -164,6 +164,13 @@ export default function Home() {
             <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
             <div className="mt-1 text-sm">T-rt1 — 두 런타임 동시 마운트</div>
           </a>
+          <a
+            href="/poc/upload-debug"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+          >
+            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload-debug</div>
+            <div className="mt-1 text-sm">parseBundle 결과 뷰어 (sprint 1.3a)</div>
+          </a>
         </div>
       </section>
 

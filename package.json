@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@esotericsoftware/spine-pixi-v8": "^4.2.114",
+    "fflate": "^0.8.2",
     "next": "^15.0.0",
     "pixi.js": "^8.18.1",
     "react": "^19.0.0",

@@ -31,7 +31,8 @@
 | 2026-05-06 | [15 cubism_beforeModelUpdate_hook](2026-05-06_15_cubism_beforeModelUpdate_hook.md) | 1 | 완료 — 엔진의 beforeModelUpdate 이벤트 직접 hook (정공법) |
 | 2026-05-06 | [16 cubism_dual_channel_with_diagnostics](2026-05-06_16_cubism_dual_channel_with_diagnostics.md) | 1 | 완료 — setPartOpacity 부재 + drawable mutate 작동 확인 |
 | 2026-05-06 | [17 cubism_internalModel_update_patch](2026-05-06_17_cubism_internalModel_update_patch.md) | 1 | 완료 — internalModel.update monkey-patch (after-update 윈도우, 시각 작동 확인) |
-| 2026-05-06 | [18 phase1_3_kickoff](2026-05-06_18_phase1_3_kickoff.md) | 1.3 | 진행 중 — sub-sprint 1.3a/b/c/d 분할 |
+| 2026-05-06 | [18 phase1_3_kickoff](2026-05-06_18_phase1_3_kickoff.md) | 1.3 | 완료 — sub-sprint 1.3a/b/c/d 분할 |
+| 2026-05-06 | [19 sprint_1_3a_parse_bundle](2026-05-06_19_sprint_1_3a_parse_bundle.md) | 1.3a | 완료 — fflate, parseBundle, /poc/upload-debug |
 
 ## 운영 규칙
 
