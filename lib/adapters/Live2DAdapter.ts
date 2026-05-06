@@ -12,8 +12,6 @@ const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "part",
   canChangeMesh: false,
   canSwapTexture: true,
-  // Part-level toggle is opacity-only. Drawable-level multiply-rgb tinting
-  // becomes available once we expose Drawable as a layer unit (Phase 1.x).
   tinting: "opacity-only",
   hasAnimationTimeline: true,
   hasParameterGraph: true,
@@ -21,11 +19,19 @@ const CAPABILITIES: AdapterCapabilities = {
 };
 
 /**
- * Wraps `untitled-pixi-live2d-engine`. The engine and Cubism Core are imported
- * lazily so non-Cubism pages don't pay the bundle cost.
+ * Wraps `untitled-pixi-live2d-engine`. Cubism Core (loaded via the layout
+ * script tag) must be on window before load() runs.
  *
- * Cubism Core (Live2DCubismCore global) must be on window before load() runs.
- * The root layout injects it via <Script strategy="beforeInteractive" />.
+ * Layer (part) overrides are enforced through two channels — both applied
+ * inside the engine's `beforeModelUpdate` event so motion can't overwrite
+ * them later in the same frame:
+ *
+ *   1. coreModel.setPartOpacity(idx, value) — feeds the propagation step
+ *   2. drawables.opacities[d] *= multiplier — direct render-input mutation
+ *
+ * Some Cubism models bind drawable opacity to parameters rather than parts,
+ * so setPartOpacity alone has no visible effect on those models. The
+ * drawable mutation is a robust fallback for that case.
  */
 export class Live2DAdapter implements AvatarAdapter {
   readonly runtime = "live2d" as const;
@@ -37,17 +43,19 @@ export class Live2DAdapter implements AvatarAdapter {
   private coreModel: any = null;
   private layerByPartIndex = new Map<number, Layer>();
 
-  /** part-index → forced opacity (0 = hide, 1 = show).
-   *
-   *  Applied via the engine's beforeModelUpdate event — the only point in
-   *  the per-frame cycle where (a) motion has finished writing parameters
-   *  and (b) parameters haven't yet been propagated to drawables. Calling
-   *  setPartOpacity in this window means the next propagation step uses
-   *  our value, and the renderer sees it.
-   */
+  /** part-index → opacity multiplier (0 = hide, 1 = show). 1.0 means "no
+   *  override needed", so we delete instead of storing 1. */
   private partOpacityOverrides = new Map<number, number>();
-  /** Cached so we can off() on destroy. */
+  /** part-index → drawable indices that should follow the part's override.
+   *  Includes drawables under descendant parts (Cubism part trees nest). */
+  private partToDrawables = new Map<number, number[]>();
+  /** Cached so destroy() can off() the listener. */
   private beforeModelUpdateHandler: (() => void) | null = null;
+
+  // diagnostic counters (one-shot logs to keep console quiet after first frame)
+  private _hookFireCount = 0;
+  private _loggedSetCheck = false;
+  private _loggedDrawableMutate = false;
 
   static detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null {
     const lower = filenames.map((f) => f.toLowerCase());
@@ -67,9 +75,6 @@ export class Live2DAdapter implements AvatarAdapter {
 
     await this.waitForCubismCore();
 
-    // /cubism sub-export = Cubism Modern (4/5) only — the combined default
-    // bundle requires live2d.min.js (Cubism 2 legacy runtime) at startup,
-    // which we don't ship. Cubism 2/3 best-effort would import /cubism-legacy.
     const { configureCubismSDK, Live2DModel } = await import("untitled-pixi-live2d-engine/cubism");
     configureCubismSDK({ memorySizeMB: 32 });
 
@@ -84,9 +89,11 @@ export class Live2DAdapter implements AvatarAdapter {
 
     const layers: Layer[] = [];
     const parameters: Parameter[] = [];
+    let partCount = 0;
+    let drawableCount = 0;
 
     if (coreModel) {
-      const partCount: number = coreModel.getPartCount?.() ?? 0;
+      partCount = coreModel.getPartCount?.() ?? 0;
       for (let i = 0; i < partCount; i++) {
         const externalId = coerceCubismId(coreModel.getPartId?.(i), `part_${i}`);
         const opacity: number = coreModel.getPartOpacity?.(i) ?? 1;
@@ -105,18 +112,56 @@ export class Live2DAdapter implements AvatarAdapter {
         this.layerByPartIndex.set(i, layer);
       }
 
+      // Build part → drawable map (incl. ancestors). Used by the drawable
+      // fallback inside the beforeModelUpdate hook.
+      const drawables = getNativeDrawables(coreModel);
+      const parts = getNativeParts(coreModel);
+      const partParent = (i: number): number => {
+        const v = parts?.parentIndices?.[i];
+        if (typeof v === "number") return v;
+        const m = coreModel.getPartParentPartIndex?.(i);
+        return typeof m === "number" ? m : -1;
+      };
+      const drawableParent = (d: number): number => {
+        const v = drawables?.parentPartIndices?.[d];
+        if (typeof v === "number") return v;
+        const m = coreModel.getDrawableParentPartIndex?.(d);
+        return typeof m === "number" ? m : -1;
+      };
+      const ancestorChains: number[][] = [];
+      for (let i = 0; i < partCount; i++) {
+        const chain: number[] = [i];
+        let p = partParent(i);
+        for (let depth = 0; p >= 0 && depth < 64; depth++) {
+          chain.push(p);
+          p = partParent(p);
+        }
+        ancestorChains.push(chain);
+      }
+      drawableCount = coreModel.getDrawableCount?.() ?? drawables?.count ?? 0;
+      for (let d = 0; d < drawableCount; d++) {
+        const directPart = drawableParent(d);
+        if (directPart < 0) continue;
+        const chain = ancestorChains[directPart] ?? [directPart];
+        for (const partIdx of chain) {
+          let arr = this.partToDrawables.get(partIdx);
+          if (!arr) {
+            arr = [];
+            this.partToDrawables.set(partIdx, arr);
+          }
+          arr.push(d);
+        }
+      }
+
       const paramCount: number = coreModel.getParameterCount?.() ?? 0;
       for (let i = 0; i < paramCount; i++) {
         const id = coerceCubismId(coreModel.getParameterId?.(i), `param_${i}`);
-        const min: number = coreModel.getParameterMinimumValue?.(i) ?? 0;
-        const max: number = coreModel.getParameterMaximumValue?.(i) ?? 1;
-        const def: number = coreModel.getParameterDefaultValue?.(i) ?? 0;
         parameters.push({
           id,
           name: id,
-          min,
-          max,
-          default: def,
+          min: coreModel.getParameterMinimumValue?.(i) ?? 0,
+          max: coreModel.getParameterMaximumValue?.(i) ?? 1,
+          default: coreModel.getParameterDefaultValue?.(i) ?? 0,
           source: "live2d-param",
         });
       }
@@ -135,41 +180,19 @@ export class Live2DAdapter implements AvatarAdapter {
           url: e.File,
         }));
         motionGroups.push({ group, files });
-        animationsRefs.push({
-          name: group,
-          loop: true,
-          source: "live2d-motion",
-          group,
-        });
+        animationsRefs.push({ name: group, loop: true, source: "live2d-motion", group });
       }
     }
 
-    // Hook the engine's per-frame cycle. Order is:
-    //   beforeMotionUpdate → motion writes parameters → afterMotionUpdate
-    //   → beforeModelUpdate → moc.update propagates parameters → parts → drawables
-    //   → render
-    //
-    // beforeModelUpdate is the only window where (a) motion has finished
-    // writing parameters and (b) the propagation step that turns part
-    // opacity into drawable opacity hasn't run yet. setPartOpacity here
-    // overrides whatever motion produced and the next propagation step
-    // bakes it into the drawable opacities the renderer reads.
+    // ----- per-frame override hook -----
     if (internal && typeof internal.on === "function") {
-      this.beforeModelUpdateHandler = () => {
-        const cm = this.coreModel;
-        if (!cm?.setPartOpacity) return;
-        for (const [partIdx, value] of this.partOpacityOverrides) {
-          cm.setPartOpacity(partIdx, value);
-        }
-      };
+      this.beforeModelUpdateHandler = () => this.applyOverridesInsideHook();
       internal.on("beforeModelUpdate", this.beforeModelUpdateHandler);
       console.info(
-        `[Live2DAdapter] hooked beforeModelUpdate (parts=${this.layerByPartIndex.size}, params=${parameters.length})`,
+        `[Live2DAdapter] hooked beforeModelUpdate · parts=${partCount} drawables=${drawableCount} partsMapped=${this.partToDrawables.size} nativeDrawables=${!!getNativeDrawables(coreModel)} hasSetPartOpacity=${typeof coreModel?.setPartOpacity === "function"}`,
       );
     } else {
-      console.warn(
-        "[Live2DAdapter] internalModel doesn't expose .on() — opacity overrides will lose to motion",
-      );
+      console.error("[Live2DAdapter] internalModel.on() not available — overrides will not apply");
     }
 
     const source: AvatarSource = {
@@ -196,20 +219,94 @@ export class Live2DAdapter implements AvatarAdapter {
     return avatar;
   }
 
+  /**
+   * Runs every frame inside the engine's beforeModelUpdate event. This is
+   * the only point in the per-frame cycle where motion has finished writing
+   * parameters but the propagation that turns them into drawable state
+   * hasn't run yet, so anything we do here either feeds the propagation
+   * (setPartOpacity) or sits where the renderer reads it (drawable opacity
+   * Float32Array).
+   */
+  private applyOverridesInsideHook(): void {
+    this._hookFireCount++;
+    const cm = this.coreModel;
+    if (!cm) return;
+    if (this.partOpacityOverrides.size === 0) return;
+
+    if (this._hookFireCount === 1 || this._hookFireCount % 120 === 0) {
+      console.log(
+        `[Live2DAdapter] hook fire #${this._hookFireCount}, applying ${this.partOpacityOverrides.size} overrides`,
+      );
+    }
+
+    // Channel 1 — setPartOpacity (Cubism's intended way; works for models
+    // whose part has direct drawable bindings, ignored by models that bind
+    // drawable opacity to parameters instead).
+    if (cm.setPartOpacity) {
+      for (const [partIdx, value] of this.partOpacityOverrides) {
+        cm.setPartOpacity(partIdx, value);
+      }
+
+      if (!this._loggedSetCheck && cm.getPartOpacity) {
+        const first = this.partOpacityOverrides.entries().next().value;
+        if (first) {
+          const [idx, want] = first;
+          const got = cm.getPartOpacity(idx);
+          console.log(
+            `[Live2DAdapter] setPartOpacity verify part[${idx}]: want=${want}, read-back=${got}`,
+          );
+          this._loggedSetCheck = true;
+        }
+      }
+    }
+
+    // Channel 2 — direct drawable opacity mutation, by far the most reliable
+    // because it sits between propagation (which we hooked just before) and
+    // render. For models that ignore part opacity, this is the path that
+    // actually hides anything.
+    const drawables = getNativeDrawables(cm);
+    const opacities: Float32Array | undefined = drawables?.opacities;
+    if (opacities) {
+      for (const [partIdx, multiplier] of this.partOpacityOverrides) {
+        if (multiplier === 1) continue;
+        const list = this.partToDrawables.get(partIdx);
+        if (!list) continue;
+        for (const d of list) {
+          opacities[d] *= multiplier;
+        }
+      }
+
+      if (!this._loggedDrawableMutate) {
+        const first = this.partOpacityOverrides.entries().next().value;
+        if (first) {
+          const [idx] = first;
+          const list = this.partToDrawables.get(idx) ?? [];
+          const sample = list[0];
+          if (typeof sample === "number") {
+            console.log(
+              `[Live2DAdapter] drawable mutate verify: part[${idx}] → drawable[${sample}] opacity now=${opacities[sample]}`,
+            );
+            this._loggedDrawableMutate = true;
+          }
+        }
+      }
+    }
+  }
+
   getDisplayObject(): Container | null {
     return this.model;
   }
 
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
     const idx = this.findPartIndex(layerId);
+    console.log(`[Live2DAdapter] setLayerVisibility(${layerId}, ${visible}) → partIdx=${idx}`);
     if (idx == null) return;
     if (visible) {
       this.partOpacityOverrides.delete(idx);
     } else {
       this.partOpacityOverrides.set(idx, 0);
     }
-    // Apply once now so the next render reflects the change without
-    // waiting for the engine's next update tick.
+    // synchronous one-shot so we don't have to wait a tick for first feedback
     this.coreModel?.setPartOpacity?.(idx, visible ? 1 : 0);
   }
 
@@ -225,15 +322,12 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   /**
-   * Bounding box of the model in its own world units. Useful for caller-side
-   * fit-to-canvas math; the engine's Pixi-level width/height varies between
-   * builds, so we stick to native Cubism units.
+   * Native canvas size (Cubism units). Used by the page for fit-to-canvas.
    */
   getNativeSize(): { width: number; height: number } | null {
     const internal = this.model?.internalModel;
     const size = internal?.layout ?? internal?.canvasInfo;
     if (!size) {
-      // fall back to display object dims if exposed (pixi-live2d-display compat)
       // biome-ignore lint/suspicious/noExplicitAny: engine display surface
       const m = this.model as any;
       if (typeof m?.width === "number" && typeof m?.height === "number") {
@@ -250,10 +344,9 @@ export class Live2DAdapter implements AvatarAdapter {
   playAnimation(name: string): void {
     if (!this.model) return;
     try {
-      // engine exposes `motion(group, index?)` shorthand
       this.model.motion?.(name);
     } catch {
-      // some engine builds spell it differently; surface in v1.x exploration
+      // some engine builds spell it differently; surface during exploration
     }
   }
 
@@ -288,6 +381,7 @@ export class Live2DAdapter implements AvatarAdapter {
       this.beforeModelUpdateHandler = null;
     }
     this.partOpacityOverrides.clear();
+    this.partToDrawables.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
@@ -327,12 +421,44 @@ export class Live2DAdapter implements AvatarAdapter {
 }
 
 /**
+ * Reach the native Live2DCubismCore.Model.drawables handle through Cubism
+ * Framework wrappers. The native handle has typed-array fields (opacities,
+ * parentPartIndices, dynamicFlags) that we mutate directly.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: probing engine internals
+function getNativeDrawables(coreModel: any): any | null {
+  if (!coreModel) return null;
+  const candidates = [
+    coreModel._model?.drawables,
+    coreModel.model?.drawables,
+    coreModel._coreModel?._model?.drawables,
+    coreModel.drawables,
+  ];
+  for (const c of candidates) {
+    if (c?.opacities) return c;
+  }
+  return null;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: probing engine internals
+function getNativeParts(coreModel: any): any | null {
+  if (!coreModel) return null;
+  const candidates = [
+    coreModel._model?.parts,
+    coreModel.model?.parts,
+    coreModel._coreModel?._model?.parts,
+    coreModel.parts,
+  ];
+  for (const c of candidates) {
+    if (c?.parentIndices) return c;
+  }
+  return null;
+}
+
+/**
  * Cubism Core's getPartId / getParameterId returns CubismIdHandle objects
- * (`{ _id: string, getString(): string }`), not raw strings. The engine
- * accepts either when calling setParameterValueById, but storing the handle
- * in our domain model means React tries to render it as text and throws.
- *
- * Coerce to string at the adapter boundary.
+ * (`{ _id, getString() }`). We coerce to a plain string at the boundary so
+ * React can render the layer name without throwing.
  */
 function coerceCubismId(value: unknown, fallback: string): string {
   if (typeof value === "string") return value;
