@@ -10,19 +10,19 @@ Phase 0의 기술 부트스트랩. 첫 코드 작성 + 새 GitHub 레포에 push
 - [x] git identity: `JangHaryeom <101104772+CocoRoF@users.noreply.github.com>` (메모리 reference)
 - [x] pnpm 10.33.3 (corepack 활성화)
 
-## 체크리스트 — 진행 중
+## 체크리스트 — 완료
 
 - [x] Next.js 15 + TS + Tailwind v4 + Biome 수동 스캐폴드 (docs/ 보존)
-- [ ] `pnpm install` 의존성 설치 (진행 중)
-- [x] 최소 랜딩 페이지 — docs 상태와 연결되는 placeholder
-- [ ] dev 서버 부팅 확인
-- [ ] `git init` + `.gitignore` + 첫 커밋
-- [x] GitHub 레포 가시성 확인 — **둘 다 private. 메인 `geny-avatar` + 폐쇄 바이너리 전용 `geny-avatar-vendor` (submodule). main 브랜치.**
-- [ ] `geny-avatar-vendor` private 레포 생성 (placeholder README만)
-- [ ] `geny-avatar` private 레포 생성 + push
-- [ ] vendor 레포를 `vendor/` 경로 submodule로 등록 (실제 바이너리는 Phase 0 PoC 시점에 채움)
-- [ ] 메모리 reference에 신규 레포 두 개 추가
-- [ ] plan/03_tech_stack에 vendor submodule 패턴 명문화
+- [x] `pnpm install` 의존성 설치 (Next 15.5.15 + 9 packages, 약 19분 소요)
+- [x] 최소 랜딩 페이지 — 8 phase 로드맵 + 두 철학(P1·P2) 카드
+- [x] dev 서버 부팅 확인 — Turbopack, 980ms ready, HTTP 200, Tailwind 적용 확인
+- [x] `git init` + `.gitignore` + 첫 커밋 (`485fb5b`)
+- [x] GitHub 레포 가시성 확인 — 둘 다 private, main 브랜치
+- [x] `geny-avatar-vendor` private 레포 생성 + placeholder push → https://github.com/CocoRoF/geny-avatar-vendor
+- [x] `geny-avatar` private 레포 생성 + push → https://github.com/CocoRoF/geny-avatar
+- [x] vendor 레포를 `vendor/` 경로 submodule로 등록 + push (`477a7a4`)
+- [x] plan/03_tech_stack에 "레포 구성 — 메인 + Vendor Submodule" 섹션, plan/02에 D9 추가
+- [x] 메모리 reference 갱신 (이 progress 종료 후)
 
 ## 결정 — 스캐폴드 방식
 
@@ -61,5 +61,50 @@ pnpm install --reporter=ndjson > /tmp/pnpm-install.log 2>&1
 
 ### 2026-05-06 10:38 — install 진행 중 (next 다운로드)
 
-(완료 시 갱신)
+연결이 느려 `next@15.5.15` (~50MB) + `@next/swc-linux-x64-gnu` (~30MB)에 19분 소요. ndjson reporter 로그가 진행 상황 추적에 유용.
+
+### 2026-05-06 10:56 — install 완료 + dev 부팅 검증
+
+`pnpm-lock.yaml` 생성, `node_modules/next/package.json` 확인 (15.5.15). `pnpm dev` (Turbopack) 실행 → 980ms ready. `curl http://localhost:3000/` → HTTP 200, HTML에 `<title>geny-avatar</title>`, Tailwind CSS chunk 로드, 한국어 lang 적용 확인. 서버 종료.
+
+### 2026-05-06 10:58 — git init + 첫 커밋
+
+`git init -b main` + identity 설정 (메모리 reference 따름) + `node_modules/`, `.next/`, `.env*` gitignore 확인 후 모든 신규 파일 stage → 커밋 `485fb5b "Initial commit — Phase 0 bootstrap"`. 28 files, 2400+ lines.
+
+### 2026-05-06 11:00 — vendor 레포 생성 + push
+
+`/tmp/geny-avatar-vendor/` 에 placeholder README + .gitignore → `git init -b main` → 커밋. `gh repo create geny-avatar-vendor --private --source=. --push`로 GitHub에 한 번에 생성·push.
+
+### 2026-05-06 11:02 — 메인 레포 생성 + push
+
+`gh repo create geny-avatar --private --source=. --push`로 GitHub 생성·push. 28 files initial commit이 그대로 올라감.
+
+### 2026-05-06 11:03 — vendor submodule 등록 + push
+
+`git submodule add https://github.com/CocoRoF/geny-avatar-vendor.git vendor` → `.gitmodules` 자동 생성, `vendor/` 클론됨 (placeholder README만). 커밋 `477a7a4 "Add vendor submodule"` → push.
+
+## 산출물
+
+| 레포 | URL | 가시성 | 첫 커밋 | 두 번째 커밋 |
+|---|---|---|---|---|
+| `geny-avatar` | https://github.com/CocoRoF/geny-avatar | private | `485fb5b` Initial bootstrap | `477a7a4` Add vendor submodule |
+| `geny-avatar-vendor` | https://github.com/CocoRoF/geny-avatar-vendor | private | `9ec4e8a` placeholder | — |
+
+## 다음 (Phase 0 본 작업)
+
+이 부트스트랩은 Phase 0의 환경 준비. Phase 0의 본 작업은 PoC 두 개:
+
+1. **spine-pixi-v8 PoC** — `pnpm add @esotericsoftware/spine-pixi-v8 pixi.js` 후 spineboy 띄우고 slot 토글 → 어댑터 인터페이스 1차 안 검증
+2. **untitled-pixi-live2d-engine PoC** — Cubism Core를 `vendor/` 레포에 추가 → 메인에서 import → Hiyori 띄우고 drawable 토글
+3. **T-rt1 검증** — 두 런타임을 같은 Pixi Application에 동시 마운트, GL state 충돌 확인
+4. **T-rt2·T9 검증** — Spine 3.8 / Cubism 2 호환성 실측
+
+이 네 가지가 끝나면 Phase 0 종료, Phase 1 (Dual Runtime + Upload) 진입.
+
+## 학습
+
+- pnpm install이 첫 백그라운드 시도에서 stuck됨 — `tail -40` 파이프 버퍼링이 출력 0 byte처럼 보이게 만들었지만 실제로는 같은 디렉터리에 두 인스턴스가 동시에 떠서 lockfile 경합 가능성. 클린 재실행 + ndjson reporter로 해결. 다음번 install은 한 인스턴스만 실행 + ndjson로 진행.
+- `gh repo create --source=. --push`가 init 안 된 레포에는 작동 안 함. 먼저 `git init` + 첫 커밋 후 호출. 정상 작동.
+- submodule 등록 후 `vendor/` 안에 README가 보이려면 vendor 레포가 먼저 push 되어 있어야 함 (위 순서대로 했으므로 OK).
+
 
