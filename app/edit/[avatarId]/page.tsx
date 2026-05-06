@@ -5,8 +5,10 @@ import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
 import { loadPuppet, type PuppetId, type PuppetRow } from "@/lib/persistence/db";
+import { useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -56,7 +58,11 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
 
-  const { toggleLayer, bulkSetLayerVisibility, playAnimation } = usePuppetMutations(adapter);
+  const { toggleLayer, bulkSetLayerVisibility, playAnimation, reset, undo, redo } =
+    usePuppetMutations(adapter);
+  useEditorShortcuts({ undo, redo, reset });
+  const canUndo = useEditorStore((s) => s.past.length > 0);
+  const canRedo = useEditorStore((s) => s.future.length > 0);
 
   const headerName = puppetRow?.name ?? puppetId.slice(-6);
   const headerStatus = loadError
@@ -80,6 +86,32 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
               {puppetRow.version ? ` ${puppetRow.version}` : ""}
             </span>
           )}
+          <button
+            type="button"
+            onClick={undo}
+            disabled={!canUndo}
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Cmd/Ctrl+Z"
+          >
+            undo
+          </button>
+          <button
+            type="button"
+            onClick={redo}
+            disabled={!canRedo}
+            className="ml-1 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Cmd/Ctrl+Shift+Z"
+          >
+            redo
+          </button>
+          <button
+            type="button"
+            onClick={reset}
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
+            title="r"
+          >
+            reset
+          </button>
           <a
             href="/poc/library"
             className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"

@@ -10,13 +10,17 @@ import type { LayerId } from "./types";
  * function per user action that updates the store *and* tells the adapter
  * to mutate, so the two can never drift.
  *
- * The adapter is passed in (not stored), since it's a mutable runtime
- * object that doesn't belong inside the immer-managed store.
+ * undo/redo restore the whole visibilityOverrides map in one shot, then
+ * we walk it and re-issue setLayerVisibility on the adapter so the Pixi
+ * runtime reflects the same state.
  */
 export function usePuppetMutations(adapter: AvatarAdapter | null) {
   const setLayerVisibilityState = useEditorStore((s) => s.setLayerVisibility);
   const bulkSetLayerVisibilityState = useEditorStore((s) => s.bulkSetLayerVisibility);
   const setPlayingAnimationState = useEditorStore((s) => s.setPlayingAnimation);
+  const resetOverridesState = useEditorStore((s) => s.resetOverrides);
+  const undoState = useEditorStore((s) => s.undo);
+  const redoState = useEditorStore((s) => s.redo);
 
   const toggleLayer = useCallback(
     (id: LayerId, nextVisible: boolean) => {
@@ -44,5 +48,28 @@ export function usePuppetMutations(adapter: AvatarAdapter | null) {
     [adapter, setPlayingAnimationState],
   );
 
-  return { toggleLayer, bulkSetLayerVisibility, playAnimation };
+  const syncAdapterFromStore = useCallback(() => {
+    if (!adapter) return;
+    const visibility = useEditorStore.getState().visibilityOverrides;
+    for (const [layerId, visible] of Object.entries(visibility)) {
+      adapter.setLayerVisibility(layerId, visible);
+    }
+  }, [adapter]);
+
+  const reset = useCallback(() => {
+    resetOverridesState();
+    syncAdapterFromStore();
+  }, [resetOverridesState, syncAdapterFromStore]);
+
+  const undo = useCallback(() => {
+    undoState();
+    syncAdapterFromStore();
+  }, [undoState, syncAdapterFromStore]);
+
+  const redo = useCallback(() => {
+    redoState();
+    syncAdapterFromStore();
+  }, [redoState, syncAdapterFromStore]);
+
+  return { toggleLayer, bulkSetLayerVisibility, playAnimation, reset, undo, redo };
 }

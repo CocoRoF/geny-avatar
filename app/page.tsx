@@ -1,3 +1,5 @@
+import { BUILTIN_SAMPLES } from "@/lib/builtin/samples";
+
 type Phase = {
   id: string;
   title: string;
@@ -93,6 +95,39 @@ export default function Home() {
 
       <section className="mb-16">
         <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+          Built-in samples
+        </h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {BUILTIN_SAMPLES.map((s) => (
+            <a
+              key={s.key}
+              href={`/edit/builtin/${s.key}`}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4 hover:border-[var(--color-accent)]"
+            >
+              <div className="mb-1 flex items-baseline gap-2">
+                <span className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-xs text-[var(--color-accent)]">
+                  {s.runtime}
+                </span>
+                {s.version && (
+                  <span className="font-mono text-xs text-[var(--color-fg-dim)]">{s.version}</span>
+                )}
+              </div>
+              <div className="mb-1 text-base font-medium">{s.name}</div>
+              <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{s.blurb}</p>
+            </a>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-[var(--color-fg-dim)]">
+          본인 puppet은{" "}
+          <a href="/poc/upload" className="text-[var(--color-accent)] underline">
+            /poc/upload
+          </a>
+          에 드롭하면 라이브러리에 저장 후 같은 에디터로 진입.
+        </p>
+      </section>
+
+      <section className="mb-16">
+        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
           Operating Philosophies
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -183,7 +218,9 @@ export default function Home() {
             className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
           >
             <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
-            <div className="mt-1 text-sm">저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로</div>
+            <div className="mt-1 text-sm">
+              저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로
+            </div>
           </a>
         </div>
         <p className="mt-4 text-xs text-[var(--color-fg-dim)]">
