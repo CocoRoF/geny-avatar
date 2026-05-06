@@ -1,14 +1,16 @@
 "use client";
 
+import type { Application } from "pixi.js";
 import { useEffect, useState } from "react";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
-import { type PuppetId, savePuppet } from "@/lib/persistence/db";
+import { type PuppetId, savePuppet, updatePuppet } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
@@ -17,6 +19,7 @@ export default function UploadPocPage() {
   const [bundle, setBundle] = useState<ParsedBundle | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
+  const [app, setApp] = useState<Application | null>(null);
   const [savedId, setSavedId] = useState<PuppetId | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
@@ -26,6 +29,25 @@ export default function UploadPocPage() {
       if (bundle) disposeBundle(bundle);
     };
   }, [bundle]);
+
+  // Capture a thumbnail once both the puppet has rendered and the row exists.
+  useEffect(() => {
+    if (!app || !savedId) return;
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const blob = await captureThumbnail(app);
+        if (cancelled || !blob) return;
+        await updatePuppet(savedId, { thumbnailBlob: blob });
+      } catch (e) {
+        console.warn("[upload] thumbnail capture failed", e);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [app, savedId]);
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
   const { toggleLayer, bulkSetLayerVisibility, playAnimation, reset, undo, redo } =
@@ -81,6 +103,7 @@ export default function UploadPocPage() {
     setBundle(null);
     setParseError(null);
     setAdapter(null);
+    setApp(null);
     setSavedId(null);
     setSaveStatus("idle");
   }
@@ -170,7 +193,10 @@ export default function UploadPocPage() {
 
         <PuppetCanvas
           input={input}
-          onReady={(_avatar, a) => setAdapter(a)}
+          onReady={(_avatar, a, pixiApp) => {
+            setAdapter(a);
+            setApp(pixiApp);
+          }}
           onError={(e) => setParseError(e)}
           empty={<UploadDropzone onFiles={handleFiles} className="h-72 w-full max-w-2xl" />}
         />

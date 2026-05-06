@@ -15,9 +15,10 @@ type Props = {
   empty?: React.ReactNode;
   /**
    * Notify the page when a puppet is fully mounted. The page can use the
-   * adapter for subsequent mutations (it's not in the store).
+   * adapter for subsequent mutations (it's not in the store) and the app
+   * for e.g. thumbnail capture.
    */
-  onReady?: (avatar: Avatar, adapter: AvatarAdapter) => void;
+  onReady?: (avatar: Avatar, adapter: AvatarAdapter, app: Application) => void;
   /** Notify of load errors. */
   onError?: (error: string) => void;
   /** Background color override for the Pixi Application. */
@@ -53,7 +54,7 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
         adapter.playAnimation(initial.name);
         setPlaying(initial.name);
       }
-      onReady?.(avatar, adapter);
+      onReady?.(avatar, adapter, app);
     },
   });
 

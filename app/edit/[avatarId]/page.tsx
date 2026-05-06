@@ -1,13 +1,15 @@
 "use client";
 
+import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
-import { loadPuppet, type PuppetId, type PuppetRow } from "@/lib/persistence/db";
+import { loadPuppet, type PuppetId, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
@@ -20,6 +22,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const [puppetRow, setPuppetRow] = useState<PuppetRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
+  const [app, setApp] = useState<Application | null>(null);
 
   // Load the puppet from IndexedDB on mount.
   useEffect(() => {
@@ -55,6 +58,27 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       if (bundle) disposeBundle(bundle);
     };
   }, [bundle]);
+
+  // Refresh the row's thumbnail every time someone opens the editor —
+  // cheap (~10KB webp) and keeps the library card in sync with the
+  // current visibility/animation state at last open.
+  useEffect(() => {
+    if (!app) return;
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const blob = await captureThumbnail(app);
+        if (cancelled || !blob) return;
+        await updatePuppet(puppetId, { thumbnailBlob: blob });
+      } catch (e) {
+        console.warn("[edit] thumbnail capture failed", e);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [app, puppetId]);
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
 
@@ -122,7 +146,10 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
 
         <PuppetCanvas
           input={input}
-          onReady={(_avatar, a) => setAdapter(a)}
+          onReady={(_avatar, a, pixiApp) => {
+            setAdapter(a);
+            setApp(pixiApp);
+          }}
           onError={(e) => setLoadError(e)}
         />
 

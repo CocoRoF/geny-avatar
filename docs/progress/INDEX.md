@@ -43,6 +43,7 @@
 | 2026-05-06 | [27 phase1_4_kickoff](2026-05-06_27_phase1_4_kickoff.md) | 1.4 | 완료 — sub-sprint 분할 (1.4a/b) |
 | 2026-05-06 | [28 sprint_1_4a_store_components_edit](2026-05-06_28_sprint_1_4a_store_components_edit.md) | 1.4a | 완료 — Zustand store, 본 컴포넌트, /edit/[id] 페이지 |
 | 2026-05-06 | [29 sprint_1_4b_builtin_undo_shortcuts](2026-05-06_29_sprint_1_4b_builtin_undo_shortcuts.md) | 1.4b | 완료 — 내장 샘플 그리드, Undo/Redo, 키보드 단축키 |
+| 2026-05-06 | [30 phase2_kickoff_thumbnails](2026-05-06_30_phase2_kickoff_thumbnails.md) | 2.0 | 완료 — Phase 2 sub-sprint 분할 + puppet 썸네일 (extract → webp → IDB) |
 
 ## 운영 규칙
 

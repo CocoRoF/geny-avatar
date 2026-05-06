@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AssetOriginNote } from "@/lib/avatar/types";
 import { deletePuppet, listPuppets, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
 
@@ -91,6 +91,7 @@ export default function LibraryPage() {
                   href={`/edit/${p.id}`}
                   className="flex flex-1 flex-col p-4 hover:bg-[var(--color-bg)]"
                 >
+                  <PuppetThumb blob={p.thumbnailBlob} />
                   <div className="mb-1 flex items-baseline gap-2">
                     <span className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-xs text-[var(--color-accent)]">
                       {p.runtime}
@@ -142,6 +143,31 @@ export default function LibraryPage() {
         )}
       </div>
     </main>
+  );
+}
+
+function PuppetThumb({ blob }: { blob?: Blob }) {
+  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
+  useEffect(() => {
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [url]);
+
+  if (!url) {
+    return (
+      <div className="mb-3 flex aspect-square w-full items-center justify-center rounded border border-dashed border-[var(--color-border)] bg-[var(--color-bg)] text-xs text-[var(--color-fg-dim)]">
+        no preview
+      </div>
+    );
+  }
+  return (
+    // biome-ignore lint/performance/noImgElement: blob URLs aren't compatible with next/image optimization
+    <img
+      src={url}
+      alt=""
+      className="mb-3 aspect-square w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] object-contain"
+    />
   );
 }
 
