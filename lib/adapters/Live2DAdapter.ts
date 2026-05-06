@@ -76,7 +76,7 @@ export class Live2DAdapter implements AvatarAdapter {
     if (coreModel) {
       const partCount: number = coreModel.getPartCount?.() ?? 0;
       for (let i = 0; i < partCount; i++) {
-        const externalId: string = coreModel.getPartId?.(i) ?? `part_${i}`;
+        const externalId = coerceCubismId(coreModel.getPartId?.(i), `part_${i}`);
         const opacity: number = coreModel.getPartOpacity?.(i) ?? 1;
         const layer: Layer = {
           id: newId(ID_PREFIX.layer),
@@ -95,7 +95,7 @@ export class Live2DAdapter implements AvatarAdapter {
 
       const paramCount: number = coreModel.getParameterCount?.() ?? 0;
       for (let i = 0; i < paramCount; i++) {
-        const id: string = coreModel.getParameterId?.(i) ?? `param_${i}`;
+        const id = coerceCubismId(coreModel.getParameterId?.(i), `param_${i}`);
         const min: number = coreModel.getParameterMinimumValue?.(i) ?? 0;
         const max: number = coreModel.getParameterMaximumValue?.(i) ?? 1;
         const def: number = coreModel.getParameterDefaultValue?.(i) ?? 0;
@@ -200,7 +200,7 @@ export class Live2DAdapter implements AvatarAdapter {
     const out: Parameter[] = [];
     const count: number = this.coreModel.getParameterCount?.() ?? 0;
     for (let i = 0; i < count; i++) {
-      const id: string = this.coreModel.getParameterId?.(i) ?? `param_${i}`;
+      const id = coerceCubismId(this.coreModel.getParameterId?.(i), `param_${i}`);
       out.push({
         id,
         name: id,
@@ -243,4 +243,27 @@ export class Live2DAdapter implements AvatarAdapter {
     const base = url.replace(/\.model3\.json$/, "");
     return `${base}${suffix}`;
   }
+}
+
+/**
+ * Cubism Core's getPartId / getParameterId returns CubismIdHandle objects
+ * (`{ _id: string, getString(): string }`), not raw strings. The engine
+ * accepts either when calling setParameterValueById, but storing the handle
+ * in our domain model means React tries to render it as text and throws.
+ *
+ * Coerce to string at the adapter boundary.
+ */
+function coerceCubismId(value: unknown, fallback: string): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    // biome-ignore lint/suspicious/noExplicitAny: probing handle shape
+    const v = value as any;
+    if (typeof v.getString === "function") {
+      const s = v.getString();
+      if (typeof s === "string") return s;
+    }
+    if (typeof v._id === "string") return v._id;
+    if (typeof v.id === "string") return v.id;
+  }
+  return fallback;
 }

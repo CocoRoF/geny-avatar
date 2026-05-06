@@ -23,6 +23,7 @@
 | 2026-05-06 | [07 phase1_adapter_interface](2026-05-06_07_phase1_adapter_interface.md) | 1 | 완료 — 도메인 타입, 어댑터 인터페이스, Spine·Live2D 어댑터 클래스 |
 | 2026-05-06 | [08 cubism_modern_subexport](2026-05-06_08_cubism_modern_subexport.md) | 1 | 완료 — engine /cubism sub-export로 전환 (Cubism 2 런타임 회피) |
 | 2026-05-06 | [09 phase1_registry_and_poc_refactor](2026-05-06_09_phase1_registry_and_poc_refactor.md) | 1 | 완료 — Registry, usePuppet 훅, 세 PoC 페이지 어댑터 사용 리팩터 |
+| 2026-05-06 | [10 cubism_id_handle_coerce](2026-05-06_10_cubism_id_handle_coerce.md) | 1 | 완료 — Cubism ID handle을 어댑터 경계에서 string 변환 |
 
 ## 운영 규칙
 
