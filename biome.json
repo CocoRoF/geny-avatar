@@ -1,8 +1,25 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
   "files": {
-    "includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.json"],
-    "experimentalScannerIgnores": ["node_modules", ".next", "out", "docs"]
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.js",
+      "**/*.jsx",
+      "**/*.mjs",
+      "**/*.cjs",
+      "**/*.json",
+      "!**/node_modules",
+      "!**/.next",
+      "!**/out",
+      "!**/dist",
+      "!docs",
+      "!vendor",
+      "!public/samples",
+      "!public/runtime",
+      "!**/pnpm-lock.yaml",
+      "!next-env.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

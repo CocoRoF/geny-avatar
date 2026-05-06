@@ -122,8 +122,9 @@ export default function Home() {
               className="flex items-start gap-4 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4"
             >
               <span
-                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusDot(phase.status)}`}
+                role="img"
                 aria-label={phase.status}
+                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusDot(phase.status)}`}
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-2">
