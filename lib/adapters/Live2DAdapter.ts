@@ -1,4 +1,4 @@
-import type { Container } from "pixi.js";
+import { type Container, type Ticker, UPDATE_PRIORITY } from "pixi.js";
 import { ID_PREFIX, newId } from "../avatar/id";
 import type { Avatar, AvatarSource, Layer, LayerId, Parameter, RGBA } from "../avatar/types";
 import type {
@@ -42,15 +42,19 @@ export class Live2DAdapter implements AvatarAdapter {
    *  We can't rely on coreModel.setPartOpacity — motions write the part
    *  opacity through the parameter graph and overwrite our value on every
    *  model.update(). Instead we keep the multiplier here and apply it as
-   *  a *post-update* mutation on the drawable opacities Float32Array, which
-   *  motions don't touch directly.
+   *  a *post-update* mutation on the drawable opacities + the IsVisible bit
+   *  in dynamicFlags.
    */
   private partOpacityOverrides = new Map<number, number>();
   /** part-index → list of drawable indices that should follow that part's
    *  override. Includes drawables under descendant parts (Cubism parts can
    *  nest), built once at load(). */
   private partToDrawables = new Map<number, number[]>();
+  /** ticker we registered our per-frame fixup on, so we can detach it. */
+  private attachedTicker: Ticker | null = null;
+  /** RAF fallback used only when attachToTicker hasn't been called. */
   private rafHandle: number | null = null;
+  private overrideTickHandler: () => void = () => this.applyOverrides();
 
   static detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null {
     const lower = filenames.map((f) => f.toLowerCase());
@@ -236,16 +240,17 @@ export class Live2DAdapter implements AvatarAdapter {
     const idx = this.findPartIndex(layerId);
     if (idx == null) return;
     if (visible) {
-      // returning to default — no override needed; let the loop drain.
       this.partOpacityOverrides.delete(idx);
     } else {
       this.partOpacityOverrides.set(idx, 0);
       this.ensureOverrideLoop();
     }
+    // Apply once immediately so single-frame UI feedback isn't delayed
+    // by a tick.
+    this.applyOverrides();
   }
 
   setLayerColor(layerId: LayerId, color: RGBA): void {
-    // Part-level honors only alpha (capability: opacity-only).
     const idx = this.findPartIndex(layerId);
     if (idx == null) return;
     if (color.a >= 1) {
@@ -253,6 +258,25 @@ export class Live2DAdapter implements AvatarAdapter {
     } else {
       this.partOpacityOverrides.set(idx, color.a);
       this.ensureOverrideLoop();
+    }
+    this.applyOverrides();
+  }
+
+  attachToTicker(ticker: Ticker): void {
+    if (this.attachedTicker === ticker) return;
+    if (this.attachedTicker) {
+      this.attachedTicker.remove(this.overrideTickHandler, this);
+    }
+    // LOW priority runs after the engine's own update (NORMAL = 0) but
+    // before the renderer (registered at SYSTEM by Application). That's
+    // the only window where mutating drawable state takes effect for the
+    // current frame.
+    ticker.add(this.overrideTickHandler, this, UPDATE_PRIORITY.LOW);
+    this.attachedTicker = ticker;
+    // No RAF needed once we're on the ticker.
+    if (this.rafHandle != null) {
+      cancelAnimationFrame(this.rafHandle);
+      this.rafHandle = null;
     }
   }
 
@@ -316,6 +340,10 @@ export class Live2DAdapter implements AvatarAdapter {
       cancelAnimationFrame(this.rafHandle);
       this.rafHandle = null;
     }
+    if (this.attachedTicker) {
+      this.attachedTicker.remove(this.overrideTickHandler, this);
+      this.attachedTicker = null;
+    }
     this.partOpacityOverrides.clear();
     this.partToDrawables.clear();
     this.model?.destroy?.();
@@ -351,36 +379,64 @@ export class Live2DAdapter implements AvatarAdapter {
    * The loop self-stops when partOpacityOverrides empties, so toggling all
    * layers back to visible has zero ongoing cost.
    */
+  /**
+   * Called every frame (via Pixi ticker if attached, otherwise our RAF
+   * fallback). Mutates the native drawable arrays so that overridden parts
+   * stay hidden against motion updates.
+   *
+   * We hit two channels because either alone is unreliable across engine
+   * builds:
+   *
+   *  1. drawables.opacities (Float32Array) — multiply by 0 to hide.
+   *     Cubism Core's renderer reads this per-drawable.
+   *  2. drawables.dynamicFlags (Uint8Array), bit 0 = csmIsVisible —
+   *     clear it so the renderer can skip the drawable entirely. Some
+   *     engine paths early-out on this flag and never look at opacity.
+   */
+  private applyOverrides(): void {
+    const cm = this.coreModel;
+    if (!cm) return;
+    if (this.partOpacityOverrides.size === 0) return;
+
+    const drawables = getNativeDrawables(cm);
+    const opacities: Float32Array | undefined = drawables?.opacities ?? cm.getDrawableOpacities?.();
+    const flags: Uint8Array | undefined = drawables?.dynamicFlags;
+
+    if (opacities || flags) {
+      for (const [partIdx, multiplier] of this.partOpacityOverrides) {
+        if (multiplier === 1) continue;
+        const list = this.partToDrawables.get(partIdx);
+        if (!list) continue;
+        for (const d of list) {
+          if (opacities) opacities[d] *= multiplier;
+          if (flags && multiplier <= 0) {
+            // clear csmIsVisible (bit 0)
+            flags[d] = flags[d] & ~0x01;
+          }
+        }
+      }
+    } else if (cm.setPartOpacity) {
+      // last-ditch — engine exposes neither typed array; setPartOpacity
+      // loses to motion but is better than nothing.
+      for (const [index, value] of this.partOpacityOverrides) {
+        cm.setPartOpacity(index, value);
+      }
+    }
+  }
+
+  /**
+   * RAF fallback when no Pixi ticker is attached (e.g. tests / embed).
+   * Self-stops when overrides empty.
+   */
   private ensureOverrideLoop(): void {
-    if (this.rafHandle != null) return;
+    // If we're attached to a ticker, the ticker drives applyOverrides.
+    if (this.attachedTicker || this.rafHandle != null) return;
     const tick = () => {
       if (this.partOpacityOverrides.size === 0) {
         this.rafHandle = null;
         return;
       }
-      const cm = this.coreModel;
-      // Prefer the native typed array on Live2DCubismCore.Model.drawables.
-      // Wrapper methods (getDrawableOpacities) sometimes return a copy
-      // instead of a view, which means our mutation is discarded.
-      const drawables = getNativeDrawables(cm);
-      const opacities: Float32Array | undefined =
-        drawables?.opacities ?? cm?.getDrawableOpacities?.();
-      if (opacities) {
-        for (const [partIdx, multiplier] of this.partOpacityOverrides) {
-          if (multiplier === 1) continue;
-          const list = this.partToDrawables.get(partIdx);
-          if (!list) continue;
-          for (const d of list) {
-            opacities[d] *= multiplier;
-          }
-        }
-      } else if (cm?.setPartOpacity) {
-        // last-ditch fallback for engine builds with neither the buffer
-        // nor a typed-array view exposed.
-        for (const [index, value] of this.partOpacityOverrides) {
-          cm.setPartOpacity(index, value);
-        }
-      }
+      this.applyOverrides();
       this.rafHandle = requestAnimationFrame(tick);
     };
     this.rafHandle = requestAnimationFrame(tick);

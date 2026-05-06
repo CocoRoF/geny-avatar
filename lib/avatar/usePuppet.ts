@@ -88,6 +88,10 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
         const display = adapter.getDisplayObject();
         if (display) app.stage.addChild(display);
 
+        // Adapters that need per-frame fixups (Cubism opacity overrides
+        // that have to outrun motion updates) hook into the ticker here.
+        adapter.attachToTicker?.(app.ticker);
+
         await onMountRef.current?.(avatar, adapter, app);
 
         if (cancelled) {

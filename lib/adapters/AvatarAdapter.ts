@@ -10,7 +10,7 @@
  *            docs/plan/04_data_model.md
  */
 
-import type { Container } from "pixi.js";
+import type { Container, Ticker } from "pixi.js";
 import type { Avatar, AvatarSourceRuntime, LayerId, Parameter, RGBA } from "../avatar/types";
 
 // ----- capability flags -----
@@ -90,6 +90,14 @@ export interface AvatarAdapter {
 
   /** read parameters — empty for runtimes without a parameter graph */
   getParameters(): Parameter[];
+
+  /**
+   * Optional: attach the adapter to a Pixi ticker. Adapters that need to
+   * run per-frame fixups (e.g. Cubism opacity overrides that have to outrun
+   * the engine's motion update) register their callback at a controlled
+   * priority here. Spine doesn't need this and leaves it unimplemented.
+   */
+  attachToTicker?(ticker: Ticker): void;
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;

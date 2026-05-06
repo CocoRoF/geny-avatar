@@ -74,6 +74,7 @@ export default function DualMountPocPage() {
         try {
           const avatar = await cubismAdapter.load(CUBISM_INPUT);
           if (cancelled) return;
+          cubismAdapter.attachToTicker?.(app.ticker);
           const display = cubismAdapter.getDisplayObject();
           if (display) {
             // biome-ignore lint/suspicious/noExplicitAny: engine display object
