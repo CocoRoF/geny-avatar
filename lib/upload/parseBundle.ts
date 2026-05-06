@@ -113,9 +113,10 @@ async function unpackZip(zipFile: File): Promise<BundleEntry[]> {
   const buffer = new Uint8Array(await zipFile.arrayBuffer());
   const unzipped = unzipSync(buffer);
   const out: BundleEntry[] = [];
-  for (const [path, bytes] of Object.entries(unzipped)) {
+  for (const [rawPath, bytes] of Object.entries(unzipped)) {
     // skip directory entries — fflate emits them as zero-byte trailing-slash names
-    if (path.endsWith("/") || bytes.byteLength === 0) continue;
+    if (rawPath.endsWith("/") || bytes.byteLength === 0) continue;
+    const path = recodeZipName(rawPath);
     const name = path.split("/").pop() ?? path;
     // wrap the Uint8Array so the underlying ArrayBuffer can be reused; we
     // construct the Blob lazily so memory isn't doubled until needed.
@@ -123,6 +124,47 @@ async function unpackZip(zipFile: File): Promise<BundleEntry[]> {
     out.push({ name, path, size: bytes.byteLength, blob });
   }
   return out;
+}
+
+/**
+ * fflate decodes ZIP file names as latin-ish (CP437) when the ZIP doesn't
+ * set the UTF-8 general-purpose flag. Many real-world tools (Windows
+ * Explorer pre-2018, some Chinese/Korean/Japanese OSes) write UTF-8 bytes
+ * without setting that flag, so we get mojibake like
+ *   "免费模型艾莲" → "Ãå · ÑÅéÐ¦ ¬Ä~"
+ *
+ * Recover by re-extracting the original bytes (each char is 0-255) and
+ * trying common decodings in order: UTF-8 (most likely), GBK (Simplified
+ * Chinese), Shift_JIS (Japanese). UTF-8 in fatal mode rejects invalid
+ * sequences; if it succeeds, the recovered name is identical to the
+ * original.
+ */
+function recodeZipName(name: string): string {
+  // ASCII names need no recoding
+  let allAscii = true;
+  for (let i = 0; i < name.length; i++) {
+    if (name.charCodeAt(i) > 127) {
+      allAscii = false;
+      break;
+    }
+  }
+  if (allAscii) return name;
+
+  const bytes = new Uint8Array(name.length);
+  for (let i = 0; i < name.length; i++) bytes[i] = name.charCodeAt(i) & 0xff;
+
+  for (const encoding of ["utf-8", "gbk", "shift_jis", "euc-kr"] as const) {
+    try {
+      const decoded = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+      // sanity — decoded shouldn't contain replacement chars even in
+      // non-fatal cases, and shouldn't be longer than original bytes
+      // unless the encoding genuinely expanded.
+      if (!decoded.includes("�")) return decoded;
+    } catch {
+      // this encoding rejected the byte sequence; try the next.
+    }
+  }
+  return name;
 }
 
 function makeUrl(entry: BundleEntry, sink: string[]): string {
