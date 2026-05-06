@@ -34,6 +34,12 @@ export async function parseBundle(input: File | File[] | BundleEntry[]): Promise
     }
   }
 
+  // Normalize Blob MIME types. Pixi Assets and the Cubism engine pick a
+  // parser based on the response's Content-Type when fetching a URL —
+  // blob: URLs reflect the source Blob's `type` field. Without this every
+  // texture comes back null with "we don't know how to parse it".
+  entries = entries.map(ensureBlobType);
+
   if (entries.length === 0) {
     return {
       ok: false,
@@ -118,12 +124,42 @@ async function unpackZip(zipFile: File): Promise<BundleEntry[]> {
     if (rawPath.endsWith("/") || bytes.byteLength === 0) continue;
     const path = recodeZipName(rawPath);
     const name = path.split("/").pop() ?? path;
-    // wrap the Uint8Array so the underlying ArrayBuffer can be reused; we
-    // construct the Blob lazily so memory isn't doubled until needed.
-    const blob = new Blob([new Uint8Array(bytes)]);
+    const blob = new Blob([new Uint8Array(bytes)], { type: mimeForPath(path) });
     out.push({ name, path, size: bytes.byteLength, blob });
   }
   return out;
+}
+
+/**
+ * If a BundleEntry's Blob has no MIME type, wrap it in a new Blob whose
+ * type is inferred from the path. Used for IndexedDB replay (older saves
+ * may have type-less Blobs) and for plain folder drops where File.type
+ * was empty for unrecognized extensions.
+ *
+ * The wrap shares the underlying memory — no copy. Free, just necessary.
+ */
+function ensureBlobType(entry: BundleEntry): BundleEntry {
+  if (entry.blob.type) return entry;
+  return {
+    ...entry,
+    blob: new Blob([entry.blob], { type: mimeForPath(entry.path) }),
+  };
+}
+
+/**
+ * Filename → MIME mapping for the file kinds we ship through the parser.
+ * Anything unknown falls back to application/octet-stream, which Pixi
+ * won't try to auto-parse but will at least let the engine fetch().
+ */
+function mimeForPath(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".atlas")) return "text/plain";
+  // .moc3, .skel, .bin etc. — opaque binary
+  return "application/octet-stream";
 }
 
 /**

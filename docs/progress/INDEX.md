@@ -37,6 +37,7 @@
 | 2026-05-06 | [21 sprint_1_3c_persistence](2026-05-06_21_sprint_1_3c_persistence.md) | 1.3c | 완료 — Dexie + 자동 저장 + 자산 라이브러리 |
 | 2026-05-06 | [22 sprint_1_3d_origin_close](2026-05-06_22_sprint_1_3d_origin_close.md) | 1.3d | 완료 — origin select, test assets 가이드, Phase 1.3 마무리 |
 | 2026-05-06 | [23 zip_filename_mojibake](2026-05-06_23_zip_filename_mojibake.md) | 1.3 fix | 완료 — UTF-8/GBK/Shift_JIS/EUC-KR 자동 복원 |
+| 2026-05-06 | [24 blob_mime_type](2026-05-06_24_blob_mime_type.md) | 1.3 fix | 완료 — Blob type 부여로 Pixi parser 인식 |
 
 ## 운영 규칙
 
