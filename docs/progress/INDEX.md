@@ -28,6 +28,7 @@
 | 2026-05-06 | [12 cubism_drawable_opacity_override](2026-05-06_12_cubism_drawable_opacity_override.md) | 1 | 완료 — 진짜 hide-all 작동 (drawable opacity 직접 mutate) |
 | 2026-05-06 | [13 cubism_native_handle_fallback](2026-05-06_13_cubism_native_handle_fallback.md) | 1 | 완료 — native Live2DCubismCore handle fallback + 진단 로그 |
 | 2026-05-06 | [14 cubism_ticker_priority_and_dynamic_flags](2026-05-06_14_cubism_ticker_priority_and_dynamic_flags.md) | 1 | 완료 — Pixi ticker LOW priority + dynamicFlags IsVisible bit |
+| 2026-05-06 | [15 cubism_beforeModelUpdate_hook](2026-05-06_15_cubism_beforeModelUpdate_hook.md) | 1 | 완료 — 엔진의 beforeModelUpdate 이벤트 직접 hook (정공법) |
 
 ## 운영 규칙
 
