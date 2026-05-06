@@ -23,6 +23,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.5(react@19.2.5)
+      untitled-pixi-live2d-engine:
+        specifier: ^1.1.0
+        version: 1.1.0(@pixi/sound@6.0.1(pixi.js@8.18.1))(pixi.js@8.18.1)
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.0.0
@@ -352,6 +355,11 @@ packages:
 
   '@pixi/colord@2.9.6':
     resolution: {integrity: sha512-nezytU2pw587fQstUu1AsJZDVEynjskwOL+kibwcdxsMBFqPsFFNA7xl0ii/gXuDi6M0xj3mfRJj8pBSc2jCfA==}
+
+  '@pixi/sound@6.0.1':
+    resolution: {integrity: sha512-hpFlQSScAR2L/CsEoIvDi7s1oGsu8y9Zd742Vd3982N+q3IF2vFuIfV9HN4ryjlGnhCT8yBlEgs1gp4G9Rt9TA==}
+    peerDependencies:
+      pixi.js: ^8.0.0
 
   '@swc/helpers@0.5.15':
     resolution: {integrity: sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==}
@@ -688,6 +696,12 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  untitled-pixi-live2d-engine@1.1.0:
+    resolution: {integrity: sha512-zhWZbsLttGW5R30NjWqQw57bLiKPJ1yx7A95R1JnTgTbVEKCdUcksxi0IWw5uJ20LW7ap3FhNdv1MJBxcL48Yg==}
+    peerDependencies:
+      '@pixi/sound': ^6.0.1
+      pixi.js: ^8.13.1
+
 snapshots:
 
   '@alloc/quick-lru@5.2.0': {}
@@ -886,6 +900,10 @@ snapshots:
     optional: true
 
   '@pixi/colord@2.9.6': {}
+
+  '@pixi/sound@6.0.1(pixi.js@8.18.1)':
+    dependencies:
+      pixi.js: 8.18.1
 
   '@swc/helpers@0.5.15':
     dependencies:
@@ -1176,3 +1194,8 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
+
+  untitled-pixi-live2d-engine@1.1.0(@pixi/sound@6.0.1(pixi.js@8.18.1))(pixi.js@8.18.1):
+    dependencies:
+      '@pixi/sound': 6.0.1(pixi.js@8.18.1)
+      pixi.js: 8.18.1

@@ -17,6 +17,7 @@
 | 2026-05-06 | [01 kickoff](2026-05-06_01_kickoff.md) | 0 | 완료 (docs 1차) |
 | 2026-05-06 | [02 phase0_bootstrap](2026-05-06_02_phase0_bootstrap.md) | 0 | 완료 — Next.js 부트, 두 private 레포 생성, vendor submodule |
 | 2026-05-06 | [03 phase0_spine_poc](2026-05-06_03_phase0_spine_poc.md) | 0 | 완료 — pixi+spine 설치, spineboy 마운트, 슬롯 토글 검증 |
+| 2026-05-06 | [04 phase0_cubism_poc](2026-05-06_04_phase0_cubism_poc.md) | 0 | 완료 — engine 1.1.0 설치, Hiyori 마운트, Part 토글 + Motion |
 
 ## 운영 규칙
 

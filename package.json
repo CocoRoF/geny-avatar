@@ -20,7 +20,8 @@
     "next": "^15.0.0",
     "pixi.js": "^8.18.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "untitled-pixi-live2d-engine": "^1.1.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
