@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
-import { extractLayerCanvas } from "@/lib/avatar/regionExtract";
+import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { useEditorStore } from "@/lib/store/editor";
 
@@ -28,6 +28,7 @@ export function DecomposeStudio({ adapter, layer }: Props) {
   const close = useEditorStore((s) => s.setStudioLayer);
   const setMask = useEditorStore((s) => s.setLayerMask);
   const existingMask = useEditorStore((s) => s.layerMasks[layer.id] ?? null);
+  const existingTexture = useEditorStore((s) => s.layerTextureOverrides[layer.id] ?? null);
 
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -46,6 +47,11 @@ export function DecomposeStudio({ adapter, layer }: Props) {
   const [dirty, setDirty] = useState(false);
 
   // ----- load source + initial mask -----
+  // Source = base layer + texture override (if any). The mask layer is
+  // loaded into its own canvas so the user can paint additional strokes
+  // on top of the gen-applied source. Triple-stacked workflow works:
+  // a previously applied gen shows up as the source, the previous mask
+  // shows up as red painted strokes, and new strokes compose with both.
   useEffect(() => {
     setReady(false);
     setError(null);
@@ -54,34 +60,50 @@ export function DecomposeStudio({ adapter, layer }: Props) {
       setError("layer has no texture region");
       return;
     }
-    const extracted = extractLayerCanvas(adapter, layer);
-    if (!extracted) {
-      setError("region rect is empty / unrenderable");
-      return;
-    }
-    sourceCanvasRef.current = extracted.canvas;
-    clipPathRef.current = extracted.clip;
 
-    // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked
-    const mask = document.createElement("canvas");
-    mask.width = extracted.canvas.width;
-    mask.height = extracted.canvas.height;
-    maskCanvasRef.current = mask;
+    let cancelled = false;
+    void (async () => {
+      const extracted = await extractCurrentLayerCanvas(adapter, layer, {
+        texture: existingTexture,
+        // Mask is loaded separately into the brush canvas (see below)
+        // so the user can edit it. Don't pre-apply to the source.
+      });
+      if (cancelled) return;
+      if (!extracted) {
+        setError("region rect is empty / unrenderable");
+        return;
+      }
+      sourceCanvasRef.current = extracted.canvas;
+      clipPathRef.current = extracted.clip;
 
-    if (existingMask) {
-      // restore previous mask if any
-      const img = new Image();
-      img.onload = () => {
-        const ctx = mask.getContext("2d");
-        if (ctx) ctx.drawImage(img, 0, 0, mask.width, mask.height);
+      // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked
+      const mask = document.createElement("canvas");
+      mask.width = extracted.canvas.width;
+      mask.height = extracted.canvas.height;
+      maskCanvasRef.current = mask;
+
+      if (existingMask) {
+        // restore previous mask if any
+        const img = new Image();
+        img.onload = () => {
+          if (cancelled) return;
+          const ctx = mask.getContext("2d");
+          if (ctx) ctx.drawImage(img, 0, 0, mask.width, mask.height);
+          setReady(true);
+        };
+        img.onerror = () => {
+          if (!cancelled) setReady(true);
+        };
+        img.src = URL.createObjectURL(existingMask);
+      } else {
         setReady(true);
-      };
-      img.onerror = () => setReady(true);
-      img.src = URL.createObjectURL(existingMask);
-    } else {
-      setReady(true);
-    }
-  }, [adapter, layer, existingMask]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter, layer, existingMask, existingTexture]);
 
   // ----- redraw preview whenever something changes -----
   const redraw = useCallback(() => {

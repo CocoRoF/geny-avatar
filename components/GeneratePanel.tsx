@@ -12,7 +12,7 @@ import {
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
-import { extractLayerCanvas } from "@/lib/avatar/regionExtract";
+import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { type AIJobRow, listAIJobsForLayer, saveAIJob } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
@@ -42,6 +42,7 @@ type Props = {
 export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   const close = useEditorStore((s) => s.setGenerateLayer);
   const existingMask = useEditorStore((s) => s.layerMasks[layer.id] ?? null);
+  const existingTexture = useEditorStore((s) => s.layerTextureOverrides[layer.id] ?? null);
   const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
 
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
@@ -72,7 +73,14 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
-  // ----- mount: extract source region (display canvas not yet in DOM) -----
+  // ----- mount: extract the layer's *current visible* state -----
+  // Source includes both the saved gen and the saved mask. This way:
+  //  1. The user sees what the layer actually looks like right now
+  //     (matching the live render), so they can iterate on real
+  //     content rather than the pristine original.
+  //  2. The AI receives this current visible state as input — past
+  //     gen and mask are baked in, so the next generation refines
+  //     what's there instead of starting over.
   useEffect(() => {
     setReady(false);
     setError(null);
@@ -80,14 +88,26 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       setError("layer has no texture region");
       return;
     }
-    const extracted = extractLayerCanvas(adapter, layer);
-    if (!extracted) {
-      setError("region rect is empty / unrenderable");
-      return;
-    }
-    sourceCanvasRef.current = extracted.canvas;
-    setReady(true);
-  }, [adapter, layer]);
+
+    let cancelled = false;
+    void (async () => {
+      const extracted = await extractCurrentLayerCanvas(adapter, layer, {
+        texture: existingTexture,
+        mask: existingMask,
+      });
+      if (cancelled) return;
+      if (!extracted) {
+        setError("region rect is empty / unrenderable");
+        return;
+      }
+      sourceCanvasRef.current = extracted.canvas;
+      setReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter, layer, existingTexture, existingMask]);
 
   // ----- after-mount: paint extracted source onto the display canvas -----
   // Split from the extract effect because the display `<canvas>` is only

@@ -131,3 +131,82 @@ export function extractLayerCanvas(
   ctx.restore();
   return { canvas: out, clip };
 }
+
+/**
+ * Like `extractLayerCanvas`, but composites the layer's saved
+ * overrides on top of the base extraction. The returned canvas
+ * matches what the live atlas currently renders for this layer —
+ * stacking the user's previous edits step by step.
+ *
+ * Composition order mirrors `applyLayerOverrides`:
+ *   1. Base = extractLayerCanvas (original triangle-clipped atlas)
+ *   2. Texture override (source-over) — AI-generated content covers
+ *      the layer footprint
+ *   3. Mask (destination-out) — wipes the user-marked region
+ *
+ * Both blobs are sized to the layer's upright rect already
+ * (postprocessGeneratedBlob and DecomposeStudio's save bake to that
+ * dim), so we draw them directly without any further transform.
+ *
+ * Used by:
+ *   - DecomposeStudio (texture only — the user is about to edit the
+ *     mask, so we leave the mask layer fresh and load any saved mask
+ *     into the brush canvas separately).
+ *   - GeneratePanel (both — the user sees and the AI receives the
+ *     full current visible state, enabling iterative refinement).
+ */
+export type LayerOverrideBlobs = {
+  texture?: Blob | null;
+  mask?: Blob | null;
+};
+
+export async function extractCurrentLayerCanvas(
+  adapter: AvatarAdapter,
+  layer: Layer,
+  overrides: LayerOverrideBlobs,
+): Promise<{ canvas: HTMLCanvasElement; clip: Path2D | null } | null> {
+  const base = extractLayerCanvas(adapter, layer);
+  if (!base) return null;
+
+  const ctx = base.canvas.getContext("2d");
+  if (!ctx) return base;
+
+  if (overrides.texture) {
+    const img = await blobToImageSafe(overrides.texture);
+    if (img) {
+      ctx.save();
+      // Source-over by default. We *don't* re-apply the triangle clip
+      // here — the texture blob has already been alpha-enforced
+      // against the base footprint at apply time, so its alpha
+      // already matches the silhouette.
+      ctx.drawImage(img, 0, 0, base.canvas.width, base.canvas.height);
+      ctx.restore();
+    }
+  }
+
+  if (overrides.mask) {
+    const img = await blobToImageSafe(overrides.mask);
+    if (img) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.drawImage(img, 0, 0, base.canvas.width, base.canvas.height);
+      ctx.restore();
+    }
+  }
+
+  return base;
+}
+
+async function blobToImageSafe(blob: Blob): Promise<HTMLImageElement | null> {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await new Promise<HTMLImageElement | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
