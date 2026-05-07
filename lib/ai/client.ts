@@ -81,39 +81,50 @@ export function padToOpenAISquare(canvas: HTMLCanvasElement): {
   out.height = OPENAI_TARGET;
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
+  // Fill with opaque white before placing the layer. gpt-image-2
+  // returns its result as a fully-opaque PNG, which means transparent
+  // input pixels effectively render as black in the model's
+  // visualization — and that black bias spills into the edit region:
+  // a "change red to skin color" prompt against a black-surround
+  // input yields dark/black tones, not skin tones. A clean white
+  // backdrop gives the model an unambiguous palette to work against
+  // and yields the natural skin tones the user expects. The padded
+  // area is still flagged "preserve" in the mask so the model copies
+  // it through verbatim.
+  ctx.fillStyle = "rgba(255, 255, 255, 1)";
+  ctx.fillRect(0, 0, out.width, out.height);
   ctx.drawImage(canvas, dx, dy, drawW, drawH);
   return { canvas: out, offset: { x: dx, y: dy, w: drawW, h: drawH } };
 }
 
 /**
- * Build the OpenAI edit mask. The output is *always* dimension-matched
- * to the padded source canvas and the mask alpha channel encodes:
+ * Build the OpenAI edit mask. The output is always dimension-matched
+ * to the padded source canvas and uses a clean **bbox-based binary**
+ * alpha channel:
  *
- *   - alpha=255 (preserve): outside the layer's footprint OR inside
- *     the footprint but inside the user's painted mask.
- *   - alpha=0 (edit): inside the layer's footprint and *outside* the
- *     user's painted mask. (When no user mask exists, the whole
- *     footprint is editable.)
+ *   - alpha=255 (preserve): outside the layer's offset rectangle, or
+ *     inside the rectangle but covered by the user's painted mask.
+ *   - alpha=0 (edit):       inside the offset rectangle and outside
+ *     the user's painted mask. When no user mask exists the whole
+ *     offset rectangle is editable.
  *
- * Why this convention. DecomposeStudio's mask is the user saying
- * "erase this region from the final render"; the live compositor
- * applies it as a destination-out wipe. When the same mask is sent
- * to OpenAI, we want the AI to *leave that region alone* (it's about
- * to be erased anyway) and edit the rest of the layer per the prompt.
- * After OpenAI returns, the texture blob carries:
- *   - inside the user's marked region: original pixels (preserved)
- *   - the rest of the layer: AI-edited pixels
- * Compositing then paints the texture and applies the mask
- * destination-out: the marked region is wiped to transparent, the
- * rest shows the AI's work. The two overrides stack as the user
- * expects.
+ * Why bbox instead of triangle silhouette. The earlier design read
+ * the padded source's alpha channel and built a footprint-shaped
+ * editable region — but that shape has anti-aliased edges and is
+ * broken into tiny fragments along the silhouette boundary, which
+ * gpt-image-2 handles inconsistently (often producing dark or
+ * generation-only outputs). A solid rectangular edit region is much
+ * easier for the model to reason about, and the over-paint that
+ * spills into the bbox corners outside the actual silhouette gets
+ * clipped during postprocess (alpha enforce against the source layer
+ * canvas).
  *
- * "Inside footprint" comes from the padded source's alpha channel —
- * extractLayerCanvas triangle-clips the source so source.alpha is
- * exactly the layer's silhouette, including soft edges. This is also
- * what stops OpenAI from painting a background around the layer:
- * outside-footprint pixels are flagged preserve, and the spec
- * promises identical-pixel copy for preserved regions.
+ * Why this is also the user's mental model. DecomposeStudio's mask
+ * means "erase this region from the final render"; the live
+ * compositor applies it destination-out. When sent here, marked
+ * pixels become alpha=255 (preserve) so the AI doesn't waste effort
+ * on a region that's about to be erased — the compositor finishes
+ * the erase after the AI texture lands.
  */
 export async function buildOpenAIEditMask(
   paddedSource: HTMLCanvasElement,
@@ -131,14 +142,7 @@ export async function buildOpenAIEditMask(
   const outCtx = out.getContext("2d");
   if (!outCtx) throw new Error("2d context unavailable");
 
-  // Source alpha tells us where the layer is.
-  const srcCtx = paddedSource.getContext("2d");
-  if (!srcCtx) throw new Error("2d context unavailable");
-  const srcData = srcCtx.getImageData(0, 0, W, H);
-
   // Rasterize the user mask into the padded coordinate space (if any).
-  // Anywhere outside `offset` reads as alpha=0, treated as "user
-  // didn't mark this".
   let userData: ImageData | null = null;
   if (userMaskBlob) {
     const um = document.createElement("canvas");
@@ -156,33 +160,35 @@ export async function buildOpenAIEditMask(
     }
   }
 
+  const xMin = offset.x;
+  const yMin = offset.y;
+  const xMax = offset.x + offset.w;
+  const yMax = offset.y + offset.h;
+
   const outData = outCtx.createImageData(W, H);
-  for (let i = 0; i < outData.data.length; i += 4) {
-    // RGB irrelevant to OpenAI; set to white for human-friendly debug.
-    outData.data[i] = 255;
-    outData.data[i + 1] = 255;
-    outData.data[i + 2] = 255;
+  let i = 0;
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++, i += 4) {
+      // RGB irrelevant to OpenAI alpha-only mask; white is a friendly
+      // placeholder for any debug viewer.
+      outData.data[i] = 255;
+      outData.data[i + 1] = 255;
+      outData.data[i + 2] = 255;
 
-    const insideFootprint = srcData.data[i + 3] > 0;
-    if (!insideFootprint) {
-      // Outside the layer footprint — preserve transparent input.
-      outData.data[i + 3] = 255;
-      continue;
-    }
+      const insideBbox = px >= xMin && px < xMax && py >= yMin && py < yMax;
+      if (!insideBbox) {
+        outData.data[i + 3] = 255; // preserve outside the bbox
+        continue;
+      }
 
-    if (userData) {
-      // Inside footprint AND user marked → preserve (the live
-      // compositor will erase this region after the texture lands,
-      // so AI shouldn't waste effort here).
-      // Inside footprint AND user didn't mark → edit per prompt.
-      // userAlpha=255 → maskAlpha=255 (preserve)
-      // userAlpha=0   → maskAlpha=0   (edit)
-      // i.e. pass-through, no inversion.
-      outData.data[i + 3] = userData.data[i + 3];
-    } else {
-      // Inside footprint, no user mask — let OpenAI edit the whole
-      // layer.
-      outData.data[i + 3] = 0;
+      if (userData) {
+        // Threshold to 0/255 for a binary mask — anti-aliased mask
+        // edges otherwise leave intermediate alpha that can confuse
+        // gpt-image-2.
+        outData.data[i + 3] = userData.data[i + 3] >= 128 ? 255 : 0;
+      } else {
+        outData.data[i + 3] = 0;
+      }
     }
   }
   outCtx.putImageData(outData, 0, 0);
