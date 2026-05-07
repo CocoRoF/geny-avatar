@@ -89,22 +89,31 @@ export function padToOpenAISquare(canvas: HTMLCanvasElement): {
  * Build the OpenAI edit mask. The output is *always* dimension-matched
  * to the padded source canvas and the mask alpha channel encodes:
  *
- *   - alpha=255 (preserve): outside the layer's footprint — the
- *     padded zone outside `offset`, plus any inside-layer pixels the
- *     user explicitly chose to keep via DecomposeStudio.
- *   - alpha=0 (edit): inside the layer's footprint AND either no user
- *     mask exists (regenerate the whole layer) or the user marked the
- *     pixel for editing.
+ *   - alpha=255 (preserve): outside the layer's footprint OR inside
+ *     the footprint but inside the user's painted mask.
+ *   - alpha=0 (edit): inside the layer's footprint and *outside* the
+ *     user's painted mask. (When no user mask exists, the whole
+ *     footprint is editable.)
  *
- * The "inside footprint" map comes from the padded source canvas's
- * own alpha channel — `extractLayerCanvas` triangle-clips the source
- * so its alpha is exactly the layer's shape, including soft edges.
+ * Why this convention. DecomposeStudio's mask is the user saying
+ * "erase this region from the final render"; the live compositor
+ * applies it as a destination-out wipe. When the same mask is sent
+ * to OpenAI, we want the AI to *leave that region alone* (it's about
+ * to be erased anyway) and edit the rest of the layer per the prompt.
+ * After OpenAI returns, the texture blob carries:
+ *   - inside the user's marked region: original pixels (preserved)
+ *   - the rest of the layer: AI-edited pixels
+ * Compositing then paints the texture and applies the mask
+ * destination-out: the marked region is wiped to transparent, the
+ * rest shows the AI's work. The two overrides stack as the user
+ * expects.
  *
- * This is the key correctness lever: with a tight mask, OpenAI is
- * mathematically constrained to copy the input pixel for any pixel
- * outside the layer (the API spec is explicit about this), so the
- * generated layer can never end up offset, scaled, or surrounded by
- * model-painted background.
+ * "Inside footprint" comes from the padded source's alpha channel —
+ * extractLayerCanvas triangle-clips the source so source.alpha is
+ * exactly the layer's silhouette, including soft edges. This is also
+ * what stops OpenAI from painting a background around the layer:
+ * outside-footprint pixels are flagged preserve, and the spec
+ * promises identical-pixel copy for preserved regions.
  */
 export async function buildOpenAIEditMask(
   paddedSource: HTMLCanvasElement,
@@ -122,17 +131,14 @@ export async function buildOpenAIEditMask(
   const outCtx = out.getContext("2d");
   if (!outCtx) throw new Error("2d context unavailable");
 
-  // Source alpha tells us where the layer is. We read the entire
-  // padded canvas because it carries both the layer's silhouette
-  // (from the triangle clip) AND fully-transparent padding outside.
+  // Source alpha tells us where the layer is.
   const srcCtx = paddedSource.getContext("2d");
   if (!srcCtx) throw new Error("2d context unavailable");
   const srcData = srcCtx.getImageData(0, 0, W, H);
 
-  // Optionally rasterize the user's mask into the padded coordinate
-  // space, scaling/positioning into `offset`. Anywhere outside the
-  // offset (the padded zone) gets alpha=0 by default — we treat that
-  // as "user didn't mark", which falls back to footprint behavior.
+  // Rasterize the user mask into the padded coordinate space (if any).
+  // Anywhere outside `offset` reads as alpha=0, treated as "user
+  // didn't mark this".
   let userData: ImageData | null = null;
   if (userMaskBlob) {
     const um = document.createElement("canvas");
@@ -152,25 +158,27 @@ export async function buildOpenAIEditMask(
 
   const outData = outCtx.createImageData(W, H);
   for (let i = 0; i < outData.data.length; i += 4) {
-    // RGB is irrelevant to OpenAI but we set it to white to keep the
-    // PNG human-debuggable in any viewer that doesn't honor alpha.
+    // RGB irrelevant to OpenAI; set to white for human-friendly debug.
     outData.data[i] = 255;
     outData.data[i + 1] = 255;
     outData.data[i + 2] = 255;
 
     const insideFootprint = srcData.data[i + 3] > 0;
     if (!insideFootprint) {
-      // Outside the layer footprint — preserve the (transparent) input
-      // pixel. This is what stops OpenAI from painting a background
-      // around the layer.
+      // Outside the layer footprint — preserve transparent input.
       outData.data[i + 3] = 255;
       continue;
     }
 
     if (userData) {
-      // Inside footprint — user mask decides. Convert convention:
-      // DecomposeStudio uses alpha=255 for "edit", OpenAI uses alpha=0.
-      outData.data[i + 3] = 255 - userData.data[i + 3];
+      // Inside footprint AND user marked → preserve (the live
+      // compositor will erase this region after the texture lands,
+      // so AI shouldn't waste effort here).
+      // Inside footprint AND user didn't mark → edit per prompt.
+      // userAlpha=255 → maskAlpha=255 (preserve)
+      // userAlpha=0   → maskAlpha=0   (edit)
+      // i.e. pass-through, no inversion.
+      outData.data[i + 3] = userData.data[i + 3];
     } else {
       // Inside footprint, no user mask — let OpenAI edit the whole
       // layer.

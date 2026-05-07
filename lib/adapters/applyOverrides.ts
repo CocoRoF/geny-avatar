@@ -72,17 +72,17 @@ export async function applyLayerOverrides(
         compositeTexture(work2d, img, layer.texture.rect, layer.texture.rotated ?? false, path);
       }
 
-      // 2. Masks — but skip layers that also have a texture override.
-      //    The mask was the user's "tell AI what to edit" signal; the
-      //    provider already baked it into the generated blob (OpenAI
-      //    preserves alpha=255 mask regions verbatim from the input,
-      //    Gemini receives the mask as a reference image). Replaying
-      //    the mask here as destination-out would erase the freshly
-      //    generated content. The mask stays in the store as saved
-      //    state — if the user later clears the texture override the
-      //    mask becomes active again on its own.
+      // 2. Masks — destination-out, applied regardless of whether the
+      //    layer also has a texture override. Convention: a saved
+      //    DecomposeStudio mask means "erase this region from the
+      //    final render". When the same layer ALSO has a generated
+      //    texture, the AI was told to PRESERVE the marked region
+      //    (so the texture blob carries the original pixels there);
+      //    this destination-out then wipes them, leaving the masked
+      //    area transparent and the AI-edited rest visible. The two
+      //    overrides compose cleanly because the mask convention is
+      //    consistent end-to-end.
       for (const [layerId, blob] of Object.entries(overrides.masks)) {
-        if (overrides.textures[layerId]) continue;
         const layer = ctx.findLayer(layerId);
         if (!layer?.texture || layer.texture.textureId !== textureId) continue;
         const img = await loadBlob(blob);

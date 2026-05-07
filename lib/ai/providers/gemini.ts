@@ -119,16 +119,18 @@ export class GeminiProvider implements AIProvider {
   }
 
   /**
-   * Compose the Gemini prompt. When a mask is supplied, we explain to
-   * the model that a second image carries the region to edit (per the
-   * "conversational mask" guidance in Google's docs). When negative
-   * prompt is supplied, we append it as a "Avoid: …" suffix.
+   * Compose the Gemini prompt. Conventions match the rest of the
+   * codebase: a saved DecomposeStudio mask means "erase this region
+   * from the final render". When that mask is supplied here we tell
+   * Gemini to *leave that region alone* — it's going to be wiped by
+   * the compositor anyway — and to apply the edit instruction to the
+   * rest of the layer. Negative prompt rides on a "Avoid: …" suffix.
    */
   private composePrompt(input: ProviderGenerateInput): string {
     const lines: string[] = [];
     if (input.maskImage) {
       lines.push(
-        "I'm sending two images. The first is the original. The second is a mask: the opaque pixels (red painted area) mark the region you should edit. Leave everything outside the mask untouched. Match the edit cleanly to the surrounding pixels.",
+        "I'm sending two images. The first is the original layer. The second is a mask: the opaque (red-painted) pixels mark a region the user wants to remove from the final render. Leave that masked region exactly as it is in the original — do NOT edit there. Apply the editing instructions below to the rest of the layer (the area outside the mask) only. Match the edit cleanly to the surrounding pixels.",
       );
       lines.push("");
     }
