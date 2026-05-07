@@ -46,7 +46,16 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
 
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
-  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Source we send to the AI: post-gen, *pre-mask*. Keeping the
+   *  pixels populated under the layer's mask region matters — gpt-
+   *  image-2 falls back to free generation when its input is mostly
+   *  transparent, so an aggressively pre-masked source produces
+   *  prompt-only outputs ("skin" → a hand) instead of edits. The mask
+   *  blob is sent separately and tells the model what to preserve. */
+  const aiSourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Source we display in the panel: post-gen, *post-mask*. Matches
+   *  what the live atlas renders. */
+  const previewSourceRef = useRef<HTMLCanvasElement | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,14 +82,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
-  // ----- mount: extract the layer's *current visible* state -----
-  // Source includes both the saved gen and the saved mask. This way:
-  //  1. The user sees what the layer actually looks like right now
-  //     (matching the live render), so they can iterate on real
-  //     content rather than the pristine original.
-  //  2. The AI receives this current visible state as input — past
-  //     gen and mask are baked in, so the next generation refines
-  //     what's there instead of starting over.
+  // ----- mount: extract two source canvases -----
+  // The display canvas mirrors the live atlas (post-gen + post-mask)
+  // so the user sees what's currently rendered. The AI canvas keeps
+  // the mask region populated so gpt-image-2 has dense content to
+  // edit; the mask still ships separately and tells the model what
+  // to preserve.
   useEffect(() => {
     setReady(false);
     setError(null);
@@ -91,16 +98,24 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
     let cancelled = false;
     void (async () => {
-      const extracted = await extractCurrentLayerCanvas(adapter, layer, {
+      const aiExtracted = await extractCurrentLayerCanvas(adapter, layer, {
+        texture: existingTexture,
+        // mask deliberately omitted — see comment on aiSourceCanvasRef
+      });
+      if (cancelled) return;
+      if (!aiExtracted) {
+        setError("region rect is empty / unrenderable");
+        return;
+      }
+      aiSourceCanvasRef.current = aiExtracted.canvas;
+
+      const previewExtracted = await extractCurrentLayerCanvas(adapter, layer, {
         texture: existingTexture,
         mask: existingMask,
       });
       if (cancelled) return;
-      if (!extracted) {
-        setError("region rect is empty / unrenderable");
-        return;
-      }
-      sourceCanvasRef.current = extracted.canvas;
+      previewSourceRef.current = previewExtracted?.canvas ?? aiExtracted.canvas;
+
       setReady(true);
     })();
 
@@ -109,7 +124,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     };
   }, [adapter, layer, existingTexture, existingMask]);
 
-  // ----- after-mount: paint extracted source onto the display canvas -----
+  // ----- after-mount: paint preview onto the display canvas -----
   // Split from the extract effect because the display `<canvas>` is only
   // rendered when `ready === true`, so its ref isn't attached during the
   // same effect tick that flips ready. This effect runs after the next
@@ -117,11 +132,11 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   useEffect(() => {
     if (!ready) return;
     const display = sourceRef.current;
-    const source = sourceCanvasRef.current;
-    if (!display || !source) return;
-    display.width = source.width;
-    display.height = source.height;
-    display.getContext("2d")?.drawImage(source, 0, 0);
+    const preview = previewSourceRef.current;
+    if (!display || !preview) return;
+    display.width = preview.width;
+    display.height = preview.height;
+    display.getContext("2d")?.drawImage(preview, 0, 0);
   }, [ready]);
 
   // ----- mount: load AI job history for this layer -----
@@ -195,7 +210,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setPhase({ kind: "submitting" });
     openAIOffsetRef.current = null;
     try {
-      const sourceCanvas = sourceCanvasRef.current;
+      const sourceCanvas = aiSourceCanvasRef.current;
       if (!sourceCanvas) throw new Error("source not ready");
       if (!provider) throw new Error("provider unavailable");
 
@@ -253,7 +268,11 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   async function onApply() {
     if (phase.kind !== "succeeded") return;
-    const sourceCanvas = sourceCanvasRef.current;
+    // Use the AI source (pre-mask) for alpha enforcement so the
+    // postprocess output retains the layer's full footprint silhouette;
+    // the live compositor's mask destination-out then erases the user's
+    // marked area at render time.
+    const sourceCanvas = aiSourceCanvasRef.current;
     if (!sourceCanvas) return;
     setPhase({ kind: "applying" });
     try {
