@@ -58,7 +58,17 @@ export class Live2DAdapter implements AvatarAdapter {
   private model: any = null;
   // biome-ignore lint/suspicious/noExplicitAny: engine internals
   private coreModel: any = null;
-  private layerByPartIndex = new Map<number, Layer>();
+  /**
+   * partIndex → all `Layer` entries that share this Cubism part. A part
+   * is split into one entry per atlas page when its drawables span
+   * multiple pages: previously the dominant page's content was the
+   * only one editable, so leg / tail meshes spread across two pages
+   * would be partially missing from the panel. Each entry now carries
+   * its own page-specific `Layer.texture`.
+   */
+  private layersByPartIndex = new Map<number, Layer[]>();
+  /** Reverse lookup: layerId → its Cubism part index. */
+  private partIndexByLayerId = new Map<LayerId, number>();
 
   /** part-index → opacity multiplier (0 = hide, 1 = show). 1.0 means "no
    *  override needed", so we delete instead of storing 1. */
@@ -156,23 +166,13 @@ export class Live2DAdapter implements AvatarAdapter {
 
     if (coreModel) {
       partCount = coreModel.getPartCount?.() ?? 0;
-      for (let i = 0; i < partCount; i++) {
-        const externalId = coerceCubismId(coreModel.getPartId?.(i), `part_${i}`);
-        const opacity: number = coreModel.getPartOpacity?.(i) ?? 1;
-        const layer: Layer = {
-          id: newId(ID_PREFIX.layer),
-          externalId,
-          name: partDisplayNames.get(externalId) ?? externalId,
-          geometry: "other",
-          defaults: {
-            visible: opacity > 0.01,
-            color: { r: 1, g: 1, b: 1, a: 1 },
-            opacity,
-          },
-        };
-        layers.push(layer);
-        this.layerByPartIndex.set(i, layer);
-      }
+      // NOTE: Layer creation is deferred until *after* the texture
+      // catalog is built. We need to know which atlas page each part's
+      // drawables live on so we can split multi-page parts into one
+      // layer per page (otherwise the non-dominant page's content —
+      // e.g. the lower half of a leg that's split across pages — is
+      // missing from the panel entirely). The deferred creation block
+      // is below the texture catalog construction.
 
       // Build part → drawable map (incl. ancestors). Used by the drawable
       // fallback inside the beforeModelUpdate hook.
@@ -292,22 +292,111 @@ export class Live2DAdapter implements AvatarAdapter {
       });
     });
 
-    if (coreModel && textureIdByPageIndex.size > 0) {
-      let withSlice = 0;
-      for (const [partIdx, layer] of this.layerByPartIndex.entries()) {
-        // Footprint = the part's *own* drawables only. Container parts
-        // with empty `partToDirectDrawables` get no slice (they're also
-        // filtered out of `Avatar.layers` further down).
-        const drawableList = this.partToDirectDrawables.get(partIdx);
-        if (!drawableList || drawableList.length === 0) continue;
-        const slice = this.buildPartSlice(coreModel, drawableList, textureIdByPageIndex);
-        if (slice) {
-          layer.texture = slice;
-          withSlice++;
+    // ----- create Layer entries (one per part, or one per page for
+    // multi-page parts) -----
+    //
+    // Multi-page parts have direct drawables that live on more than one
+    // atlas page. The earlier "dominant page only" approach silently
+    // dropped the non-dominant page's pixels — leg / tail meshes split
+    // across two atlas pages were partially missing from the panel. We
+    // now expose ONE Layer per (part, page) pair: each layer owns a
+    // page-specific TextureSlice, so the user can find and edit every
+    // page's content. Single-page parts behave exactly as before
+    // (one layer, original externalId, no name suffix).
+    let multiPagePartCount = 0;
+    let virtualLayerCount = 0;
+    if (coreModel) {
+      for (let partIdx = 0; partIdx < partCount; partIdx++) {
+        const partExternalId = coerceCubismId(coreModel.getPartId?.(partIdx), `part_${partIdx}`);
+        const partDisplayName = partDisplayNames.get(partExternalId) ?? partExternalId;
+        const partOpacity: number = coreModel.getPartOpacity?.(partIdx) ?? 1;
+        const direct = this.partToDirectDrawables.get(partIdx) ?? [];
+
+        // Group drawables by atlas page index. Drawables with no valid
+        // texture index (rare; usually clipping helpers) get bucketed
+        // under -1 and produce no slice.
+        const drawablesByPage = new Map<number, number[]>();
+        for (const d of direct) {
+          const p = coreModel.getDrawableTextureIndex?.(d);
+          if (typeof p !== "number" || p < 0) continue;
+          let arr = drawablesByPage.get(p);
+          if (!arr) {
+            arr = [];
+            drawablesByPage.set(p, arr);
+          }
+          arr.push(d);
+        }
+
+        const partLayers: Layer[] = [];
+
+        if (drawablesByPage.size === 0) {
+          // Container part (no direct drawables) OR a part whose direct
+          // drawables all lack texture indices. Single layer with no
+          // texture; the exposedLayers filter further down hides these
+          // from the panel but they stay in `layersByPartIndex` so
+          // visibility cascades still resolve.
+          const layer: Layer = {
+            id: newId(ID_PREFIX.layer),
+            externalId: partExternalId,
+            name: partDisplayName,
+            geometry: "other",
+            defaults: {
+              visible: partOpacity > 0.01,
+              color: { r: 1, g: 1, b: 1, a: 1 },
+              opacity: partOpacity,
+            },
+          };
+          partLayers.push(layer);
+          layers.push(layer);
+          this.partIndexByLayerId.set(layer.id, partIdx);
+        } else {
+          const isMultiPage = drawablesByPage.size > 1;
+          if (isMultiPage) multiPagePartCount++;
+          // Iterate in deterministic order so panel ordering is stable
+          // across reloads.
+          const sortedPages = [...drawablesByPage.keys()].sort((a, b) => a - b);
+          for (const pageIdx of sortedPages) {
+            const drawablesOnPage = drawablesByPage.get(pageIdx);
+            if (!drawablesOnPage) continue;
+            // Multi-page parts get a `#p${pageIdx}` suffix on
+            // externalId so IDB job history can persist independent
+            // entries per page; single-page parts keep their original
+            // externalId for IDB stability.
+            const externalId = isMultiPage ? `${partExternalId}#p${pageIdx}` : partExternalId;
+            const name = isMultiPage ? `${partDisplayName} · page ${pageIdx + 1}` : partDisplayName;
+            const layer: Layer = {
+              id: newId(ID_PREFIX.layer),
+              externalId,
+              name,
+              geometry: "other",
+              defaults: {
+                visible: partOpacity > 0.01,
+                color: { r: 1, g: 1, b: 1, a: 1 },
+                opacity: partOpacity,
+              },
+            };
+            const slice = this.buildSliceForPage(
+              coreModel,
+              drawablesOnPage,
+              pageIdx,
+              textureIdByPageIndex,
+            );
+            if (slice) layer.texture = slice;
+            partLayers.push(layer);
+            layers.push(layer);
+            this.partIndexByLayerId.set(layer.id, partIdx);
+            virtualLayerCount++;
+          }
+        }
+
+        if (partLayers.length > 0) {
+          this.layersByPartIndex.set(partIdx, partLayers);
         }
       }
+
+      const withSlice = layers.filter((l) => !!l.texture).length;
       console.info(
-        `[Live2DAdapter] populated Layer.texture for ${withSlice}/${this.layerByPartIndex.size} parts (pages=${textureIdByPageIndex.size})`,
+        `[Live2DAdapter] populated Layer.texture for ${withSlice}/${layers.length} layers across ${this.layersByPartIndex.size} parts (pages=${textureIdByPageIndex.size}; ${multiPagePartCount} multi-page parts → ${virtualLayerCount} virtual layers)`,
       );
     }
 
@@ -359,55 +448,39 @@ export class Live2DAdapter implements AvatarAdapter {
     };
 
     // Filter the panel-visible layer list. Strict rule per user
-    // requirement: NEVER hide a part that has visible texture content,
+    // requirement: NEVER hide a layer that has visible texture content,
     // even if our dedup heuristics think it's redundant. The only
-    // exclusion remaining is purely structural:
+    // exclusion is purely structural:
     //
-    //   Pure container parts (zero direct drawables). Children-only
-    //   grouping nodes; have no atlas footprint of their own, no
+    //   Layers without a TextureSlice. These are either pure container
+    //   parts (zero direct drawables) or parts whose drawables all
+    //   lack a valid texture index. They have no atlas footprint, no
     //   thumbnail to show, and no surface for DecomposeStudio /
-    //   GeneratePanel to act on. Stay in `layerByPartIndex` so any
+    //   GeneratePanel to act on. Stay in `layersByPartIndex` so any
     //   id-keyed visibility cascade still reaches them.
-    //
-    // The earlier "pure-clip" filter (every direct drawable is in
-    // `this.maskDrawables`) had a false-positive problem: a Cubism
-    // drawable can be BOTH visible content of its own AND referenced
-    // as a clipping mask by another layer. The filter hid legitimate
-    // texture parts — leg meshes, accessories — that incidentally
-    // served as clip shapes elsewhere. We now only *count* clip-role
-    // parts as a diagnostic; they stay exposed.
     let hiddenContainerCount = 0;
-    let clipRolePartCount = 0;
-    let multiPagePartCount = 0;
-    const exposedLayers = layers.filter((_, partIdx) => {
-      const direct = this.partToDirectDrawables.get(partIdx);
-      if (!direct || direct.length === 0) {
+    let clipRoleLayerCount = 0;
+    const exposedLayers = layers.filter((layer) => {
+      if (!layer.texture) {
         hiddenContainerCount++;
         return false;
       }
-
-      // Diagnostic: parts whose drawables are *also* used as clipping
-      // masks for other drawables. Not filtered — see comment above.
-      if (direct.every((d) => this.maskDrawables.has(d))) {
-        clipRolePartCount++;
-      }
-
-      // Diagnostic: parts whose direct drawables span >1 atlas page
-      // get partial coverage in DecomposeStudio (we crop the dominant
-      // page only). Logged for debugging.
-      if (coreModel) {
-        const pages = new Set<number>();
-        for (const d of direct) {
-          const p: number | undefined = coreModel.getDrawableTextureIndex?.(d);
-          if (typeof p === "number" && p >= 0) pages.add(p);
+      // Diagnostic only: layers whose drawables are *also* referenced
+      // as clipping masks for other drawables. Not filtered — a Cubism
+      // drawable can be both visible content of its own AND a clip
+      // shape for another layer.
+      const partIdx = this.partIndexByLayerId.get(layer.id);
+      if (partIdx != null) {
+        const direct = this.partToDirectDrawables.get(partIdx) ?? [];
+        if (direct.length > 0 && direct.every((d) => this.maskDrawables.has(d))) {
+          clipRoleLayerCount++;
         }
-        if (pages.size > 1) multiPagePartCount++;
       }
       return true;
     });
-    if (hiddenContainerCount > 0 || clipRolePartCount > 0 || multiPagePartCount > 0) {
+    if (hiddenContainerCount > 0 || clipRoleLayerCount > 0) {
       console.info(
-        `[Live2DAdapter] hidden ${hiddenContainerCount} containers of ${layers.length}; ${clipRolePartCount} parts whose drawables also serve as clip masks (still exposed); ${multiPagePartCount} parts span multi-page (dominant page only)`,
+        `[Live2DAdapter] hidden ${hiddenContainerCount} container layers of ${layers.length}; ${clipRoleLayerCount} layers whose drawables also serve as clip masks (still exposed)`,
       );
     }
 
@@ -549,10 +622,13 @@ export class Live2DAdapter implements AvatarAdapter {
   getLayerTriangles(layerId: LayerId): LayerTriangles | null {
     const cm = this.coreModel;
     if (!cm) return null;
-    const partIdx = this.findPartIndex(layerId);
+    const partIdx = this.partIndexByLayerId.get(layerId);
     if (partIdx == null) return null;
-    const layer = this.layerByPartIndex.get(partIdx);
+    const layer = this.findLayerByLayerId(layerId);
     if (!layer?.texture) return null;
+    // Each Layer's texture references exactly one atlas page now (multi-
+    // page parts have been split into per-page virtual layers), so this
+    // page filter naturally restricts triangles to the layer's own page.
     const targetPageIdx = this.pageIndexByTextureId.get(layer.texture.textureId);
     if (targetPageIdx == null) return null;
     // Footprint = the part's *direct* drawables only. Pre-2.5 used
@@ -599,8 +675,10 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   private findLayerByLayerId(layerId: LayerId): import("../avatar/types").Layer | null {
-    for (const layer of this.layerByPartIndex.values()) {
-      if (layer.id === layerId) return layer;
+    for (const layers of this.layersByPartIndex.values()) {
+      for (const layer of layers) {
+        if (layer.id === layerId) return layer;
+      }
     }
     return null;
   }
@@ -642,55 +720,34 @@ export class Live2DAdapter implements AvatarAdapter {
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;
-    this.layerByPartIndex.clear();
+    this.layersByPartIndex.clear();
+    this.partIndexByLayerId.clear();
   }
 
   // ----- texture / region helpers -----
 
   /**
-   * Compute the atlas region rect for a Cubism part by walking its
-   * drawables' UVs. We pick the texture page that the most drawables
-   * sit on (parts can technically span pages but most don't), union
-   * UVs across drawables, then convert to pixel coords on that page.
+   * Compute a `TextureSlice` for a specific (part, page) pair: union the
+   * UVs of `drawablesOnPage` and convert to a pixel rect on `pageIdx`'s
+   * atlas. Caller is responsible for providing only the drawables that
+   * actually live on this page — we no longer pick a "dominant page"
+   * because that silently dropped multi-page parts' content.
    *
    * Cubism UV space has v=0 at the bottom; canvas pixel y is top-down,
    * so the v range is flipped when computing the rect.
    */
-  private buildPartSlice(
+  private buildSliceForPage(
     // biome-ignore lint/suspicious/noExplicitAny: cubism core model
     coreModel: any,
-    drawableList: number[],
+    drawablesOnPage: number[],
+    pageIdx: number,
     textureIdByPageIndex: Map<number, TextureId>,
   ): TextureSlice | null {
-    const drawablesByPage = new Map<number, number[]>();
-    for (const d of drawableList) {
-      const pageIdx: number | undefined = coreModel.getDrawableTextureIndex?.(d);
-      if (typeof pageIdx !== "number" || pageIdx < 0) continue;
-      let arr = drawablesByPage.get(pageIdx);
-      if (!arr) {
-        arr = [];
-        drawablesByPage.set(pageIdx, arr);
-      }
-      arr.push(d);
-    }
-    if (drawablesByPage.size === 0) return null;
-
-    let bestPage = -1;
-    let bestCount = 0;
-    for (const [pi, arr] of drawablesByPage) {
-      if (arr.length > bestCount) {
-        bestPage = pi;
-        bestCount = arr.length;
-      }
-    }
-    if (bestPage < 0) return null;
-    const textureId = textureIdByPageIndex.get(bestPage);
+    if (drawablesOnPage.length === 0) return null;
+    const textureId = textureIdByPageIndex.get(pageIdx);
     if (!textureId) return null;
     const srcInfo = this.textureSourcesById.get(textureId);
     if (!srcInfo) return null;
-
-    const drawablesOnPage = drawablesByPage.get(bestPage);
-    if (!drawablesOnPage) return null;
 
     let minU = Number.POSITIVE_INFINITY;
     let minV = Number.POSITIVE_INFINITY;
@@ -737,10 +794,7 @@ export class Live2DAdapter implements AvatarAdapter {
   // ----- helpers -----
 
   private findPartIndex(layerId: LayerId): number | null {
-    for (const [index, layer] of this.layerByPartIndex.entries()) {
-      if (layer.id === layerId) return index;
-    }
-    return null;
+    return this.partIndexByLayerId.get(layerId) ?? null;
   }
 
   /**
