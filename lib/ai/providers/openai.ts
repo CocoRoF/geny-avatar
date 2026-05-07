@@ -80,15 +80,15 @@ export class OpenAIProvider implements AIProvider {
     form.set("model", model);
     form.set("prompt", this.composePrompt(input));
     form.set("n", "1");
-    form.set("response_format", "b64_json");
-    // Default size/quality to "auto" — OpenAI picks something reasonable
-    // for the input dimensions. The client will have already resized to
-    // a valid 1024-square or similar before submission.
-    form.set("size", "auto");
-    form.set("quality", "auto");
-
     // Image and mask must be PNG with matching dims. The client guarantees
-    // both via lib/ai/maskConvert.ts before calling /api/ai/generate.
+    // both via lib/ai/client.ts (padToOpenAISquare + buildOpenAIMaskCanvas)
+    // before calling /api/ai/generate. We deliberately omit `size`,
+    // `quality`, and `response_format`: the live edits endpoint
+    // validates these strictly per-model and 400s on values that the
+    // public docs *show* as valid for some siblings (e.g. gpt-image-2
+    // rejects `quality: "auto"` even though gpt-image-1 docs list it).
+    // Defaults pick a sensible size from the input dims and return
+    // b64_json, which is what we want.
     form.set("image", input.sourceImage, "source.png");
     if (input.maskImage) {
       form.set("mask", input.maskImage, "mask.png");
