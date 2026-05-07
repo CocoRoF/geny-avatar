@@ -257,6 +257,10 @@ export async function postprocessGeneratedBlob(opts: {
     throw new Error("source canvas has zero dimensions");
   }
 
+  console.info(
+    `[postprocess] input=${img.naturalWidth}x${img.naturalHeight} → target=${targetW}x${targetH} padding=${opts.openAIPadding ? `offset=${JSON.stringify(opts.openAIPadding.offset)} canvasSize=${opts.openAIPadding.canvasSize ?? OPENAI_TARGET}` : "none"}`,
+  );
+
   const out = document.createElement("canvas");
   out.width = targetW;
   out.height = targetH;
@@ -274,6 +278,9 @@ export async function postprocessGeneratedBlob(opts: {
     const sy = (offset.y / canvasSize) * img.naturalHeight;
     const sw = (offset.w / canvasSize) * img.naturalWidth;
     const sh = (offset.h / canvasSize) * img.naturalHeight;
+    console.info(
+      `[postprocess] crop src=(${sx.toFixed(0)},${sy.toFixed(0)} ${sw.toFixed(0)}x${sh.toFixed(0)}) → dst=(0,0 ${targetW}x${targetH})`,
+    );
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetW, targetH);
   } else {
     // Gemini & friends: scale the whole result to target dims.

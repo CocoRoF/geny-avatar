@@ -94,14 +94,23 @@ export class OpenAIProvider implements AIProvider {
       form.set("mask", input.maskImage, "mask.png");
     }
 
+    const startedAt = Date.now();
+    console.info(
+      `[openai] POST ${ENDPOINT} model=${model} sourceBytes=${input.sourceImage.size} maskBytes=${input.maskImage?.size ?? 0} promptLength=${input.prompt.length}`,
+    );
+
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.apiKey}` },
       body: form,
     });
 
+    const elapsed = Date.now() - startedAt;
+    console.info(`[openai] response ${response.status} in ${elapsed}ms`);
+
     if (!response.ok) {
       const text = await safeText(response);
+      console.warn(`[openai] error body: ${truncate(text, 1000)}`);
       throw new Error(`OpenAI API ${response.status}: ${truncate(text, 600)}`);
     }
 
@@ -111,12 +120,16 @@ export class OpenAIProvider implements AIProvider {
       throw new Error("OpenAI response carried no data entry");
     }
     if (typeof first.b64_json === "string") {
-      return base64ToBlob(first.b64_json, "image/png");
+      const blob = base64ToBlob(first.b64_json, "image/png");
+      console.info(`[openai] result blob: ${blob.size} bytes (b64_json path)`);
+      return blob;
     }
     if (typeof first.url === "string") {
       const r = await fetch(first.url);
       if (!r.ok) throw new Error(`OpenAI url fetch failed: ${r.status}`);
-      return await r.blob();
+      const blob = await r.blob();
+      console.info(`[openai] result blob: ${blob.size} bytes (url path)`);
+      return blob;
     }
     throw new Error("OpenAI response carried neither b64_json nor url");
   }

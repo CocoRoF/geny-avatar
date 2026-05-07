@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
-  buildOpenAIEditMask,
   canvasToPngBlob,
   fetchProviders,
   type ProviderAvailability,
@@ -218,30 +217,36 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       let maskBlob: Blob | undefined;
 
       if (providerId === "openai") {
-        // OpenAI: pad source to 1024² square. We ONLY send a mask when
-        // the user explicitly drew one in DecomposeStudio.
+        // OpenAI gets the source only — never the mask.
         //
-        // A previous iteration always built a tight footprint mask
-        // hoping it would lock the layer's position. In practice
-        // OpenAI treats alpha=0 mask regions as "free creative space"
-        // and ignores the silhouette as a shape reference — the
-        // generated content matches the prompt but loses the
-        // original outline (a triangular helmet became a rounded
-        // cube, etc.). Without a mask, gpt-image-2 takes the input
-        // as a *visual* reference and produces output that mirrors
-        // the original shape much more faithfully.
+        // The DecomposeStudio mask is a *live-render* destination-out
+        // wipe ("erase this region from the final atlas"); it is NOT
+        // an instruction to gpt-image-2. Past iterations sent it as
+        // an edit hint and broke the user's actual workflow:
+        //   - User paints a region to erase later, runs gen with a
+        //     prompt about a different region of the layer.
+        //   - Sending the mask told the model "edit only this bbox"
+        //     or "preserve the painted region" — both interpretations
+        //     produced wrong outputs (small grid patterns, color
+        //     biases toward dark, partially-respected mask, etc).
         //
-        // Layer positioning is enforced via the proportional offset
-        // crop in postprocessGeneratedBlob; alpha enforcement against
-        // source.alpha clips any model overspill to the triangle
-        // footprint.
+        // What works (the original, mask-less behavior the user
+        // confirmed): send the dense, white-padded source + the
+        // prompt. gpt-image-2 reads the layer visually, applies the
+        // prompt, returns an edited 1024². Postprocess crops back to
+        // the layer rect, alpha-enforces against the layer's
+        // silhouette so model over-paint doesn't leak past the
+        // footprint. The live compositor then applies the user's
+        // mask as destination-out at render time. The two effects
+        // (gen and erase) compose cleanly — exactly what the user
+        // asked for ("edit으로 지우고 gen으로 바꾸는" workflow).
         const { canvas: padded, offset } = padToOpenAISquare(sourceCanvas);
         openAIOffsetRef.current = offset;
         sourceBlob = await canvasToPngBlob(padded);
-        if (existingMask) {
-          const editMask = await buildOpenAIEditMask(padded, existingMask, offset);
-          maskBlob = await canvasToPngBlob(editMask);
-        }
+        // maskBlob deliberately stays undefined.
+        console.info(
+          `[GeneratePanel] openai submit: sourceDim=${padded.width}x${padded.height}, offset=${JSON.stringify(offset)}, hasUserMask=${!!existingMask}, maskSentToAI=false`,
+        );
       } else {
         // Gemini: arbitrary input dims. Pass source + raw mask through.
         // Footprint is enforced post-hoc via alpha multiplication in
