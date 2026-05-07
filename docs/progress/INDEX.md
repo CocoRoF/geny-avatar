@@ -51,6 +51,7 @@
 | 2026-05-07 | [35 sprint_2_5_cubism_part_dedup](2026-05-07_35_sprint_2_5_cubism_part_dedup.md) | 2.5 | 완료 — Cubism part 중복 해소 (direct/descendant 분리 + container hide + cdi3 display names) |
 | 2026-05-07 | [36 sprint_2_6_clip_mask_filter](2026-05-07_36_sprint_2_6_clip_mask_filter.md) | 2.6 | 완료 — pure-clip part 필터 (getDrawableMasks reverse lookup) + multi-page 진단 |
 | 2026-05-07 | [37 phase3_kickoff](2026-05-07_37_phase3_kickoff.md) | 3.0 | 완료 — Phase 3 sub-sprint 분할 + GeneratePanel UI 골격 (백엔드 X) |
+| 2026-05-07 | [38 sprint_3_1_gemini_openai](2026-05-07_38_sprint_3_1_gemini_openai.md) | 3.1 | 완료 — Gemini Nano Banana + OpenAI gpt-image-2 실호출 (provider 추상화 + API routes + 폴링) |
 
 ## 운영 규칙
 

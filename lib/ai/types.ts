@@ -1,31 +1,34 @@
 /**
- * AI texture generation domain types.
+ * AI texture generation domain types — provider-agnostic.
  *
- * Decoupled from any provider (Replicate, HuggingFace, self-hosted
- * ComfyUI). The runtime picks an `AIProvider` implementation; everything
- * upstream — the panel, the store, IDB cache — only sees these shapes.
+ * Concrete providers (Google Gemini, OpenAI gpt-image-2, Replicate SDXL)
+ * implement `AIProvider` from `./providers/interface`. The store, the
+ * panel, and the API routes only see these shapes.
  */
 
 import type { LayerId, TextureId } from "../avatar/types";
 
 export type AIJobId = string;
 
+export type ProviderId = "gemini" | "openai" | "replicate";
+
 export type AIJobStatus =
   | { kind: "queued" }
   | { kind: "running"; progress?: number }
-  | { kind: "succeeded"; resultBlob: Blob }
+  | { kind: "succeeded"; resultMime: string }
   | { kind: "failed"; reason: string }
   | { kind: "canceled" };
 
 export type GenerateRequest = {
   /** Target layer — used to locate the atlas region + (optionally) mask. */
   layerId: LayerId;
-  /** Snapshot of the source region the AI should inpaint into, encoded
-   *  as PNG. The adapter extracts this via `extractLayerCanvas`. */
+  /** Snapshot of the source region the AI should edit, encoded as PNG.
+   *  The adapter extracts this via `extractLayerCanvas`. */
   sourceImage: Blob;
-  /** Optional mask blob from DecomposeStudio. Alpha=255 marks "regenerate
-   *  here", alpha=0 marks "leave alone". Falls back to "regenerate the
-   *  whole layer footprint" when missing. */
+  /** Optional mask blob from DecomposeStudio. Alpha=255 marks the
+   *  "regenerate me" region in our convention; providers that need a
+   *  different convention (OpenAI: alpha=0 is edit zone) convert at
+   *  the boundary. */
   maskImage?: Blob;
   /** User prompt describing the desired output. */
   prompt: string;
@@ -33,32 +36,21 @@ export type GenerateRequest = {
   negativePrompt?: string;
   /** Reproducibility — same seed + prompt should give the same output. */
   seed?: number;
+  /** Optional model override (e.g. user picks Nano Banana Pro vs Flash). */
+  modelId?: string;
 };
 
 export type AIJob = {
   id: AIJobId;
   layerId: LayerId;
-  /** Snapshot of the texture page at submit time so the result can be
-   *  composited back even if the page later changes. */
+  /** Texture page id at submit time, kept so the result can be
+   *  composited back onto the atlas later (Sprint 3.3). */
   textureId: TextureId;
+  providerId: ProviderId;
   prompt: string;
   negativePrompt?: string;
   seed?: number;
+  modelId?: string;
   status: AIJobStatus;
   createdAt: number;
 };
-
-/**
- * Pluggable backend. Sprint 3.1 lands a Replicate implementation;
- * future sprints can swap in HuggingFace / self-hosted ComfyUI without
- * changing UI code.
- */
-export interface AIProvider {
-  /** Submit a job. Returns a handle the panel can poll. */
-  generate(req: GenerateRequest): Promise<{ jobId: AIJobId }>;
-  /** Read current status. Long-polling wrapper, retries, backoff etc.
-   *  live in the caller. */
-  status(jobId: AIJobId): Promise<AIJobStatus>;
-  /** Best-effort cancel. Some providers don't support — return false. */
-  cancel?(jobId: AIJobId): Promise<boolean>;
-}
