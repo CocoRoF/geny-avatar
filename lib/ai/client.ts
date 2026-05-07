@@ -86,54 +86,98 @@ export function padToOpenAISquare(canvas: HTMLCanvasElement): {
 }
 
 /**
- * Build the OpenAI mask canvas from our DecomposeStudio mask blob.
+ * Build the OpenAI edit mask. The output is *always* dimension-matched
+ * to the padded source canvas and the mask alpha channel encodes:
  *
- * Conversion:
- *   - DecomposeStudio: alpha=255 means "user marked this region for editing"
- *   - OpenAI:          alpha=0   means "edit this region" (transparent)
- * So we invert the alpha channel.
+ *   - alpha=255 (preserve): outside the layer's footprint — the
+ *     padded zone outside `offset`, plus any inside-layer pixels the
+ *     user explicitly chose to keep via DecomposeStudio.
+ *   - alpha=0 (edit): inside the layer's footprint AND either no user
+ *     mask exists (regenerate the whole layer) or the user marked the
+ *     pixel for editing.
  *
- * Also pads to the same square as `padToOpenAISquare` so dimensions
- * line up byte-for-byte. Padded zone is opaque (alpha=255) → "preserve",
- * which is what we want — the AI shouldn't paint outside the layer.
+ * The "inside footprint" map comes from the padded source canvas's
+ * own alpha channel — `extractLayerCanvas` triangle-clips the source
+ * so its alpha is exactly the layer's shape, including soft edges.
+ *
+ * This is the key correctness lever: with a tight mask, OpenAI is
+ * mathematically constrained to copy the input pixel for any pixel
+ * outside the layer (the API spec is explicit about this), so the
+ * generated layer can never end up offset, scaled, or surrounded by
+ * model-painted background.
  */
-export async function buildOpenAIMaskCanvas(
-  studioMask: Blob,
+export async function buildOpenAIEditMask(
+  paddedSource: HTMLCanvasElement,
+  userMaskBlob: Blob | null,
+  /** Where the layer's upright canvas was placed inside the padded square. */
   offset: { x: number; y: number; w: number; h: number },
 ): Promise<HTMLCanvasElement> {
-  const img = await blobToImage(studioMask);
+  const W = paddedSource.width;
+  const H = paddedSource.height;
+  if (!W || !H) throw new Error("padded source has zero dimensions");
 
-  // Step 1: render the original mask onto a canvas matching its native
-  // size, then read alpha channel and invert.
-  const inv = document.createElement("canvas");
-  inv.width = img.naturalWidth || img.width;
-  inv.height = img.naturalHeight || img.height;
-  const invCtx = inv.getContext("2d");
-  if (!invCtx) throw new Error("2d context unavailable");
-  invCtx.drawImage(img, 0, 0);
-  const data = invCtx.getImageData(0, 0, inv.width, inv.height);
-  for (let i = 0; i < data.data.length; i += 4) {
-    // OpenAI reads alpha; RGB is irrelevant. Set RGB to white for
-    // clarity in case the API or any debug viewer renders it.
-    data.data[i] = 255;
-    data.data[i + 1] = 255;
-    data.data[i + 2] = 255;
-    data.data[i + 3] = 255 - data.data[i + 3];
-  }
-  invCtx.putImageData(data, 0, 0);
-
-  // Step 2: place the inverted mask into a target-sized square. The
-  // padded zone is opaque (alpha=255) by default since we paint white
-  // first — that means "preserve", so the model only edits inside the
-  // original layer footprint.
   const out = document.createElement("canvas");
-  out.width = OPENAI_TARGET;
-  out.height = OPENAI_TARGET;
+  out.width = W;
+  out.height = H;
   const outCtx = out.getContext("2d");
   if (!outCtx) throw new Error("2d context unavailable");
-  outCtx.fillStyle = "rgba(255, 255, 255, 1)";
-  outCtx.fillRect(0, 0, out.width, out.height);
-  outCtx.drawImage(inv, offset.x, offset.y, offset.w, offset.h);
+
+  // Source alpha tells us where the layer is. We read the entire
+  // padded canvas because it carries both the layer's silhouette
+  // (from the triangle clip) AND fully-transparent padding outside.
+  const srcCtx = paddedSource.getContext("2d");
+  if (!srcCtx) throw new Error("2d context unavailable");
+  const srcData = srcCtx.getImageData(0, 0, W, H);
+
+  // Optionally rasterize the user's mask into the padded coordinate
+  // space, scaling/positioning into `offset`. Anywhere outside the
+  // offset (the padded zone) gets alpha=0 by default — we treat that
+  // as "user didn't mark", which falls back to footprint behavior.
+  let userData: ImageData | null = null;
+  if (userMaskBlob) {
+    const um = document.createElement("canvas");
+    um.width = W;
+    um.height = H;
+    const umCtx = um.getContext("2d");
+    if (umCtx) {
+      try {
+        const img = await blobToImage(userMaskBlob);
+        umCtx.drawImage(img, offset.x, offset.y, offset.w, offset.h);
+        userData = umCtx.getImageData(0, 0, W, H);
+      } catch (e) {
+        console.warn("[buildOpenAIEditMask] user mask load failed; ignoring", e);
+      }
+    }
+  }
+
+  const outData = outCtx.createImageData(W, H);
+  for (let i = 0; i < outData.data.length; i += 4) {
+    // RGB is irrelevant to OpenAI but we set it to white to keep the
+    // PNG human-debuggable in any viewer that doesn't honor alpha.
+    outData.data[i] = 255;
+    outData.data[i + 1] = 255;
+    outData.data[i + 2] = 255;
+
+    const insideFootprint = srcData.data[i + 3] > 0;
+    if (!insideFootprint) {
+      // Outside the layer footprint — preserve the (transparent) input
+      // pixel. This is what stops OpenAI from painting a background
+      // around the layer.
+      outData.data[i + 3] = 255;
+      continue;
+    }
+
+    if (userData) {
+      // Inside footprint — user mask decides. Convert convention:
+      // DecomposeStudio uses alpha=255 for "edit", OpenAI uses alpha=0.
+      outData.data[i + 3] = 255 - userData.data[i + 3];
+    } else {
+      // Inside footprint, no user mask — let OpenAI edit the whole
+      // layer.
+      outData.data[i + 3] = 0;
+    }
+  }
+  outCtx.putImageData(outData, 0, 0);
   return out;
 }
 
@@ -155,27 +199,42 @@ async function blobToImage(blob: Blob): Promise<HTMLImageElement> {
 
 /**
  * Turn a raw provider response into an atlas-ready PNG sized to the
- * layer's upright rect. Two transformations:
+ * layer's upright rect. Three transformations:
  *
- *   1. Crop OpenAI's 1024² padding back to the original layer shape.
- *      The client's `padToOpenAISquare` tracked the offset; we pass
- *      it back in and crop the inner region. Gemini callers omit the
- *      offset and the result just gets scaled to the target dims.
+ *   1. Crop the layer region out of the result. Providers that pad
+ *      the input to a square (OpenAI) need the saved offset back —
+ *      and because the model may return at a *different* resolution
+ *      than we sent (OpenAI without an explicit `size` picks for us),
+ *      we scale the offset proportionally so it indexes the right
+ *      pixels regardless of output size. Providers that send the
+ *      layer at native dims (Gemini) skip the offset and just scale
+ *      the whole result to target.
  *
- *   2. Enforce alpha. Inpaint models often return fully-opaque output
+ *   2. Resample to the layer's upright rect. Bilinear is fine —
+ *      atlas pages are rendered at 1× anyway and aliasing is hidden
+ *      under the alpha enforcement step.
+ *
+ *   3. Enforce alpha. Inpaint models often return fully-opaque output
  *      even when the source had soft / transparent edges (Cubism mesh
  *      antialiasing, Spine attachment alpha). We multiply the result's
  *      alpha by the upright source canvas's alpha so the pasted
- *      texture never extends past the layer's natural footprint.
+ *      texture never extends past the layer's natural footprint —
+ *      this is also what guarantees pixel-perfect re-positioning when
+ *      a provider drifts the content slightly.
  */
 export async function postprocessGeneratedBlob(opts: {
   blob: Blob;
   /** Upright source canvas — used for both target dimensions and the
    *  alpha-enforcement reference. */
   sourceCanvas: HTMLCanvasElement;
-  /** OpenAI 1024² offset returned by `padToOpenAISquare`. Omit for
-   *  providers that don't pad (e.g. Gemini). */
-  sourceOffset?: { x: number; y: number; w: number; h: number };
+  /** Set when the source was padded to an OpenAI square at submit
+   *  time. Carries both the offset where the layer sat and the square
+   *  size we padded to (defaults to `OPENAI_TARGET`). The output may
+   *  not be at `canvasSize` — we scale offsets to whatever it is. */
+  openAIPadding?: {
+    offset: { x: number; y: number; w: number; h: number };
+    canvasSize?: number;
+  };
 }): Promise<Blob> {
   const img = await blobToImage(opts.blob);
   const targetW = opts.sourceCanvas.width;
@@ -190,20 +249,20 @@ export async function postprocessGeneratedBlob(opts: {
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
 
-  // Step 1: crop padding back out (or just scale).
-  if (opts.sourceOffset) {
-    ctx.drawImage(
-      img,
-      opts.sourceOffset.x,
-      opts.sourceOffset.y,
-      opts.sourceOffset.w,
-      opts.sourceOffset.h,
-      0,
-      0,
-      targetW,
-      targetH,
-    );
+  // Step 1: extract the layer region.
+  if (opts.openAIPadding) {
+    const { offset } = opts.openAIPadding;
+    const canvasSize = opts.openAIPadding.canvasSize ?? OPENAI_TARGET;
+    // OpenAI picks an output size from the input dims; if the response
+    // came back at a different resolution, the saved offset (in input
+    // coords) needs to be scaled into output coords.
+    const sx = (offset.x / canvasSize) * img.naturalWidth;
+    const sy = (offset.y / canvasSize) * img.naturalHeight;
+    const sw = (offset.w / canvasSize) * img.naturalWidth;
+    const sh = (offset.h / canvasSize) * img.naturalHeight;
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetW, targetH);
   } else {
+    // Gemini & friends: scale the whole result to target dims.
     ctx.drawImage(img, 0, 0, targetW, targetH);
   }
 

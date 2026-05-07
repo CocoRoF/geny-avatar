@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
-  buildOpenAIMaskCanvas,
+  buildOpenAIEditMask,
   canvasToPngBlob,
   fetchProviders,
   type ProviderAvailability,
@@ -183,16 +183,21 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       let maskBlob: Blob | undefined;
 
       if (providerId === "openai") {
-        // OpenAI: pad source to 1024 square, convert mask alpha + match dims.
+        // OpenAI: pad source to 1024² square, then ALWAYS build a mask
+        // from the padded source's alpha. Even without a user mask,
+        // the layer footprint defines an implicit edit region; the
+        // OpenAI spec promises preserved pixels outside the edit zone,
+        // so a tight mask is what guarantees the generated layer
+        // ends up at the same position and scale as the input.
         const { canvas: padded, offset } = padToOpenAISquare(sourceCanvas);
         openAIOffsetRef.current = offset;
         sourceBlob = await canvasToPngBlob(padded);
-        if (existingMask) {
-          const padMask = await buildOpenAIMaskCanvas(existingMask, offset);
-          maskBlob = await canvasToPngBlob(padMask);
-        }
+        const editMask = await buildOpenAIEditMask(padded, existingMask, offset);
+        maskBlob = await canvasToPngBlob(editMask);
       } else {
         // Gemini: arbitrary input dims. Pass source + raw mask through.
+        // Footprint is enforced post-hoc via alpha multiplication in
+        // postprocessGeneratedBlob.
         sourceBlob = await canvasToPngBlob(sourceCanvas);
         maskBlob = existingMask ?? undefined;
       }
@@ -222,7 +227,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       const processed = await postprocessGeneratedBlob({
         blob: phase.blob,
         sourceCanvas,
-        sourceOffset: openAIOffsetRef.current ?? undefined,
+        openAIPadding: openAIOffsetRef.current ? { offset: openAIOffsetRef.current } : undefined,
       });
       // Save to store. The LayersPanel effect picks it up and the
       // adapter composites onto the atlas page within one frame.
