@@ -2,6 +2,7 @@
 
 import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
+import { ExportButton } from "@/components/ExportButton";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
@@ -9,9 +10,10 @@ import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
+import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPersistence";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
 import { loadPuppet, type PuppetId, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
-import { useEditorStore } from "@/lib/store/editor";
+import { selectLayers, useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -88,6 +90,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   useEditorShortcuts({ undo, redo, reset });
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
+  const layers = useEditorStore(selectLayers);
+  useLayerOverridesPersistence(adapter ? puppetId : null, layers);
 
   const headerName = puppetRow?.name ?? puppetId.slice(-6);
   const headerStatus = loadError
@@ -137,6 +141,9 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           >
             reset
           </button>
+          <span className="ml-3">
+            <ExportButton puppetId={puppetId} />
+          </span>
           <a
             href="/poc/library"
             className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"

@@ -2,6 +2,7 @@
 
 import type { Application } from "pixi.js";
 import { useEffect, useState } from "react";
+import { ExportButton } from "@/components/ExportButton";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
@@ -10,9 +11,11 @@ import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
+import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPersistence";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
+import { tryRestoreGenyAvatarZip } from "@/lib/import/restoreBundle";
 import { type PuppetId, savePuppet, updatePuppet } from "@/lib/persistence/db";
-import { useEditorStore } from "@/lib/store/editor";
+import { selectLayers, useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -56,6 +59,8 @@ export default function UploadPocPage() {
   useEditorShortcuts({ undo, redo, reset });
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
+  const layers = useEditorStore(selectLayers);
+  useLayerOverridesPersistence(adapter && savedId ? savedId : null, layers);
 
   async function handleFiles(files: File[]) {
     if (bundle) disposeBundle(bundle);
@@ -63,6 +68,22 @@ export default function UploadPocPage() {
     setSavedId(null);
     setSaveStatus("idle");
     try {
+      // First check whether the dropped file is a geny-avatar export
+      // ZIP. If so, restore (writes IDB rows) and redirect — skip the
+      // regular puppet-bundle parse path entirely.
+      if (files.length === 1 && files[0].name.toLowerCase().endsWith(".zip")) {
+        const restored = await tryRestoreGenyAvatarZip(files[0]);
+        if (restored) {
+          if (restored.warnings.length > 0) {
+            console.warn("[upload] restore warnings", restored.warnings);
+          }
+          // Hard navigate so the editor mounts fresh and picks up
+          // freshly-written IDB rows in its own load + hydrate effects.
+          window.location.href = `/edit/${restored.puppetId}`;
+          return;
+        }
+      }
+
       const fileInput: File | File[] =
         files.length === 1 && files[0].name.toLowerCase().endsWith(".zip") ? files[0] : files;
       const parsed = await parseBundle(fileInput);
@@ -190,6 +211,11 @@ export default function UploadPocPage() {
               open in editor →
             </a>
           )}
+          {bundle && (
+            <span className="ml-3">
+              <ExportButton puppetId={savedId} />
+            </span>
+          )}
         </header>
 
         <PuppetCanvas
@@ -199,7 +225,13 @@ export default function UploadPocPage() {
             setApp(pixiApp);
           }}
           onError={(e) => setParseError(e)}
-          empty={<UploadDropzone onFiles={handleFiles} className="h-72 w-full max-w-2xl" />}
+          empty={
+            <UploadDropzone
+              onFiles={handleFiles}
+              className="h-72 w-full max-w-2xl"
+              hint="Spine: .skel/.json + .atlas + .png. Cubism: .model3.json + .moc3 + textures. Or a previously-exported *.geny-avatar.zip — it'll be restored with variants and overrides intact."
+            />
+          }
         />
 
         {bundle?.ok && bundle.warnings.length > 0 && (
