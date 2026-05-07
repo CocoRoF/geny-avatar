@@ -183,17 +183,30 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       let maskBlob: Blob | undefined;
 
       if (providerId === "openai") {
-        // OpenAI: pad source to 1024² square, then ALWAYS build a mask
-        // from the padded source's alpha. Even without a user mask,
-        // the layer footprint defines an implicit edit region; the
-        // OpenAI spec promises preserved pixels outside the edit zone,
-        // so a tight mask is what guarantees the generated layer
-        // ends up at the same position and scale as the input.
+        // OpenAI: pad source to 1024² square. We ONLY send a mask when
+        // the user explicitly drew one in DecomposeStudio.
+        //
+        // A previous iteration always built a tight footprint mask
+        // hoping it would lock the layer's position. In practice
+        // OpenAI treats alpha=0 mask regions as "free creative space"
+        // and ignores the silhouette as a shape reference — the
+        // generated content matches the prompt but loses the
+        // original outline (a triangular helmet became a rounded
+        // cube, etc.). Without a mask, gpt-image-2 takes the input
+        // as a *visual* reference and produces output that mirrors
+        // the original shape much more faithfully.
+        //
+        // Layer positioning is enforced via the proportional offset
+        // crop in postprocessGeneratedBlob; alpha enforcement against
+        // source.alpha clips any model overspill to the triangle
+        // footprint.
         const { canvas: padded, offset } = padToOpenAISquare(sourceCanvas);
         openAIOffsetRef.current = offset;
         sourceBlob = await canvasToPngBlob(padded);
-        const editMask = await buildOpenAIEditMask(padded, existingMask, offset);
-        maskBlob = await canvasToPngBlob(editMask);
+        if (existingMask) {
+          const editMask = await buildOpenAIEditMask(padded, existingMask, offset);
+          maskBlob = await canvasToPngBlob(editMask);
+        }
       } else {
         // Gemini: arbitrary input dims. Pass source + raw mask through.
         // Footprint is enforced post-hoc via alpha multiplication in
