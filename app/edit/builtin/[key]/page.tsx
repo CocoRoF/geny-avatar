@@ -23,15 +23,8 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const {
-    toggleLayer,
-    bulkSetLayerVisibility,
-    applyVisibilityMap,
-    playAnimation,
-    reset,
-    undo,
-    redo,
-  } = usePuppetMutations(adapter);
+  const { toggleLayer, bulkSetLayerVisibility, applyVariant, playAnimation, reset, undo, redo } =
+    usePuppetMutations(adapter);
   useEditorShortcuts({ undo, redo, reset });
 
   const canUndo = useEditorStore((s) => s.past.length > 0);
@@ -104,7 +97,11 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
 
       <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
-        <VariantsPanel puppetKey={`builtin:${key}`} onApplyVisibility={applyVisibilityMap} />
+        <VariantsPanel
+          puppetKey={`builtin:${key}`}
+          adapter={adapter}
+          onApplyVariant={applyVariant}
+        />
         <LayersPanel
           adapter={adapter}
           puppetKey={`builtin:${key}`}

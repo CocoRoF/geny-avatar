@@ -143,6 +143,41 @@ export type Variant = {
   thumbnail?: AssetRef;
 };
 
+/**
+ * Runtime-aware preset bundle that can be applied alongside layer
+ * visibility. Spine has the most natural concept here — a "skin" swaps
+ * a whole set of attachments at once. We thread these through the
+ * adapter so the panel can apply them without knowing runtime details.
+ *
+ * The map is intentionally open-ended: future additions (e.g.
+ * `live2dExpression`, `live2dPose`) drop in as new optional keys
+ * without changing the call sites that don't care.
+ */
+export type VariantApplyData = {
+  /** Spine skin name to set via `skeleton.setSkinByName(...)`. Absent
+   *  means "leave the active skin alone". */
+  spineSkin?: string;
+};
+
+/**
+ * A preset that already exists inside the puppet bundle (a Spine Skin,
+ * a Cubism part-group). The Variants panel surfaces these as "import
+ * from puppet" so the user can save them as IDB variants and combine
+ * with their own visibility tweaks.
+ */
+export type NativeVariantSource = "spine-skin" | "live2d-group";
+
+export type NativeVariant = {
+  source: NativeVariantSource;
+  /** Stable runtime-native id — Spine skin name, Cubism group name. */
+  externalId: string;
+  /** Display name for the panel; usually equal to externalId. */
+  name: string;
+  description?: string;
+  /** What `applyVariantData` should be called with to activate this. */
+  applyData: VariantApplyData;
+};
+
 // ----- Animations / parameters -----
 
 export type AnimationRef = {

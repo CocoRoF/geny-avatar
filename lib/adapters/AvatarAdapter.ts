@@ -15,9 +15,11 @@ import type {
   Avatar,
   AvatarSourceRuntime,
   LayerId,
+  NativeVariant,
   Parameter,
   RGBA,
   TextureId,
+  VariantApplyData,
 } from "../avatar/types";
 
 /**
@@ -158,6 +160,35 @@ export interface AvatarAdapter {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
   }): Promise<void>;
+
+  /**
+   * Presets baked into the puppet itself (Spine Skin, Cubism part group).
+   * Empty array when the runtime has no native concept. The Variants
+   * panel uses this to populate its "import from puppet" dropdown so
+   * the user can save these as IDB variants.
+   *
+   * Listed once after `load()`; subsequent calls return the same set
+   * (the underlying puppet doesn't grow new skins at runtime).
+   */
+  listNativeVariants(): NativeVariant[];
+
+  /**
+   * Activate a runtime-level preset (e.g. switch the active Spine skin).
+   * Used both by "apply a variant" and by importing native variants for
+   * preview. Adapters whose runtime has no concept here treat it as
+   * a no-op. Layer visibility lives in a separate channel
+   * (`setLayerVisibility`) — apply order is caller's responsibility, but
+   * usually skin-first then visibility-overlay.
+   */
+  applyVariantData(data: VariantApplyData): void;
+
+  /**
+   * Snapshot the runtime state that `applyVariantData` would set. Used
+   * by "capture current as a Variant" so the saved row can later
+   * restore the same skin / preset alongside the visibility overrides.
+   * Adapters with nothing to report return an empty object.
+   */
+  getActiveVariantData(): VariantApplyData;
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;

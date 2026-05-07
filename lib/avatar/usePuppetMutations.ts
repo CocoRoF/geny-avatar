@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import type { AvatarAdapter } from "../adapters/AvatarAdapter";
 import { useEditorStore } from "../store/editor";
-import type { LayerId } from "./types";
+import type { LayerId, VariantApplyData } from "./types";
 
 /**
  * Bridge between the editor store and the runtime adapter. Pages get one
@@ -67,6 +67,35 @@ export function usePuppetMutations(adapter: AvatarAdapter | null) {
     [adapter, applyVisibilityMapState],
   );
 
+  /**
+   * Apply a Variant — runtime preset (Spine skin etc.) first, then the
+   * visibility overlay. Order matters: switching the skin can change
+   * which slots are present and what their default attachments are, so
+   * the visibility hide pass needs to run on the post-skin skeleton to
+   * land on the right slots. Skin switching itself isn't recorded in
+   * undo history (the visibility step is); to revert, re-apply the
+   * previous variant.
+   */
+  const applyVariant = useCallback(
+    (bundle: { visibility: Record<LayerId, boolean>; applyData: VariantApplyData }) => {
+      adapter?.applyVariantData(bundle.applyData);
+      // setSkinByName resets slot attachments — push current store
+      // visibility through the adapter so any prior overrides on
+      // unaffected layers stay visible. The bundle.visibility merge
+      // below then layers the variant's own changes on top.
+      if (adapter && bundle.applyData.spineSkin !== undefined) {
+        const current = useEditorStore.getState().visibilityOverrides;
+        for (const [id, visible] of Object.entries(current)) {
+          adapter.setLayerVisibility(id, visible);
+        }
+      }
+      if (Object.keys(bundle.visibility).length > 0) {
+        applyVisibilityMap(bundle.visibility);
+      }
+    },
+    [adapter, applyVisibilityMap],
+  );
+
   const syncAdapterFromStore = useCallback(() => {
     if (!adapter) return;
     const visibility = useEditorStore.getState().visibilityOverrides;
@@ -94,6 +123,7 @@ export function usePuppetMutations(adapter: AvatarAdapter | null) {
     toggleLayer,
     bulkSetLayerVisibility,
     applyVisibilityMap,
+    applyVariant,
     playAnimation,
     reset,
     undo,

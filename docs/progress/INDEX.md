@@ -56,6 +56,7 @@
 | 2026-05-07 | [40 phase3_hotfix_pass](2026-05-07_40_phase3_hotfix_pass.md) | 3 hotfix | 완료 — 9개 fix 묶음 (OpenAI 품질 + mask/gen 합성 + Cubism multi-page split) |
 | 2026-05-07 | [41 phase4_kickoff](2026-05-07_41_phase4_kickoff.md) | 4.0 | 진행중 — Phase 4 sub-sprint 분할 (4.1 Variant 모델 / 4.2 Spine Skin import / 4.3 Live2D groups / 4.4 Export / 4.5 Import) |
 | 2026-05-07 | [42 sprint_4_1_variant_visibility](2026-05-07_42_sprint_4_1_variant_visibility.md) | 4.1 | 완료 — IDB v3 variants store + useVariants 훅 + VariantsPanel + 3개 edit 페이지 와이어링 |
+| 2026-05-07 | [43 sprint_4_2_spine_skin_import](2026-05-07_43_sprint_4_2_spine_skin_import.md) | 4.2 | 완료 — Spine Skin → Variant import (어댑터 인터페이스에 listNativeVariants/applyVariantData/getActiveVariantData, IDB v4, "from puppet" 드롭다운) |
 
 ## 운영 규칙
 

@@ -7,9 +7,11 @@ import type {
   Texture as DomainTexture,
   Layer,
   LayerId,
+  NativeVariant,
   RGBA,
   TextureId,
   TextureSlice,
+  VariantApplyData,
 } from "../avatar/types";
 import type {
   AdapterCapabilities,
@@ -255,6 +257,48 @@ export class SpineAdapter implements AvatarAdapter {
     const spine = this.spine;
     if (!spine) return;
     spine.state.setAnimation(0, name, true);
+  }
+
+  /**
+   * One Variant per Spine Skin in the puppet's skeleton data. The
+   * synthetic "default" skin (always present, holds the setup-pose
+   * attachments) is included so the user can revert after trying
+   * other skins. Skin names are unique within a skeleton.
+   */
+  listNativeVariants(): NativeVariant[] {
+    const spine = this.spine;
+    if (!spine) return [];
+    const skins = spine.skeleton.data.skins ?? [];
+    return skins.map((skin) => ({
+      source: "spine-skin" as const,
+      externalId: skin.name,
+      name: skin.name,
+      applyData: { spineSkin: skin.name },
+    }));
+  }
+
+  /**
+   * Activate a Spine skin. After `setSkinByName` the skeleton holds a
+   * different attachment per slot, but the live `Slot.attachment` field
+   * still points at whatever the previous skin / animation set — we
+   * call `setSlotsToSetupPose` so each slot picks up the new skin's
+   * attachment immediately. Visibility overrides applied right after
+   * still win because they go through `setLayerVisibility` (which calls
+   * `slot.setAttachment(null)` for hide) on the same skeleton.
+   */
+  applyVariantData(data: VariantApplyData): void {
+    const spine = this.spine;
+    if (!spine) return;
+    if (data.spineSkin === undefined) return;
+    spine.skeleton.setSkinByName(data.spineSkin);
+    spine.skeleton.setSlotsToSetupPose();
+  }
+
+  getActiveVariantData(): VariantApplyData {
+    const spine = this.spine;
+    if (!spine) return {};
+    const name = spine.skeleton.skin?.name;
+    return name ? { spineSkin: name } : {};
   }
 
   setParameter(_paramId: string, _value: number): void {

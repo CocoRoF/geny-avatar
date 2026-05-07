@@ -13,7 +13,12 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { ProviderId } from "../ai/types";
 import { ID_PREFIX, newId } from "../avatar/id";
-import type { AssetOriginNote, AvatarSourceRuntime } from "../avatar/types";
+import type {
+  AssetOriginNote,
+  AvatarSourceRuntime,
+  NativeVariantSource,
+  VariantApplyData,
+} from "../avatar/types";
 import type { BundleEntry } from "../upload/types";
 
 export type PuppetId = string;
@@ -75,14 +80,21 @@ export type AIJobRow = {
 };
 
 /**
- * A user-saved outfit / part-visibility preset. Phase 4.1 — visibility
- * snapshots only. Future sprints add color overrides, mask refs, AI
- * texture refs.
+ * A user-saved outfit / part-visibility preset.
+ *
+ * Phase 4.1 — visibility snapshots only.
+ * Phase 4.2 — `applyData` (Spine skin name) + `source` distinguish
+ *             user-captured rows from rows imported from a Spine Skin.
+ *             Future sprints add color overrides, mask refs, AI texture
+ *             refs.
  *
  * Keying mirrors `AIJobRow`: `puppetKey` plus `(layerExternalId → bool)`
  * map. Layer.id is regenerated per load, so visibility is stored against
  * the runtime-stable externalId. Apply walks the live `Avatar.layers`
  * to map externalId back to the current Layer.id.
+ *
+ * Imported rows carry `(source, sourceExternalId)` so the panel can
+ * dedupe a re-import of the same Spine skin even after a rename.
  */
 export type VariantRow = {
   id: VariantRowId;
@@ -93,6 +105,17 @@ export type VariantRow = {
    *  current value when the variant is applied (i.e. partial variants
    *  are allowed — useful for "swap shoes only" presets). */
   visibility: Record<string, boolean>;
+  /** Runtime-level preset to push through `adapter.applyVariantData`
+   *  before visibility (e.g. `{ spineSkin: "casual" }`). Empty when the
+   *  variant is purely visibility-driven. */
+  applyData?: VariantApplyData;
+  /** "user" — captured manually. Otherwise the runtime native source
+   *  the row was imported from. Used to dedupe and to label rows in
+   *  the panel. */
+  source: "user" | NativeVariantSource;
+  /** Runtime-native id of the imported preset (e.g. Spine skin name).
+   *  Set only when `source !== "user"`; used for re-import dedup. */
+  sourceExternalId?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -126,6 +149,25 @@ class GenyAvatarDB extends Dexie {
       aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
       variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
     });
+    // v4: variants gained `applyData` / `source` / `sourceExternalId`
+    // (Sprint 4.2 — Spine Skin import). Indexes are unchanged; the
+    // upgrade backfills `source: "user"` on rows from v3 so existing
+    // captures keep showing as user-made instead of becoming undefined.
+    this.version(4)
+      .stores({
+        puppets: "id, runtime, updatedAt",
+        puppetFiles: "++id, puppetId, [puppetId+path]",
+        aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+        variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("variants")
+          .toCollection()
+          .modify((row: Partial<VariantRow>) => {
+            if (row.source === undefined) row.source = "user";
+          });
+      });
   }
 }
 
@@ -269,6 +311,9 @@ export type SaveVariantInput = {
   name: string;
   description?: string;
   visibility: Record<string, boolean>;
+  applyData?: VariantApplyData;
+  source?: "user" | NativeVariantSource;
+  sourceExternalId?: string;
 };
 
 /** Persist a freshly captured variant. Returns the new row id. */
@@ -281,6 +326,9 @@ export async function saveVariant(input: SaveVariantInput): Promise<VariantRowId
     name: input.name,
     description: input.description,
     visibility: input.visibility,
+    applyData: input.applyData,
+    source: input.source ?? "user",
+    sourceExternalId: input.sourceExternalId,
     createdAt: now,
     updatedAt: now,
   });

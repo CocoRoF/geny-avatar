@@ -6,10 +6,12 @@ import type {
   Texture as DomainTexture,
   Layer,
   LayerId,
+  NativeVariant,
   Parameter,
   RGBA,
   TextureId,
   TextureSlice,
+  VariantApplyData,
 } from "../avatar/types";
 import type {
   AdapterCapabilities,
@@ -613,6 +615,26 @@ export class Live2DAdapter implements AvatarAdapter {
 
   setParameter(paramId: string, value: number): void {
     this.coreModel?.setParameterValueById?.(paramId, value);
+  }
+
+  /**
+   * Cubism doesn't expose a native skin concept the way Spine does —
+   * Sprint 4.3 will surface cdi3 part-group presets here. Empty for
+   * now so VariantsPanel just shows the user-captured visibility
+   * variants on Cubism puppets without a "import from puppet" entry
+   * point until the data is actually wired.
+   */
+  listNativeVariants(): NativeVariant[] {
+    return [];
+  }
+
+  applyVariantData(_data: VariantApplyData): void {
+    // No Cubism-side preset wiring yet; visibility-only variants still
+    // apply through the regular setLayerVisibility path.
+  }
+
+  getActiveVariantData(): VariantApplyData {
+    return {};
   }
 
   getTextureSource(textureId: TextureId): TextureSourceInfo | null {

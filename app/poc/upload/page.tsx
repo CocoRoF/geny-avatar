@@ -51,15 +51,8 @@ export default function UploadPocPage() {
   }, [app, savedId]);
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
-  const {
-    toggleLayer,
-    bulkSetLayerVisibility,
-    applyVisibilityMap,
-    playAnimation,
-    reset,
-    undo,
-    redo,
-  } = usePuppetMutations(adapter);
+  const { toggleLayer, bulkSetLayerVisibility, applyVariant, playAnimation, reset, undo, redo } =
+    usePuppetMutations(adapter);
   useEditorShortcuts({ undo, redo, reset });
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
@@ -220,7 +213,7 @@ export default function UploadPocPage() {
 
       <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
-        <VariantsPanel puppetKey={savedId} onApplyVisibility={applyVisibilityMap} />
+        <VariantsPanel puppetKey={savedId} adapter={adapter} onApplyVariant={applyVariant} />
         <LayersPanel
           adapter={adapter}
           puppetKey={savedId}
