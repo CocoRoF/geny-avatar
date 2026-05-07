@@ -358,21 +358,26 @@ export class Live2DAdapter implements AvatarAdapter {
       motions: motionGroups,
     };
 
-    // Filter the panel-visible layer list down to parts that own real
-    // visible content. Two structural exclusions, both decided from
-    // Cubism's own data — no heuristic:
-    //   1. Pure container parts (zero direct drawables). They group
-    //      children, they have no atlas footprint of their own, and
-    //      our deeper code paths (thumbnail / DecomposeStudio) have
-    //      nothing to render for them. Remain in `layerByPartIndex`
-    //      so id-keyed visibility still reaches them if needed.
-    //   2. Pure-clip parts: every direct drawable is referenced as a
-    //      clipping mask by some other drawable. These exist to define
-    //      clip shapes — Cubism may render them but the artist intent
-    //      is "I'm a stencil for someone else", and we surface them as
-    //      ghosts in DecomposeStudio. Filter them out.
+    // Filter the panel-visible layer list. Strict rule per user
+    // requirement: NEVER hide a part that has visible texture content,
+    // even if our dedup heuristics think it's redundant. The only
+    // exclusion remaining is purely structural:
+    //
+    //   Pure container parts (zero direct drawables). Children-only
+    //   grouping nodes; have no atlas footprint of their own, no
+    //   thumbnail to show, and no surface for DecomposeStudio /
+    //   GeneratePanel to act on. Stay in `layerByPartIndex` so any
+    //   id-keyed visibility cascade still reaches them.
+    //
+    // The earlier "pure-clip" filter (every direct drawable is in
+    // `this.maskDrawables`) had a false-positive problem: a Cubism
+    // drawable can be BOTH visible content of its own AND referenced
+    // as a clipping mask by another layer. The filter hid legitimate
+    // texture parts — leg meshes, accessories — that incidentally
+    // served as clip shapes elsewhere. We now only *count* clip-role
+    // parts as a diagnostic; they stay exposed.
     let hiddenContainerCount = 0;
-    let hiddenClipCount = 0;
+    let clipRolePartCount = 0;
     let multiPagePartCount = 0;
     const exposedLayers = layers.filter((_, partIdx) => {
       const direct = this.partToDirectDrawables.get(partIdx);
@@ -380,15 +385,16 @@ export class Live2DAdapter implements AvatarAdapter {
         hiddenContainerCount++;
         return false;
       }
-      const allMasks = direct.every((d) => this.maskDrawables.has(d));
-      if (allMasks) {
-        hiddenClipCount++;
-        return false;
+
+      // Diagnostic: parts whose drawables are *also* used as clipping
+      // masks for other drawables. Not filtered — see comment above.
+      if (direct.every((d) => this.maskDrawables.has(d))) {
+        clipRolePartCount++;
       }
-      // Diagnostic: parts whose direct drawables span >1 atlas page get
-      // partial coverage in DecomposeStudio (we crop the dominant page
-      // only). Logged for debugging; not filtered — partial is better
-      // than nothing, and authors rarely produce these.
+
+      // Diagnostic: parts whose direct drawables span >1 atlas page
+      // get partial coverage in DecomposeStudio (we crop the dominant
+      // page only). Logged for debugging.
       if (coreModel) {
         const pages = new Set<number>();
         for (const d of direct) {
@@ -399,9 +405,9 @@ export class Live2DAdapter implements AvatarAdapter {
       }
       return true;
     });
-    if (hiddenContainerCount > 0 || hiddenClipCount > 0 || multiPagePartCount > 0) {
+    if (hiddenContainerCount > 0 || clipRolePartCount > 0 || multiPagePartCount > 0) {
       console.info(
-        `[Live2DAdapter] hidden ${hiddenContainerCount} containers + ${hiddenClipCount} clip-only parts of ${layers.length}; ${multiPagePartCount} parts span multi-page (dominant page only)`,
+        `[Live2DAdapter] hidden ${hiddenContainerCount} containers of ${layers.length}; ${clipRolePartCount} parts whose drawables also serve as clip masks (still exposed); ${multiPagePartCount} parts span multi-page (dominant page only)`,
       );
     }
 
