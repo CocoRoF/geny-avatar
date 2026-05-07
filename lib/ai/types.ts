@@ -12,6 +12,17 @@ export type AIJobId = string;
 
 export type ProviderId = "gemini" | "openai" | "replicate";
 
+/**
+ * Describes a single model available within a provider. UI uses
+ * `displayName` for the picker label and `description` for a short
+ * explanatory line under it; `id` is the raw model id sent to the API.
+ */
+export type ModelInfo = {
+  id: string;
+  displayName: string;
+  description?: string;
+};
+
 export type AIJobStatus =
   | { kind: "queued" }
   | { kind: "running"; progress?: number }

@@ -17,7 +17,7 @@
  * timeout.
  */
 
-import type { AIJobStatus, ProviderId } from "./types";
+import type { AIJobStatus, ModelInfo, ProviderId } from "./types";
 
 export type ProviderAvailability = {
   id: ProviderId;
@@ -26,7 +26,7 @@ export type ProviderAvailability = {
     supportsBinaryMask: boolean;
     supportsNegativePrompt: boolean;
     defaultModelId: string;
-    availableModelIds: readonly string[];
+    models: readonly ModelInfo[];
   };
   available: boolean;
   reason?: string;

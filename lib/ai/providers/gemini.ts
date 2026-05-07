@@ -15,17 +15,36 @@
  * mask as a secondary reference, and prompt language pointing at it.
  */
 
+import type { ModelInfo } from "../types";
 import type { AIProvider, ProviderConfig, ProviderGenerateInput } from "./interface";
 
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 
-// Per the docs: Nano Banana / Nano Banana 2 / Nano Banana Pro variants.
-// Default to the stable "Nano Banana" id; the picker exposes the others.
-const MODELS = [
-  "gemini-2.5-flash-image",
-  "gemini-3.1-flash-image-preview",
-  "gemini-3-pro-image-preview",
-] as const;
+/**
+ * The three Nano Banana variants documented by Google as of writing.
+ * Default is the stable "Nano Banana" (gemini-2.5-flash-image) — non-
+ * preview, low-latency. Users can pick the preview siblings (Nano
+ * Banana 2 / Pro) for newer behavior or higher fidelity.
+ */
+const MODELS: readonly ModelInfo[] = [
+  {
+    id: "gemini-2.5-flash-image",
+    displayName: "Nano Banana",
+    description: "Speed + efficiency. Optimized for high-volume, low-latency tasks.",
+  },
+  {
+    id: "gemini-3.1-flash-image-preview",
+    displayName: "Nano Banana 2",
+    description:
+      "High-efficiency counterpart of Gemini 3 Pro Image. Optimized for speed and bulk developer use cases. Preview.",
+  },
+  {
+    id: "gemini-3-pro-image-preview",
+    displayName: "Nano Banana Pro",
+    description:
+      "Professional asset creation with advanced reasoning ('thinking'). Best at complex instructions and high-fidelity text rendering. Preview.",
+  },
+];
 
 export const geminiConfig: ProviderConfig = {
   id: "gemini",
@@ -33,8 +52,8 @@ export const geminiConfig: ProviderConfig = {
   capabilities: {
     supportsBinaryMask: false,
     supportsNegativePrompt: true,
-    defaultModelId: MODELS[0],
-    availableModelIds: MODELS,
+    defaultModelId: MODELS[0].id,
+    models: MODELS,
   },
 };
 

@@ -27,11 +27,33 @@
  * the request so server-side stays simple.
  */
 
+import type { ModelInfo } from "../types";
 import type { AIProvider, ProviderConfig, ProviderGenerateInput } from "./interface";
 
 const ENDPOINT = "https://api.openai.com/v1/images/edits";
 
-const MODELS = ["gpt-image-2", "gpt-image-1.5", "gpt-image-1", "dall-e-2"] as const;
+const MODELS: readonly ModelInfo[] = [
+  {
+    id: "gpt-image-2",
+    displayName: "gpt-image-2",
+    description: "Latest OpenAI image-edit model. Highest quality of the family.",
+  },
+  {
+    id: "gpt-image-1.5",
+    displayName: "gpt-image-1.5",
+    description: "Mid-generation refresh between gpt-image-1 and 2.",
+  },
+  {
+    id: "gpt-image-1",
+    displayName: "gpt-image-1",
+    description: "First production gpt-image edit model.",
+  },
+  {
+    id: "dall-e-2",
+    displayName: "DALL·E 2",
+    description: "Older edit-only model. Cheaper but lower fidelity.",
+  },
+];
 
 export const openaiConfig: ProviderConfig = {
   id: "openai",
@@ -39,8 +61,8 @@ export const openaiConfig: ProviderConfig = {
   capabilities: {
     supportsBinaryMask: true,
     supportsNegativePrompt: false, // gpt-image edits don't carry a separate field
-    defaultModelId: MODELS[0],
-    availableModelIds: MODELS,
+    defaultModelId: MODELS[0].id,
+    models: MODELS,
   },
 };
 

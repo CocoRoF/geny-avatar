@@ -317,7 +317,7 @@ export function GeneratePanel({ adapter, layer }: Props) {
               )}
             </div>
 
-            {provider && provider.capabilities.availableModelIds.length > 1 && (
+            {provider && provider.capabilities.models.length > 1 && (
               <div className="mb-3">
                 <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
                   model
@@ -325,14 +325,22 @@ export function GeneratePanel({ adapter, layer }: Props) {
                 <select
                   value={modelId}
                   onChange={(e) => setModelId(e.target.value)}
-                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 font-mono text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
                 >
-                  {provider.capabilities.availableModelIds.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
+                  {provider.capabilities.models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName} · {m.id}
                     </option>
                   ))}
                 </select>
+                {(() => {
+                  const m = provider.capabilities.models.find((x) => x.id === modelId);
+                  return m?.description ? (
+                    <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
+                      {m.description}
+                    </p>
+                  ) : null;
+                })()}
               </div>
             )}
 

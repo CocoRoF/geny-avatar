@@ -10,7 +10,7 @@
  * await a final blob before returning.
  */
 
-import type { ProviderId } from "../types";
+import type { ModelInfo, ProviderId } from "../types";
 
 export type ProviderCapabilities = {
   /** Provider takes a binary PNG mask describing edit regions.
@@ -20,8 +20,8 @@ export type ProviderCapabilities = {
   supportsNegativePrompt: boolean;
   /** Default model id when the user doesn't override. */
   defaultModelId: string;
-  /** All model ids exposed in the picker. */
-  availableModelIds: readonly string[];
+  /** All models exposed in the picker — id + display name + description. */
+  models: readonly ModelInfo[];
 };
 
 export type ProviderConfig = {
