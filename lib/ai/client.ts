@@ -151,6 +151,76 @@ async function blobToImage(blob: Blob): Promise<HTMLImageElement> {
   }
 }
 
+// ----- result postprocessing (apply-to-atlas path) -----
+
+/**
+ * Turn a raw provider response into an atlas-ready PNG sized to the
+ * layer's upright rect. Two transformations:
+ *
+ *   1. Crop OpenAI's 1024² padding back to the original layer shape.
+ *      The client's `padToOpenAISquare` tracked the offset; we pass
+ *      it back in and crop the inner region. Gemini callers omit the
+ *      offset and the result just gets scaled to the target dims.
+ *
+ *   2. Enforce alpha. Inpaint models often return fully-opaque output
+ *      even when the source had soft / transparent edges (Cubism mesh
+ *      antialiasing, Spine attachment alpha). We multiply the result's
+ *      alpha by the upright source canvas's alpha so the pasted
+ *      texture never extends past the layer's natural footprint.
+ */
+export async function postprocessGeneratedBlob(opts: {
+  blob: Blob;
+  /** Upright source canvas — used for both target dimensions and the
+   *  alpha-enforcement reference. */
+  sourceCanvas: HTMLCanvasElement;
+  /** OpenAI 1024² offset returned by `padToOpenAISquare`. Omit for
+   *  providers that don't pad (e.g. Gemini). */
+  sourceOffset?: { x: number; y: number; w: number; h: number };
+}): Promise<Blob> {
+  const img = await blobToImage(opts.blob);
+  const targetW = opts.sourceCanvas.width;
+  const targetH = opts.sourceCanvas.height;
+  if (!targetW || !targetH) {
+    throw new Error("source canvas has zero dimensions");
+  }
+
+  const out = document.createElement("canvas");
+  out.width = targetW;
+  out.height = targetH;
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+
+  // Step 1: crop padding back out (or just scale).
+  if (opts.sourceOffset) {
+    ctx.drawImage(
+      img,
+      opts.sourceOffset.x,
+      opts.sourceOffset.y,
+      opts.sourceOffset.w,
+      opts.sourceOffset.h,
+      0,
+      0,
+      targetW,
+      targetH,
+    );
+  } else {
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+  }
+
+  // Step 2: alpha enforcement against the upright source.
+  const srcCtx = opts.sourceCanvas.getContext("2d");
+  if (srcCtx) {
+    const srcData = srcCtx.getImageData(0, 0, targetW, targetH);
+    const cropData = ctx.getImageData(0, 0, targetW, targetH);
+    for (let i = 0; i < cropData.data.length; i += 4) {
+      cropData.data[i + 3] = Math.round((cropData.data[i + 3] * srcData.data[i + 3]) / 255);
+    }
+    ctx.putImageData(cropData, 0, 0);
+  }
+
+  return await canvasToPngBlob(out);
+}
+
 // ----- submit + poll -----
 
 export type SubmitGenerateInput = {

@@ -38,6 +38,11 @@ export type EditorState = {
    *  In-memory only for now; IDB persistence lands when DecomposeStudio
    *  promotes from v1 to a feature you can rely on. */
   layerMasks: Record<LayerId, Blob>;
+  /** AI-generated texture overrides per layer (PNG sized to the layer's
+   *  upright rect). The adapter composites these onto the atlas page
+   *  with `source-over` and triangle clipping. In-memory; IDB
+   *  persistence lands in Sprint 3.4. */
+  layerTextureOverrides: Record<LayerId, Blob>;
 
   // ----- actions -----
 
@@ -67,6 +72,9 @@ export type EditorState = {
   setGenerateLayer(id: LayerId | null): void;
   /** Save (or clear with `null`) the refined mask for a layer. */
   setLayerMask(id: LayerId, blob: Blob | null): void;
+  /** Save (or clear with `null`) the AI-generated texture override
+   *  that should replace the layer's atlas pixels on next render. */
+  setLayerTextureOverride(id: LayerId, blob: Blob | null): void;
 
   // ----- selectors / read-helpers -----
 
@@ -86,6 +94,7 @@ export const useEditorStore = create<EditorState>()(
     studioLayerId: null,
     generateLayerId: null,
     layerMasks: {},
+    layerTextureOverrides: {},
 
     setAvatar: (avatar) =>
       set((s) => {
@@ -101,6 +110,7 @@ export const useEditorStore = create<EditorState>()(
         s.studioLayerId = null;
         s.generateLayerId = null;
         s.layerMasks = {};
+        s.layerTextureOverrides = {};
       }),
 
     setLayerVisibility: (id, visible) =>
@@ -182,6 +192,12 @@ export const useEditorStore = create<EditorState>()(
       set((s) => {
         if (blob == null) delete s.layerMasks[id];
         else s.layerMasks[id] = blob;
+      }),
+
+    setLayerTextureOverride: (id, blob) =>
+      set((s) => {
+        if (blob == null) delete s.layerTextureOverrides[id];
+        else s.layerTextureOverrides[id] = blob;
       }),
   })),
 );

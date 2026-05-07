@@ -8,6 +8,7 @@ import {
   fetchProviders,
   type ProviderAvailability,
   padToOpenAISquare,
+  postprocessGeneratedBlob,
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
@@ -38,6 +39,7 @@ type Props = {
 export function GeneratePanel({ adapter, layer }: Props) {
   const close = useEditorStore((s) => s.setGenerateLayer);
   const existingMask = useEditorStore((s) => s.layerMasks[layer.id] ?? null);
+  const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
 
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -50,11 +52,16 @@ export function GeneratePanel({ adapter, layer }: Props) {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
 
+  /** Tracks the OpenAI 1024² padding offset across submit→success so
+   *  the apply step can crop padding back out. Reset on every submit. */
+  const openAIOffsetRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+
   const [phase, setPhase] = useState<
     | { kind: "idle" }
     | { kind: "submitting" }
     | { kind: "running" }
     | { kind: "succeeded"; url: string; blob: Blob }
+    | { kind: "applying" }
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
@@ -132,6 +139,7 @@ export function GeneratePanel({ adapter, layer }: Props) {
 
   async function onSubmit() {
     setPhase({ kind: "submitting" });
+    openAIOffsetRef.current = null;
     try {
       const sourceCanvas = sourceCanvasRef.current;
       if (!sourceCanvas) throw new Error("source not ready");
@@ -143,6 +151,7 @@ export function GeneratePanel({ adapter, layer }: Props) {
       if (providerId === "openai") {
         // OpenAI: pad source to 1024 square, convert mask alpha + match dims.
         const { canvas: padded, offset } = padToOpenAISquare(sourceCanvas);
+        openAIOffsetRef.current = offset;
         sourceBlob = await canvasToPngBlob(padded);
         if (existingMask) {
           const padMask = await buildOpenAIMaskCanvas(existingMask, offset);
@@ -170,6 +179,28 @@ export function GeneratePanel({ adapter, layer }: Props) {
     }
   }
 
+  async function onApply() {
+    if (phase.kind !== "succeeded") return;
+    const sourceCanvas = sourceCanvasRef.current;
+    if (!sourceCanvas) return;
+    setPhase({ kind: "applying" });
+    try {
+      const processed = await postprocessGeneratedBlob({
+        blob: phase.blob,
+        sourceCanvas,
+        sourceOffset: openAIOffsetRef.current ?? undefined,
+      });
+      // Save to store. The LayersPanel effect picks it up and the
+      // adapter composites onto the atlas page within one frame.
+      setLayerTextureOverride(layer.id, processed);
+      // Free the preview URL — store now owns the blob.
+      URL.revokeObjectURL(phase.url);
+      close(null);
+    } catch (e) {
+      setPhase({ kind: "failed", reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   function onReset() {
     if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
     setPhase({ kind: "idle" });
@@ -180,6 +211,7 @@ export function GeneratePanel({ adapter, layer }: Props) {
     !provider?.available ||
     phase.kind === "submitting" ||
     phase.kind === "running" ||
+    phase.kind === "applying" ||
     !prompt.trim();
 
   const previewBg = useMemo<React.CSSProperties>(
@@ -384,24 +416,41 @@ export function GeneratePanel({ adapter, layer }: Props) {
                   : "generate"}
             </button>
             {phase.kind === "succeeded" && (
-              <button
-                type="button"
-                onClick={onReset}
-                className="mt-2 rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-              >
-                reset
-              </button>
+              <div className="mt-2 flex flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={onApply}
+                  className="rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-1.5 text-sm text-[var(--color-accent)]"
+                  title="composite the result onto the atlas page"
+                >
+                  apply to atlas
+                </button>
+                <button
+                  type="button"
+                  onClick={onReset}
+                  className="rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                >
+                  reset · keep generating
+                </button>
+              </div>
+            )}
+            {phase.kind === "applying" && (
+              <div className="mt-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
             )}
 
             <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
               <div className="mb-1 uppercase tracking-widest">flow</div>
               <ul className="list-inside list-disc space-y-1">
                 <li>
-                  <span className="text-[var(--color-fg)]">decompose</span> first refines the mask
+                  <span className="text-[var(--color-fg)]">decompose</span> refines the mask first
                   (optional)
                 </li>
-                <li>provider runs the inpaint and returns a new texture</li>
-                <li>preview here · atlas apply lands in Sprint 3.3</li>
+                <li>provider inpaints and returns a new texture</li>
+                <li>
+                  <span className="text-[var(--color-fg)]">apply</span> composites it onto the atlas
+                  page · live render reflects it next frame
+                </li>
+                <li>esc dismisses · result stays in the layer's overrides until reset</li>
               </ul>
             </div>
           </aside>

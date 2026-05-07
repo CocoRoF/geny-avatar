@@ -141,16 +141,23 @@ export interface AvatarAdapter {
   getLayerTriangles(layerId: LayerId): LayerTriangles | null;
 
   /**
-   * Push refined per-layer masks into the live runtime. Each blob is a
-   * PNG sized to the layer's `texture.rect` (un-rotated), with alpha
-   * encoding "how much to hide" (0 = keep, 255 = hide). The adapter
-   * composites masks into the relevant texture pages with `destination-out`
-   * and re-uploads to GPU so the rendered puppet matches what the user
-   * baked in DecomposeStudio.
+   * Push refined per-layer overrides into the live runtime. The adapter
+   * rebuilds each affected atlas page from the pristine source, then:
+   *   - composites every entry in `textures` (a generated PNG sized to
+   *     the layer's upright rect) with `source-over`, clipped to the
+   *     layer's triangles so edits don't bleed into atlas neighbors,
+   *   - composites every entry in `masks` (alpha=255 = "hide here")
+   *     with `destination-out` to wipe pixels.
+   * Pages with no overrides reset to pristine. The result is uploaded
+   * to the GPU so the rendered puppet matches what the user baked in
+   * DecomposeStudio + GeneratePanel.
    *
-   * Passing `{}` restores the original atlas (unmasked).
+   * Passing `{ masks: {}, textures: {} }` restores the original atlas.
    */
-  setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void>;
+  setLayerOverrides(opts: {
+    masks: Readonly<Record<LayerId, Blob>>;
+    textures: Readonly<Record<LayerId, Blob>>;
+  }): Promise<void>;
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;

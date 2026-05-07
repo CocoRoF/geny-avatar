@@ -19,7 +19,7 @@ import type {
   LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
-import { applyLayerMasks } from "./applyMask";
+import { applyLayerOverrides } from "./applyOverrides";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "slot",
@@ -205,13 +205,16 @@ export class SpineAdapter implements AvatarAdapter {
     };
   }
 
-  async setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void> {
-    await applyLayerMasks(
-      masks,
-      (id) => this.findLayerById(id) ?? null,
-      this.textureSourcesById,
-      this.pixiTextureById,
-    );
+  async setLayerOverrides(opts: {
+    masks: Readonly<Record<LayerId, Blob>>;
+    textures: Readonly<Record<LayerId, Blob>>;
+  }): Promise<void> {
+    await applyLayerOverrides(opts, {
+      findLayer: (id) => this.findLayerById(id) ?? null,
+      getTriangles: (id) => this.getLayerTriangles(id),
+      textureSources: this.textureSourcesById,
+      pixiTextures: this.pixiTextureById,
+    });
   }
 
   getDisplayObject(): Container | null {

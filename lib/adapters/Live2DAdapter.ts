@@ -19,7 +19,7 @@ import type {
   LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
-import { applyLayerMasks } from "./applyMask";
+import { applyLayerOverrides } from "./applyOverrides";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "part",
@@ -580,13 +580,16 @@ export class Live2DAdapter implements AvatarAdapter {
     };
   }
 
-  async setLayerMasks(masks: Readonly<Record<LayerId, Blob>>): Promise<void> {
-    await applyLayerMasks(
-      masks,
-      (id) => this.findLayerByLayerId(id),
-      this.textureSourcesById,
-      this.pixiTextureById,
-    );
+  async setLayerOverrides(opts: {
+    masks: Readonly<Record<LayerId, Blob>>;
+    textures: Readonly<Record<LayerId, Blob>>;
+  }): Promise<void> {
+    await applyLayerOverrides(opts, {
+      findLayer: (id) => this.findLayerByLayerId(id),
+      getTriangles: (id) => this.getLayerTriangles(id),
+      textureSources: this.textureSourcesById,
+      pixiTextures: this.pixiTextureById,
+    });
   }
 
   private findLayerByLayerId(layerId: LayerId): import("../avatar/types").Layer | null {

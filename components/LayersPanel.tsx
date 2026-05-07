@@ -35,25 +35,26 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
   const generateLayerId = useEditorStore((s) => s.generateLayerId);
   const setGenerateLayer = useEditorStore((s) => s.setGenerateLayer);
   const layerMasks = useEditorStore((s) => s.layerMasks);
+  const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
   const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
   const generateLayer = generateLayerId
     ? (layers.find((l) => l.id === generateLayerId) ?? null)
     : null;
 
-  // Push masks into the runtime whenever they change so the live render
-  // matches what the user baked in DecomposeStudio. This is the only
-  // place that calls setLayerMasks — keeps the data flow one-way:
-  //   user paints → store.setLayerMask → this effect → adapter → GPU.
+  // Push masks + AI texture overrides into the runtime whenever either
+  // changes. Single source of truth: store → this effect → adapter →
+  // GPU. The adapter rebuilds each affected page from pristine, so we
+  // can pass the whole map every time without worrying about diff.
   useEffect(() => {
     if (!adapter) return;
     let cancelled = false;
-    adapter.setLayerMasks(layerMasks).catch((e) => {
-      if (!cancelled) console.warn("[LayersPanel] setLayerMasks failed", e);
+    adapter.setLayerOverrides({ masks: layerMasks, textures: layerTextureOverrides }).catch((e) => {
+      if (!cancelled) console.warn("[LayersPanel] setLayerOverrides failed", e);
     });
     return () => {
       cancelled = true;
     };
-  }, [adapter, layerMasks]);
+  }, [adapter, layerMasks, layerTextureOverrides]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -107,6 +108,7 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
               index={i}
               visible={visible}
               hasMask={!!layerMasks[layer.id]}
+              hasGenerated={!!layerTextureOverrides[layer.id]}
               onToggle={() => onToggleLayer(layer.id, !visible)}
               onOpenStudio={() => setStudioLayer(layer.id)}
               onOpenGenerate={() => setGenerateLayer(layer.id)}
@@ -133,6 +135,7 @@ type LayerRowProps = {
   index: number;
   visible: boolean;
   hasMask: boolean;
+  hasGenerated: boolean;
   onToggle: () => void;
   onOpenStudio: () => void;
   onOpenGenerate: () => void;
@@ -144,6 +147,7 @@ function LayerRow({
   index,
   visible,
   hasMask,
+  hasGenerated,
   onToggle,
   onOpenStudio,
   onOpenGenerate,
@@ -176,12 +180,24 @@ function LayerRow({
           {String(index).padStart(2, "0")}
         </span>
         <span className="truncate">{layer.name}</span>
-        {hasMask && (
-          <span
-            className="ml-auto rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
-            title="this layer has a refined mask saved"
-          >
-            mask
+        {(hasMask || hasGenerated) && (
+          <span className="ml-auto flex shrink-0 gap-1">
+            {hasGenerated && (
+              <span
+                className="rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
+                title="this layer has an AI-generated texture applied"
+              >
+                gen
+              </span>
+            )}
+            {hasMask && (
+              <span
+                className="rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
+                title="this layer has a refined mask saved"
+              >
+                mask
+              </span>
+            )}
           </span>
         )}
       </button>
