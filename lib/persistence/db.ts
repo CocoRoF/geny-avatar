@@ -24,6 +24,7 @@ import type { BundleEntry } from "../upload/types";
 export type PuppetId = string;
 export type AIJobRowId = string;
 export type VariantRowId = string;
+export type LayerOverrideRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -120,11 +121,51 @@ export type VariantRow = {
   updatedAt: number;
 };
 
+/**
+ * Per-layer override blob (DecomposeStudio mask or AI-generated atlas
+ * texture) persisted across page reloads. Sprint 4.5 added this so a
+ * geny-avatar.zip import can write the user's edits straight to IDB
+ * and have the editor pick them up on the next puppet load. Live
+ * mutations (mask save, AI apply) also go through here so that edits
+ * survive a refresh — same pattern as `aiJobs` / `variants`.
+ *
+ * Keying mirrors the rest of the per-puppet stores: `puppetKey` plus
+ * the runtime-stable `layerExternalId`. `kind` separates the two
+ * channels so the upsert path can find/replace either independently.
+ */
+export type LayerOverrideRow = {
+  id: LayerOverrideRowId;
+  puppetKey: string;
+  layerExternalId: string;
+  kind: "mask" | "texture";
+  blob: Blob;
+  updatedAt: number;
+};
+
+/**
+ * Whole-puppet session state — the lighter editor channels that don't
+ * fit per-layer storage. Today: just visibility overrides. Future
+ * additions (active variant id, last-played animation, viewport
+ * camera) drop in as new optional fields.
+ *
+ * One row per `puppetKey`; uses `puppetKey` itself as the primary key
+ * so writes are upserts and hydrate is a single `.get()`.
+ */
+export type PuppetSessionRow = {
+  puppetKey: string;
+  /** layerExternalId → visible. Identical convention to
+   *  `VariantRow.visibility`; a missing layer just keeps its default. */
+  visibility: Record<string, boolean>;
+  updatedAt: number;
+};
+
 class GenyAvatarDB extends Dexie {
   puppets!: EntityTable<PuppetRow, "id">;
   puppetFiles!: EntityTable<PuppetFileRow, "id">;
   aiJobs!: EntityTable<AIJobRow, "id">;
   variants!: EntityTable<VariantRow, "id">;
+  layerOverrides!: EntityTable<LayerOverrideRow, "id">;
+  puppetSessions!: EntityTable<PuppetSessionRow, "puppetKey">;
 
   constructor() {
     super("geny-avatar");
@@ -168,6 +209,30 @@ class GenyAvatarDB extends Dexie {
             if (row.source === undefined) row.source = "user";
           });
       });
+    // v5: + layerOverrides (Sprint 4.5 — geny-avatar.zip round-trip
+    // and survival of mask / AI-texture edits across page reloads).
+    // Compound index `[puppetKey+layerExternalId+kind]` covers
+    // upsert ("replace this layer's mask") in one operation; the
+    // `[puppetKey+kind]` index covers the editor's "load all
+    // overrides for this puppet" hydrate path.
+    this.version(5).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+    });
+    // v6: + puppetSessions (Sprint 4.5 — visibility round-trip across
+    // export/import). One row per puppetKey, used as primary key so
+    // upsert is `.put({puppetKey, ...})` and hydrate is `.get()`.
+    this.version(6).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+      puppetSessions: "puppetKey, updatedAt",
+    });
   }
 }
 
@@ -357,4 +422,82 @@ export async function updateVariant(
 
 export async function deleteVariant(id: VariantRowId): Promise<void> {
   await db().variants.delete(id);
+}
+
+// ----- Layer overrides (Sprint 4.5) -----
+
+export type SaveLayerOverrideInput = {
+  puppetKey: string;
+  layerExternalId: string;
+  kind: "mask" | "texture";
+  blob: Blob;
+};
+
+/**
+ * Upsert a layer override blob. Reuses an existing row's id when one
+ * already exists for `(puppetKey, layerExternalId, kind)` so the row
+ * count stays bounded and lookups stay O(1) per layer.
+ */
+export async function saveLayerOverride(
+  input: SaveLayerOverrideInput,
+): Promise<LayerOverrideRowId> {
+  const existing = await db()
+    .layerOverrides.where("[puppetKey+layerExternalId+kind]")
+    .equals([input.puppetKey, input.layerExternalId, input.kind])
+    .first();
+  const id = existing?.id ?? newId(ID_PREFIX.override);
+  await db().layerOverrides.put({
+    id,
+    puppetKey: input.puppetKey,
+    layerExternalId: input.layerExternalId,
+    kind: input.kind,
+    blob: input.blob,
+    updatedAt: Date.now(),
+  });
+  return id;
+}
+
+export async function deleteLayerOverride(
+  puppetKey: string,
+  layerExternalId: string,
+  kind: "mask" | "texture",
+): Promise<void> {
+  await db()
+    .layerOverrides.where("[puppetKey+layerExternalId+kind]")
+    .equals([puppetKey, layerExternalId, kind])
+    .delete();
+}
+
+/** All overrides of a given kind for one puppet, used for hydrate-on-load. */
+export async function listLayerOverridesForPuppet(
+  puppetKey: string,
+  kind: "mask" | "texture",
+): Promise<LayerOverrideRow[]> {
+  return await db().layerOverrides.where("[puppetKey+kind]").equals([puppetKey, kind]).toArray();
+}
+
+/** Wipe every override for a puppet. Used by tests + future delete UI. */
+export async function deleteAllLayerOverridesForPuppet(puppetKey: string): Promise<void> {
+  await db().layerOverrides.where("puppetKey").equals(puppetKey).delete();
+}
+
+// ----- Puppet sessions (visibility) (Sprint 4.5) -----
+
+export async function getPuppetSession(puppetKey: string): Promise<PuppetSessionRow | undefined> {
+  return await db().puppetSessions.get(puppetKey);
+}
+
+export async function savePuppetSession(input: {
+  puppetKey: string;
+  visibility: Record<string, boolean>;
+}): Promise<void> {
+  await db().puppetSessions.put({
+    puppetKey: input.puppetKey,
+    visibility: input.visibility,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function deletePuppetSession(puppetKey: string): Promise<void> {
+  await db().puppetSessions.delete(puppetKey);
 }

@@ -7,9 +7,10 @@ import { ToolsPanel } from "@/components/ToolsPanel";
 import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
+import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPersistence";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
 import { findBuiltin } from "@/lib/builtin/samples";
-import { useEditorStore } from "@/lib/store/editor";
+import { selectLayers, useEditorStore } from "@/lib/store/editor";
 
 /**
  * /edit/builtin/<key> — straight-from-vendor sample editor. Skips
@@ -29,6 +30,8 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
 
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
+  const layers = useEditorStore(selectLayers);
+  useLayerOverridesPersistence(adapter ? `builtin:${key}` : null, layers);
 
   if (!sample) {
     return (

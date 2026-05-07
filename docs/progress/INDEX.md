@@ -58,6 +58,8 @@
 | 2026-05-07 | [42 sprint_4_1_variant_visibility](2026-05-07_42_sprint_4_1_variant_visibility.md) | 4.1 | 완료 — IDB v3 variants store + useVariants 훅 + VariantsPanel + 3개 edit 페이지 와이어링 |
 | 2026-05-07 | [43 sprint_4_2_spine_skin_import](2026-05-07_43_sprint_4_2_spine_skin_import.md) | 4.2 | 완료 — Spine Skin → Variant import (어댑터 인터페이스에 listNativeVariants/applyVariantData/getActiveVariantData, IDB v4, "from puppet" 드롭다운) |
 | 2026-05-07 | [44 sprint_4_3_cubism_groups_import](2026-05-07_44_sprint_4_3_cubism_groups_import.md) | 4.3 | 완료 — cdi3 Part Groups → Variant import (NativeVariant.visibility 채널 + Live2DAdapter cdi3 Groups 파싱 + multi-page fan-out) |
+| 2026-05-07 | [45 sprint_4_4_export_zip](2026-05-07_45_sprint_4_4_export_zip.md) | 4.4 | 완료 — `*.geny-avatar.zip` export (avatar.json + bundle/ + overrides/ + LICENSE.md, ExportButton, fflate zipSync) |
+| 2026-05-07 | [46 sprint_4_5_import_zip](2026-05-07_46_sprint_4_5_import_zip.md) | 4.5 | 완료 — `*.geny-avatar.zip` import + IDB v6 (layerOverrides + puppetSessions) + useLayerOverridesPersistence (hydrate + write) → mask/AI texture/visibility 새로고침 survival |
 
 ## 운영 규칙
 
