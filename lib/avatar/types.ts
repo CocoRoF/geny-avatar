@@ -174,8 +174,15 @@ export type NativeVariant = {
   /** Display name for the panel; usually equal to externalId. */
   name: string;
   description?: string;
-  /** What `applyVariantData` should be called with to activate this. */
+  /** What `applyVariantData` should be called with to activate this.
+   *  Empty `{}` is valid for runtimes (Cubism) where the preset is
+   *  expressed entirely as a visibility map. */
   applyData: VariantApplyData;
+  /** Optional visibility map keyed by `Layer.externalId`. Populated for
+   *  runtimes whose native preset is "these parts visible, those parts
+   *  hidden" rather than a single runtime call (e.g. Cubism cdi3 Part
+   *  groups). Imported into `VariantRow.visibility` as-is. */
+  visibility?: Record<string, boolean>;
 };
 
 // ----- Animations / parameters -----

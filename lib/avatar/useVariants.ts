@@ -116,6 +116,10 @@ export function useVariants(puppetKey: string | null) {
    * IDB variant so the user can rename / delete it like any other
    * captured row. No-op if a row with the same `(source, sourceExternalId)`
    * already exists for this puppet — re-import is a click-through.
+   *
+   * Spine skins arrive with `applyData={spineSkin}` and no visibility;
+   * Cubism part groups arrive with `applyData={}` and a visibility
+   * map. Both forms feed straight into `VariantRow`.
    */
   const importNative = useCallback(
     async (native: NativeVariant): Promise<VariantRowId | null> => {
@@ -128,7 +132,7 @@ export function useVariants(puppetKey: string | null) {
         puppetKey,
         name: native.name,
         description: native.description,
-        visibility: {},
+        visibility: native.visibility ?? {},
         applyData: native.applyData,
         source: native.source,
         sourceExternalId: native.externalId,

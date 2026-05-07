@@ -109,6 +109,15 @@ export class Live2DAdapter implements AvatarAdapter {
    *  filter drawables to those that live on the layer's dominant page. */
   private pageIndexByTextureId = new Map<TextureId, number>();
 
+  /**
+   * Cubism part groups pulled out of cdi3.json `Groups` (Target="Part").
+   * Keyed by group name → list of part IDs declared in that group.
+   * Surfaced via `listNativeVariants` so the user can import each
+   * outfit / expression set as an IDB Variant. Empty when the puppet
+   * ships without cdi3 Groups (Hiyori, etc.).
+   */
+  private cdi3PartGroups: { name: string; partIds: string[] }[] = [];
+
   // diagnostic counters (one-shot logs to keep console quiet after first frame)
   private _hookFireCount = 0;
   private _loggedDrawableMutate = false;
@@ -149,8 +158,13 @@ export class Live2DAdapter implements AvatarAdapter {
     // the manifest references one. cdi3 is the only standard Cubism file
     // that maps engine ids ("PartArtMesh1") to artist-authored display
     // names ("頬"); we override Layer.name with that when available.
-    // Empty map when the puppet ships without a DisplayInfo file.
-    const partDisplayNames = await this.loadCdi3PartNames(input.model3);
+    // Same fetch also pulls cdi3 Groups (Target="Part"), stashed on
+    // the adapter for `listNativeVariants` to surface as importable
+    // outfit / expression presets. Empty when the puppet ships without
+    // a DisplayInfo file.
+    const cdi3 = await this.loadCdi3(input.model3);
+    const partDisplayNames = cdi3.partNames;
+    this.cdi3PartGroups = cdi3.partGroups;
 
     const model = await Live2DModel.from(input.model3);
     this.model = model;
@@ -618,19 +632,85 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   /**
-   * Cubism doesn't expose a native skin concept the way Spine does —
-   * Sprint 4.3 will surface cdi3 part-group presets here. Empty for
-   * now so VariantsPanel just shows the user-captured visibility
-   * variants on Cubism puppets without a "import from puppet" entry
-   * point until the data is actually wired.
+   * One Variant per cdi3 Part Group. A group declares a *set of parts
+   * that go together* (an outfit, an expression set) but says nothing
+   * about which of the puppet's other parts should be visible — so we
+   * give each group mutex-style semantics:
+   *
+   *   - the group's own parts → visible
+   *   - parts in *other* groups → hidden
+   *   - parts not mentioned in any group → left untouched
+   *
+   * That matches the most common cdi3 Group use case (outfit selection
+   * where exactly one outfit should be on at a time) and degrades
+   * sensibly for layered groups: the user can re-enable other groups'
+   * parts manually after applying.
+   *
+   * Each declared cdi3 part id is fanned out to all matching layer
+   * externalIds, including the `#p${pageIdx}` suffix variants that
+   * multi-page parts get (otherwise leg meshes split across two atlas
+   * pages would only flip half).
    */
   listNativeVariants(): NativeVariant[] {
-    return [];
+    if (this.cdi3PartGroups.length === 0) return [];
+
+    // Build cdi3-partId → all matching layer externalIds. Multi-page
+    // parts have multiple entries; single-page parts have exactly one.
+    const cdi3IdToExternalIds = new Map<string, string[]>();
+    for (const layers of this.layersByPartIndex.values()) {
+      for (const layer of layers) {
+        const baseId = stripPageSuffix(layer.externalId);
+        let arr = cdi3IdToExternalIds.get(baseId);
+        if (!arr) {
+          arr = [];
+          cdi3IdToExternalIds.set(baseId, arr);
+        }
+        arr.push(layer.externalId);
+      }
+    }
+
+    // Pre-compute the union of "every layer that belongs to *any*
+    // group". When a specific group is applied, every layer in this
+    // union *not* in the group's own expanded set is set to hidden.
+    const allGroupedExternalIds = new Set<string>();
+    for (const g of this.cdi3PartGroups) {
+      for (const id of g.partIds) {
+        const matches = cdi3IdToExternalIds.get(id);
+        if (matches) for (const ext of matches) allGroupedExternalIds.add(ext);
+      }
+    }
+
+    const out: NativeVariant[] = [];
+    for (const g of this.cdi3PartGroups) {
+      const ownExternalIds = new Set<string>();
+      for (const id of g.partIds) {
+        const matches = cdi3IdToExternalIds.get(id);
+        if (matches) for (const ext of matches) ownExternalIds.add(ext);
+      }
+      if (ownExternalIds.size === 0) continue;
+
+      const visibility: Record<string, boolean> = {};
+      for (const ext of ownExternalIds) visibility[ext] = true;
+      for (const ext of allGroupedExternalIds) {
+        if (!ownExternalIds.has(ext)) visibility[ext] = false;
+      }
+
+      out.push({
+        source: "live2d-group",
+        externalId: g.name,
+        name: g.name,
+        applyData: {},
+        visibility,
+      });
+    }
+    return out;
   }
 
   applyVariantData(_data: VariantApplyData): void {
-    // No Cubism-side preset wiring yet; visibility-only variants still
-    // apply through the regular setLayerVisibility path.
+    // Cubism's preset semantics live entirely in the visibility map
+    // attached to the variant — there's no runtime call equivalent to
+    // Spine's setSkinByName. The data channel is reserved for future
+    // additions (live2dExpression etc.) and ignored for now.
   }
 
   getActiveVariantData(): VariantApplyData {
@@ -850,19 +930,27 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   /**
-   * Read part display names from the puppet's `.cdi3.json` (Cubism
-   * Display Info) when the manifest references one. Cubism Editor lets
-   * artists author per-part Japanese / Korean names and stashes them in
-   * cdi3 — pulling them in turns LayersPanel rows from `PartArtMesh1`
-   * into something a human can scan.
+   * Read display info from the puppet's `.cdi3.json` (Cubism Display
+   * Info) when the manifest references one. cdi3 is the only standard
+   * Cubism file that:
+   *   - maps engine ids (`PartArtMesh1`) to artist-authored display
+   *     names (`頬`) — used to relabel `Layer.name`,
+   *   - declares logical part *Groups* (e.g. `服装A`, `表情`) — surfaced
+   *     by `listNativeVariants` so the user can import each as an
+   *     outfit / expression Variant.
    *
    * Pure data lookup with a fully-defined source: no heuristic, no name
-   * guessing. Returns an empty map (silently) when the puppet ships
-   * without a DisplayInfo file or when the file is malformed — callers
-   * fall back to the raw engine id.
+   * guessing. Returns empty maps / list (silently) when the puppet
+   * ships without a DisplayInfo file or when the file is malformed —
+   * callers fall back to engine ids and the panel just shows zero
+   * native presets.
    */
-  private async loadCdi3PartNames(manifestUrl: string): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
+  private async loadCdi3(manifestUrl: string): Promise<{
+    partNames: Map<string, string>;
+    partGroups: { name: string; partIds: string[] }[];
+  }> {
+    const partNames = new Map<string, string>();
+    const partGroups: { name: string; partIds: string[] }[] = [];
     try {
       const manifestRes = await fetch(manifestUrl);
       const manifest = (await manifestRes.json()) as {
@@ -871,28 +959,48 @@ export class Live2DAdapter implements AvatarAdapter {
       const rel = manifest?.FileReferences?.DisplayInfo;
       if (typeof rel !== "string" || rel.length === 0) {
         console.info("[Live2DAdapter] no cdi3 DisplayInfo in manifest");
-        return out;
+        return { partNames, partGroups };
       }
       const cdi3Url = resolveSiblingUrl(manifestUrl, rel);
       const cdi3Res = await fetch(cdi3Url);
       if (!cdi3Res.ok) {
         console.warn(`[Live2DAdapter] cdi3 fetch failed: ${cdi3Res.status} ${cdi3Url}`);
-        return out;
+        return { partNames, partGroups };
       }
       const cdi3 = (await cdi3Res.json()) as {
         Parts?: { Id?: unknown; Name?: unknown }[];
+        Groups?: { Target?: unknown; Name?: unknown; Ids?: unknown }[];
       };
+
       const parts = Array.isArray(cdi3?.Parts) ? cdi3.Parts : [];
       for (const p of parts) {
         if (typeof p?.Id === "string" && typeof p?.Name === "string" && p.Name.length > 0) {
-          out.set(p.Id, p.Name);
+          partNames.set(p.Id, p.Name);
         }
       }
-      console.info(`[Live2DAdapter] cdi3 part display names: ${out.size}`);
+
+      // Cubism cdi3's `Target` value for part groups is `"Part"` in
+      // recent exports but historically also `"PartOpacity"`. Accept
+      // both; ignore Parameter groups (they belong to the param graph
+      // panel, not the variants panel).
+      const groups = Array.isArray(cdi3?.Groups) ? cdi3.Groups : [];
+      for (const g of groups) {
+        const target = typeof g?.Target === "string" ? g.Target : "";
+        if (target !== "Part" && target !== "PartOpacity") continue;
+        const name = typeof g?.Name === "string" && g.Name.length > 0 ? g.Name : null;
+        const ids = Array.isArray(g?.Ids)
+          ? g.Ids.filter((x): x is string => typeof x === "string")
+          : [];
+        if (!name || ids.length === 0) continue;
+        partGroups.push({ name, partIds: ids });
+      }
+      console.info(
+        `[Live2DAdapter] cdi3 loaded · partNames=${partNames.size} partGroups=${partGroups.length}`,
+      );
     } catch (e) {
       console.warn("[Live2DAdapter] cdi3 load failed (continuing with engine ids)", e);
     }
-    return out;
+    return { partNames, partGroups };
   }
 
   private async waitForCubismCore(timeoutMs = 5000): Promise<void> {
@@ -929,6 +1037,17 @@ function resolveSiblingUrl(manifestUrl: string, relPath: string): string {
   const slashIdx = manifestUrl.lastIndexOf("/");
   const base = slashIdx >= 0 ? manifestUrl.substring(0, slashIdx + 1) : "";
   return base + relPath;
+}
+
+/**
+ * Strip the `#p${pageIdx}` suffix that multi-page parts append to
+ * `Layer.externalId`, so we can match a Cubism cdi3 part id (which
+ * has no suffix) back to all of its per-page layers.
+ */
+function stripPageSuffix(externalId: string): string {
+  const hashIdx = externalId.lastIndexOf("#p");
+  if (hashIdx < 0) return externalId;
+  return externalId.substring(0, hashIdx);
 }
 
 /**

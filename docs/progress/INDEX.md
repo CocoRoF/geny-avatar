@@ -57,6 +57,7 @@
 | 2026-05-07 | [41 phase4_kickoff](2026-05-07_41_phase4_kickoff.md) | 4.0 | 진행중 — Phase 4 sub-sprint 분할 (4.1 Variant 모델 / 4.2 Spine Skin import / 4.3 Live2D groups / 4.4 Export / 4.5 Import) |
 | 2026-05-07 | [42 sprint_4_1_variant_visibility](2026-05-07_42_sprint_4_1_variant_visibility.md) | 4.1 | 완료 — IDB v3 variants store + useVariants 훅 + VariantsPanel + 3개 edit 페이지 와이어링 |
 | 2026-05-07 | [43 sprint_4_2_spine_skin_import](2026-05-07_43_sprint_4_2_spine_skin_import.md) | 4.2 | 완료 — Spine Skin → Variant import (어댑터 인터페이스에 listNativeVariants/applyVariantData/getActiveVariantData, IDB v4, "from puppet" 드롭다운) |
+| 2026-05-07 | [44 sprint_4_3_cubism_groups_import](2026-05-07_44_sprint_4_3_cubism_groups_import.md) | 4.3 | 완료 — cdi3 Part Groups → Variant import (NativeVariant.visibility 채널 + Live2DAdapter cdi3 Groups 파싱 + multi-page fan-out) |
 
 ## 운영 규칙
 
