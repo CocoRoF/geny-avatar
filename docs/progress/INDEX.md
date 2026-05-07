@@ -53,6 +53,9 @@
 | 2026-05-07 | [37 phase3_kickoff](2026-05-07_37_phase3_kickoff.md) | 3.0 | 완료 — Phase 3 sub-sprint 분할 + GeneratePanel UI 골격 (백엔드 X) |
 | 2026-05-07 | [38 sprint_3_1_gemini_openai](2026-05-07_38_sprint_3_1_gemini_openai.md) | 3.1 | 완료 — Gemini Nano Banana + OpenAI gpt-image-2 실호출 (provider 추상화 + API routes + 폴링) |
 | 2026-05-07 | [39 phase3_complete](2026-05-07_39_phase3_complete.md) | 3.2/3.3/3.4 | 완료 — Replicate stub + atlas apply + IDB history + retry (Phase 3 종료) |
+| 2026-05-07 | [40 phase3_hotfix_pass](2026-05-07_40_phase3_hotfix_pass.md) | 3 hotfix | 완료 — 9개 fix 묶음 (OpenAI 품질 + mask/gen 합성 + Cubism multi-page split) |
+| 2026-05-07 | [41 phase4_kickoff](2026-05-07_41_phase4_kickoff.md) | 4.0 | 진행중 — Phase 4 sub-sprint 분할 (4.1 Variant 모델 / 4.2 Spine Skin import / 4.3 Live2D groups / 4.4 Export / 4.5 Import) |
+| 2026-05-07 | [42 sprint_4_1_variant_visibility](2026-05-07_42_sprint_4_1_variant_visibility.md) | 4.1 | 완료 — IDB v3 variants store + useVariants 훅 + VariantsPanel + 3개 edit 페이지 와이어링 |
 
 ## 운영 규칙
 

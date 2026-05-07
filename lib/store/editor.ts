@@ -50,6 +50,9 @@ export type EditorState = {
 
   setLayerVisibility(id: LayerId, visible: boolean): void;
   bulkSetLayerVisibility(ids: ReadonlyArray<LayerId>, visible: boolean): void;
+  /** Merge a per-layer visibility map onto the current overrides — used
+   *  by Variant apply. Goes through history so the user can undo. */
+  applyVisibilityMap(next: Record<LayerId, boolean>): void;
 
   selectLayers(ids: ReadonlyArray<LayerId>): void;
   toggleLayerSelected(id: LayerId): void;
@@ -123,6 +126,14 @@ export const useEditorStore = create<EditorState>()(
       set((s) => {
         pushHistory(s);
         for (const id of ids) s.visibilityOverrides[id] = visible;
+      }),
+
+    applyVisibilityMap: (next) =>
+      set((s) => {
+        pushHistory(s);
+        for (const [id, visible] of Object.entries(next)) {
+          s.visibilityOverrides[id] = visible;
+        }
       }),
 
     selectLayers: (ids) =>

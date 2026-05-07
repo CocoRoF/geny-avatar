@@ -18,6 +18,7 @@ import type { BundleEntry } from "../upload/types";
 
 export type PuppetId = string;
 export type AIJobRowId = string;
+export type VariantRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -73,10 +74,34 @@ export type AIJobRow = {
   createdAt: number;
 };
 
+/**
+ * A user-saved outfit / part-visibility preset. Phase 4.1 — visibility
+ * snapshots only. Future sprints add color overrides, mask refs, AI
+ * texture refs.
+ *
+ * Keying mirrors `AIJobRow`: `puppetKey` plus `(layerExternalId → bool)`
+ * map. Layer.id is regenerated per load, so visibility is stored against
+ * the runtime-stable externalId. Apply walks the live `Avatar.layers`
+ * to map externalId back to the current Layer.id.
+ */
+export type VariantRow = {
+  id: VariantRowId;
+  puppetKey: string;
+  name: string;
+  description?: string;
+  /** layerExternalId → visible. Layers absent from this map keep their
+   *  current value when the variant is applied (i.e. partial variants
+   *  are allowed — useful for "swap shoes only" presets). */
+  visibility: Record<string, boolean>;
+  createdAt: number;
+  updatedAt: number;
+};
+
 class GenyAvatarDB extends Dexie {
   puppets!: EntityTable<PuppetRow, "id">;
   puppetFiles!: EntityTable<PuppetFileRow, "id">;
   aiJobs!: EntityTable<AIJobRow, "id">;
+  variants!: EntityTable<VariantRow, "id">;
 
   constructor() {
     super("geny-avatar");
@@ -91,6 +116,15 @@ class GenyAvatarDB extends Dexie {
       puppets: "id, runtime, updatedAt",
       puppetFiles: "++id, puppetId, [puppetId+path]",
       aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+    });
+    // v3: + variants (Sprint 4.1 — outfit / part-visibility presets).
+    // `[puppetKey+updatedAt]` covers the panel's "list this puppet's
+    // variants newest-first" query directly.
+    this.version(3).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
     });
   }
 }
@@ -226,4 +260,53 @@ export async function listAIJobsForLayer(
 
 export async function deleteAIJob(id: AIJobRowId): Promise<void> {
   await db().aiJobs.delete(id);
+}
+
+// ----- Variants (Sprint 4.1) -----
+
+export type SaveVariantInput = {
+  puppetKey: string;
+  name: string;
+  description?: string;
+  visibility: Record<string, boolean>;
+};
+
+/** Persist a freshly captured variant. Returns the new row id. */
+export async function saveVariant(input: SaveVariantInput): Promise<VariantRowId> {
+  const id = newId(ID_PREFIX.variant);
+  const now = Date.now();
+  await db().variants.put({
+    id,
+    puppetKey: input.puppetKey,
+    name: input.name,
+    description: input.description,
+    visibility: input.visibility,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return id;
+}
+
+/**
+ * All variants for a puppet, newest first. Returns `[]` when no variants
+ * exist yet — never throws on a missing puppet.
+ */
+export async function listVariantsForPuppet(puppetKey: string): Promise<VariantRow[]> {
+  return await db()
+    .variants.where("[puppetKey+updatedAt]")
+    .between([puppetKey, Dexie.minKey], [puppetKey, Dexie.maxKey])
+    .reverse()
+    .toArray();
+}
+
+/** Update the user-editable fields. `updatedAt` is bumped automatically. */
+export async function updateVariant(
+  id: VariantRowId,
+  patch: Partial<Pick<VariantRow, "name" | "description" | "visibility">>,
+): Promise<void> {
+  await db().variants.update(id, { ...patch, updatedAt: Date.now() });
+}
+
+export async function deleteVariant(id: VariantRowId): Promise<void> {
+  await db().variants.delete(id);
 }

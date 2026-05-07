@@ -17,6 +17,7 @@ import type { LayerId } from "./types";
 export function usePuppetMutations(adapter: AvatarAdapter | null) {
   const setLayerVisibilityState = useEditorStore((s) => s.setLayerVisibility);
   const bulkSetLayerVisibilityState = useEditorStore((s) => s.bulkSetLayerVisibility);
+  const applyVisibilityMapState = useEditorStore((s) => s.applyVisibilityMap);
   const setPlayingAnimationState = useEditorStore((s) => s.setPlayingAnimation);
   const resetOverridesState = useEditorStore((s) => s.resetOverrides);
   const undoState = useEditorStore((s) => s.undo);
@@ -48,6 +49,24 @@ export function usePuppetMutations(adapter: AvatarAdapter | null) {
     [adapter, setPlayingAnimationState],
   );
 
+  /**
+   * Apply a per-layer visibility map (e.g. from a saved Variant). Goes
+   * through history so the user can undo back to the prior look.
+   * Layers absent from the map keep their current visibility — partial
+   * variants are intentional.
+   */
+  const applyVisibilityMap = useCallback(
+    (next: Record<LayerId, boolean>) => {
+      if (adapter) {
+        for (const [id, visible] of Object.entries(next)) {
+          adapter.setLayerVisibility(id, visible);
+        }
+      }
+      applyVisibilityMapState(next);
+    },
+    [adapter, applyVisibilityMapState],
+  );
+
   const syncAdapterFromStore = useCallback(() => {
     if (!adapter) return;
     const visibility = useEditorStore.getState().visibilityOverrides;
@@ -71,5 +90,13 @@ export function usePuppetMutations(adapter: AvatarAdapter | null) {
     syncAdapterFromStore();
   }, [redoState, syncAdapterFromStore]);
 
-  return { toggleLayer, bulkSetLayerVisibility, playAnimation, reset, undo, redo };
+  return {
+    toggleLayer,
+    bulkSetLayerVisibility,
+    applyVisibilityMap,
+    playAnimation,
+    reset,
+    undo,
+    redo,
+  };
 }

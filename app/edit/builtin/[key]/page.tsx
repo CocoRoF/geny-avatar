@@ -4,6 +4,7 @@ import { use, useState } from "react";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ToolsPanel } from "@/components/ToolsPanel";
+import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
@@ -22,8 +23,15 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { toggleLayer, bulkSetLayerVisibility, playAnimation, reset, undo, redo } =
-    usePuppetMutations(adapter);
+  const {
+    toggleLayer,
+    bulkSetLayerVisibility,
+    applyVisibilityMap,
+    playAnimation,
+    reset,
+    undo,
+    redo,
+  } = usePuppetMutations(adapter);
   useEditorShortcuts({ undo, redo, reset });
 
   const canUndo = useEditorStore((s) => s.past.length > 0);
@@ -96,6 +104,7 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
 
       <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
+        <VariantsPanel puppetKey={`builtin:${key}`} onApplyVisibility={applyVisibilityMap} />
         <LayersPanel
           adapter={adapter}
           puppetKey={`builtin:${key}`}
