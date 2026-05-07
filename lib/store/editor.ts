@@ -32,6 +32,8 @@ export type EditorState = {
 
   /** Layer currently open in DecomposeStudio. null = studio closed. */
   studioLayerId: LayerId | null;
+  /** Layer currently open in GeneratePanel. null = panel closed. */
+  generateLayerId: LayerId | null;
   /** Refined mask blobs per layer (PNG, white=visible, black/transparent=masked).
    *  In-memory only for now; IDB persistence lands when DecomposeStudio
    *  promotes from v1 to a feature you can rely on. */
@@ -61,6 +63,8 @@ export type EditorState = {
 
   /** Open / close DecomposeStudio for a layer. */
   setStudioLayer(id: LayerId | null): void;
+  /** Open / close GeneratePanel for a layer. */
+  setGenerateLayer(id: LayerId | null): void;
   /** Save (or clear with `null`) the refined mask for a layer. */
   setLayerMask(id: LayerId, blob: Blob | null): void;
 
@@ -80,6 +84,7 @@ export const useEditorStore = create<EditorState>()(
     past: [],
     future: [],
     studioLayerId: null,
+    generateLayerId: null,
     layerMasks: {},
 
     setAvatar: (avatar) =>
@@ -94,6 +99,7 @@ export const useEditorStore = create<EditorState>()(
         s.past = [];
         s.future = [];
         s.studioLayerId = null;
+        s.generateLayerId = null;
         s.layerMasks = {};
       }),
 
@@ -165,6 +171,11 @@ export const useEditorStore = create<EditorState>()(
     setStudioLayer: (id) =>
       set((s) => {
         s.studioLayerId = id;
+      }),
+
+    setGenerateLayer: (id) =>
+      set((s) => {
+        s.generateLayerId = id;
       }),
 
     setLayerMask: (id, blob) =>

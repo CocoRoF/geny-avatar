@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { DecomposeStudio } from "@/components/DecomposeStudio";
+import { GeneratePanel } from "@/components/GeneratePanel";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
 import { useLayerThumbnail } from "@/lib/avatar/useLayerThumbnail";
@@ -31,8 +32,13 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
   const setFilter = useEditorStore((s) => s.setLayerFilter);
   const studioLayerId = useEditorStore((s) => s.studioLayerId);
   const setStudioLayer = useEditorStore((s) => s.setStudioLayer);
+  const generateLayerId = useEditorStore((s) => s.generateLayerId);
+  const setGenerateLayer = useEditorStore((s) => s.setGenerateLayer);
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
+  const generateLayer = generateLayerId
+    ? (layers.find((l) => l.id === generateLayerId) ?? null)
+    : null;
 
   // Push masks into the runtime whenever they change so the live render
   // matches what the user baked in DecomposeStudio. This is the only
@@ -103,6 +109,7 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
               hasMask={!!layerMasks[layer.id]}
               onToggle={() => onToggleLayer(layer.id, !visible)}
               onOpenStudio={() => setStudioLayer(layer.id)}
+              onOpenGenerate={() => setGenerateLayer(layer.id)}
             />
           );
         })}
@@ -115,6 +122,7 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
       </ul>
 
       {studioLayer && <DecomposeStudio adapter={adapter} layer={studioLayer} />}
+      {generateLayer && <GeneratePanel adapter={adapter} layer={generateLayer} />}
     </div>
   );
 }
@@ -127,6 +135,7 @@ type LayerRowProps = {
   hasMask: boolean;
   onToggle: () => void;
   onOpenStudio: () => void;
+  onOpenGenerate: () => void;
 };
 
 function LayerRow({
@@ -137,6 +146,7 @@ function LayerRow({
   hasMask,
   onToggle,
   onOpenStudio,
+  onOpenGenerate,
 }: LayerRowProps) {
   const thumbUrl = useLayerThumbnail(adapter, layer);
   const canDecompose = !!layer.texture;
@@ -176,15 +186,26 @@ function LayerRow({
         )}
       </button>
       {canDecompose && (
-        <button
-          type="button"
-          onClick={onOpenStudio}
-          title="open in DecomposeStudio"
-          aria-label={`decompose ${layer.name}`}
-          className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-fg-dim)] opacity-0 transition-opacity hover:text-[var(--color-fg)] group-hover:opacity-100"
-        >
-          edit
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={onOpenStudio}
+            title="open in DecomposeStudio"
+            aria-label={`decompose ${layer.name}`}
+            className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-fg-dim)] opacity-0 transition-opacity hover:text-[var(--color-fg)] group-hover:opacity-100"
+          >
+            edit
+          </button>
+          <button
+            type="button"
+            onClick={onOpenGenerate}
+            title="open in GeneratePanel (AI texture)"
+            aria-label={`generate ${layer.name}`}
+            className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-fg-dim)] opacity-0 transition-opacity hover:text-[var(--color-accent)] group-hover:opacity-100"
+          >
+            gen
+          </button>
+        </>
       )}
     </li>
   );
