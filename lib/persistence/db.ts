@@ -1,25 +1,23 @@
 /**
- * IndexedDB persistence for uploaded puppet bundles. Two stores:
+ * IndexedDB persistence. Stores:
  *
- *   - puppets: one row per saved puppet, with metadata (name, runtime,
- *     timestamps, file count, total size, optional origin note and
- *     thumbnail).
+ *   - puppets        — uploaded puppet metadata
+ *   - puppetFiles    — raw bundle bytes per puppet
+ *   - aiJobs         — successful AI generations per layer (Sprint 3.4)
  *
- *   - puppetFiles: one row per file in the bundle, holding the path
- *     and the raw Blob. Indexed on puppetId so loadPuppet can fetch
- *     all files of a puppet in a single where-clause.
- *
- * Anything large (texture PNGs, .moc3) lives in puppetFiles.blob — the
- * row is persisted as a Blob, which IndexedDB stores efficiently
- * out-of-line on most engines.
+ * Anything large (texture PNGs, .moc3, generated PNGs) lives in a Blob
+ * column — IndexedDB stores Blobs efficiently out-of-line on most
+ * engines.
  */
 
 import Dexie, { type EntityTable } from "dexie";
+import type { ProviderId } from "../ai/types";
 import { ID_PREFIX, newId } from "../avatar/id";
 import type { AssetOriginNote, AvatarSourceRuntime } from "../avatar/types";
 import type { BundleEntry } from "../upload/types";
 
 export type PuppetId = string;
+export type AIJobRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -44,15 +42,55 @@ export type PuppetFileRow = {
   blob: Blob;
 };
 
+/**
+ * One AI generation per layer. Only successful jobs land here — the
+ * GeneratePanel saves the postprocessed (atlas-ready) blob alongside
+ * the exact request params so the user can re-apply or repro later.
+ *
+ * Keying: `Layer.id` is regenerated on every adapter load, so it
+ * cannot be used as a stable history key. We index on
+ * `[puppetKey, layerExternalId]` instead — the runtime-native id
+ * (Spine slot name, Cubism part id) is stable across reloads, and
+ * `puppetKey` is the IDB PuppetId for uploaded puppets or
+ * `builtin:${sampleKey}` for built-in samples. History therefore
+ * survives page reloads and even browser restarts.
+ */
+export type AIJobRow = {
+  id: AIJobRowId;
+  /** Identifies which puppet the job belongs to. Uploaded → IDB
+   *  `PuppetId`. Built-in → `"builtin:${sampleKey}"`. */
+  puppetKey: string;
+  /** Stable runtime id from the adapter (e.g. Spine slot name). */
+  layerExternalId: string;
+  providerId: ProviderId;
+  modelId?: string;
+  prompt: string;
+  negativePrompt?: string;
+  seed?: number;
+  /** PNG sized to the layer's upright rect, postprocessed (cropped +
+   *  alpha-enforced) and ready to drop into `setLayerOverrides`. */
+  resultBlob: Blob;
+  createdAt: number;
+};
+
 class GenyAvatarDB extends Dexie {
   puppets!: EntityTable<PuppetRow, "id">;
   puppetFiles!: EntityTable<PuppetFileRow, "id">;
+  aiJobs!: EntityTable<AIJobRow, "id">;
 
   constructor() {
     super("geny-avatar");
     this.version(1).stores({
       puppets: "id, runtime, updatedAt",
       puppetFiles: "++id, puppetId, [puppetId+path]",
+    });
+    // v2: + aiJobs (Sprint 3.4 — per-layer AI generation history).
+    // Compound index `[puppetKey+layerExternalId+createdAt]` covers
+    // the panel's "history for this layer" query in one go.
+    this.version(2).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
     });
   }
 }
@@ -146,4 +184,46 @@ export async function updatePuppet(
   patch: Partial<Pick<PuppetRow, "name" | "origin" | "thumbnailBlob">>,
 ): Promise<void> {
   await db().puppets.update(id, { ...patch, updatedAt: Date.now() });
+}
+
+// ----- AI jobs (Sprint 3.4) -----
+
+export type SaveAIJobInput = Omit<AIJobRow, "id" | "createdAt">;
+
+/** Persist a successful AI generation. Returns the new row id. */
+export async function saveAIJob(input: SaveAIJobInput): Promise<AIJobRowId> {
+  const id = newId(ID_PREFIX.job);
+  await db().aiJobs.put({
+    id,
+    puppetKey: input.puppetKey,
+    layerExternalId: input.layerExternalId,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    prompt: input.prompt,
+    negativePrompt: input.negativePrompt,
+    seed: input.seed,
+    resultBlob: input.resultBlob,
+    createdAt: Date.now(),
+  });
+  return id;
+}
+
+/**
+ * History for a single layer, newest first. Empty array when none.
+ * Lookup is keyed on the stable `(puppetKey, layerExternalId)` pair so
+ * results survive page reloads.
+ */
+export async function listAIJobsForLayer(
+  puppetKey: string,
+  layerExternalId: string,
+): Promise<AIJobRow[]> {
+  return await db()
+    .aiJobs.where("[puppetKey+layerExternalId+createdAt]")
+    .between([puppetKey, layerExternalId, Dexie.minKey], [puppetKey, layerExternalId, Dexie.maxKey])
+    .reverse()
+    .toArray();
+}
+
+export async function deleteAIJob(id: AIJobRowId): Promise<void> {
+  await db().aiJobs.delete(id);
 }

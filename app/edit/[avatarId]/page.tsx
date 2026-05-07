@@ -166,6 +166,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
         <ToolsPanel onPlayAnimation={playAnimation} />
         <LayersPanel
           adapter={adapter}
+          puppetKey={puppetId}
           onToggleLayer={toggleLayer}
           onBulkSet={bulkSetLayerVisibility}
         />

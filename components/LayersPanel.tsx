@@ -12,6 +12,11 @@ type Props = {
   /** Adapter held by the parent page. Used to read texture page bitmaps
    *  for layer thumbnails. */
   adapter: AvatarAdapter | null;
+  /** Stable identifier for the currently-loaded puppet — IDB PuppetId
+   *  for uploaded puppets, `"builtin:${sampleKey}"` for built-in samples,
+   *  or `null` when no IDB binding exists yet (e.g. /poc/upload before
+   *  autoSave completes). When null, AI job history isn't persisted. */
+  puppetKey: string | null;
   /** Called when the user clicks a layer row. Caller is responsible for
    *  updating the store and the adapter together. */
   onToggleLayer: (id: LayerId, nextVisible: boolean) => void;
@@ -25,7 +30,7 @@ type Props = {
  * map from the store; reports clicks back through the parent so the page
  * can mirror the change to the adapter.
  */
-export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
+export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Props) {
   const layers = useEditorStore(selectLayers);
   const visibility = useEditorStore((s) => s.visibilityOverrides);
   const filter = useEditorStore((s) => s.layerFilter);
@@ -124,7 +129,9 @@ export function LayersPanel({ adapter, onToggleLayer, onBulkSet }: Props) {
       </ul>
 
       {studioLayer && <DecomposeStudio adapter={adapter} layer={studioLayer} />}
-      {generateLayer && <GeneratePanel adapter={adapter} layer={generateLayer} />}
+      {generateLayer && (
+        <GeneratePanel adapter={adapter} layer={generateLayer} puppetKey={puppetKey} />
+      )}
     </div>
   );
 }

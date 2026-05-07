@@ -214,6 +214,7 @@ export default function UploadPocPage() {
         <ToolsPanel onPlayAnimation={playAnimation} />
         <LayersPanel
           adapter={adapter}
+          puppetKey={savedId}
           onToggleLayer={toggleLayer}
           onBulkSet={bulkSetLayerVisibility}
         />

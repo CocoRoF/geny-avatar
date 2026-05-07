@@ -98,6 +98,7 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
         <ToolsPanel onPlayAnimation={playAnimation} />
         <LayersPanel
           adapter={adapter}
+          puppetKey={`builtin:${key}`}
           onToggleLayer={toggleLayer}
           onBulkSet={bulkSetLayerVisibility}
         />
