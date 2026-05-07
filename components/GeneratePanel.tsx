@@ -72,7 +72,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
-  // ----- mount: pull source region into a preview canvas -----
+  // ----- mount: extract source region (display canvas not yet in DOM) -----
   useEffect(() => {
     setReady(false);
     setError(null);
@@ -86,15 +86,23 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       return;
     }
     sourceCanvasRef.current = extracted.canvas;
-    const display = sourceRef.current;
-    if (display) {
-      display.width = extracted.canvas.width;
-      display.height = extracted.canvas.height;
-      const ctx = display.getContext("2d");
-      ctx?.drawImage(extracted.canvas, 0, 0);
-    }
     setReady(true);
   }, [adapter, layer]);
+
+  // ----- after-mount: paint extracted source onto the display canvas -----
+  // Split from the extract effect because the display `<canvas>` is only
+  // rendered when `ready === true`, so its ref isn't attached during the
+  // same effect tick that flips ready. This effect runs after the next
+  // render, when the canvas is actually in the DOM.
+  useEffect(() => {
+    if (!ready) return;
+    const display = sourceRef.current;
+    const source = sourceCanvasRef.current;
+    if (!display || !source) return;
+    display.width = source.width;
+    display.height = source.height;
+    display.getContext("2d")?.drawImage(source, 0, 0);
+  }, [ready]);
 
   // ----- mount: load AI job history for this layer -----
   useEffect(() => {
