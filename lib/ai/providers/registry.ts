@@ -13,8 +13,9 @@ import type { ProviderId } from "../types";
 import { GeminiProvider, geminiConfig } from "./gemini";
 import type { AIProvider, ProviderConfig } from "./interface";
 import { OpenAIProvider, openaiConfig } from "./openai";
+import { ReplicateProvider, replicateConfig } from "./replicate";
 
-export const providerConfigs: ProviderConfig[] = [geminiConfig, openaiConfig];
+export const providerConfigs: ProviderConfig[] = [geminiConfig, openaiConfig, replicateConfig];
 
 export type ProviderAvailability = {
   id: ProviderId;
@@ -61,8 +62,12 @@ export function getProvider(id: ProviderId): {
       if (!key) return { provider: null, reason: "OPENAI_API_KEY not set" };
       return { provider: new OpenAIProvider(key) };
     }
-    case "replicate":
-      return { provider: null, reason: "Replicate provider lands in Sprint 3.2" };
+    case "replicate": {
+      const key = process.env.REPLICATE_API_TOKEN;
+      if (!key) return { provider: null, reason: "REPLICATE_API_TOKEN not set" };
+      // Provider is shape-only — generate() throws a clear message.
+      return { provider: new ReplicateProvider(key) };
+    }
     default:
       return { provider: null, reason: `unknown provider: ${id}` };
   }
