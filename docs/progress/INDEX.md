@@ -60,6 +60,7 @@
 | 2026-05-07 | [44 sprint_4_3_cubism_groups_import](2026-05-07_44_sprint_4_3_cubism_groups_import.md) | 4.3 | 완료 — cdi3 Part Groups → Variant import (NativeVariant.visibility 채널 + Live2DAdapter cdi3 Groups 파싱 + multi-page fan-out) |
 | 2026-05-07 | [45 sprint_4_4_export_zip](2026-05-07_45_sprint_4_4_export_zip.md) | 4.4 | 완료 — `*.geny-avatar.zip` export (avatar.json + bundle/ + overrides/ + LICENSE.md, ExportButton, fflate zipSync) |
 | 2026-05-07 | [46 sprint_4_5_import_zip](2026-05-07_46_sprint_4_5_import_zip.md) | 4.5 | 완료 — `*.geny-avatar.zip` import + IDB v6 (layerOverrides + puppetSessions) + useLayerOverridesPersistence (hydrate + write) → mask/AI texture/visibility 새로고침 survival |
+| 2026-05-07 | [47 export_model_baked](2026-05-07_47_export_model_baked.md) | 4 polish | 완료 — "export model" 두 번째 모드 추가: edit이 atlas 픽셀에 베이크된 표준 puppet zip (visibility erase + mask + AI texture를 모든 atlas page에 한 번에 베이크) |
 
 ## 운영 규칙
 

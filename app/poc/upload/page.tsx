@@ -213,7 +213,7 @@ export default function UploadPocPage() {
           )}
           {bundle && (
             <span className="ml-3">
-              <ExportButton puppetId={savedId} />
+              <ExportButton puppetId={savedId} adapter={adapter} />
             </span>
           )}
         </header>

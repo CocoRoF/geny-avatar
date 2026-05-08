@@ -142,7 +142,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             reset
           </button>
           <span className="ml-3">
-            <ExportButton puppetId={puppetId} />
+            <ExportButton puppetId={puppetId} adapter={adapter} />
           </span>
           <a
             href="/poc/library"
