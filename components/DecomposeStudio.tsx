@@ -783,14 +783,40 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     redraw();
   }, [layer.id, setMask, redraw, studioMode, selectedRegionId]);
 
-  // Esc to dismiss
+  /** Dismiss with a confirm prompt when there are unsaved changes.
+   *  Used by every dismiss path: header "close" button, the
+   *  fullscreen overlay backdrop, and the Esc shortcut. The user
+   *  was previously losing painted strokes / region edits on a
+   *  stray esc / outside click — the confirm makes the destructive
+   *  intent explicit. Save & close is still one click away in the
+   *  header for the non-discard path. */
+  const requestClose = useCallback(() => {
+    const isDirty = studioMode === "trim" ? dirty : splitDirty;
+    if (!isDirty) {
+      close(null);
+      return;
+    }
+    if (typeof window === "undefined") {
+      close(null);
+      return;
+    }
+    const ok = window.confirm(
+      "You have unsaved changes — painted strokes, regions, or SAM masks haven't been saved.\n\n" +
+        "Click OK to discard and close.\n" +
+        "Click Cancel to keep editing (then use 'save & close' to keep your work).",
+    );
+    if (ok) close(null);
+  }, [studioMode, dirty, splitDirty, close]);
+
+  // Esc to dismiss — routed through requestClose so it warns on
+  // unsaved work just like the explicit close paths.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") close(null);
+      if (ev.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
+  }, [requestClose]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -808,12 +834,12 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       <button
         type="button"
         aria-label="close"
-        onClick={() => close(null)}
+        onClick={requestClose}
         className="absolute inset-0 cursor-default"
       />
       <div
         className={`relative z-10 m-auto flex flex-col border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl ${
-          fullscreen ? "h-screen w-screen rounded-none" : "h-[90vh] w-[min(90vw,1100px)] rounded"
+          fullscreen ? "h-screen w-screen rounded-none" : "h-[95vh] w-[min(96vw,1800px)] rounded"
         }`}
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
@@ -877,7 +903,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           </button>
           <button
             type="button"
-            onClick={() => close(null)}
+            onClick={requestClose}
             className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
             title="esc"
           >
