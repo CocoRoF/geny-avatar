@@ -25,6 +25,7 @@ export type ProviderAvailability = {
   capabilities: {
     supportsBinaryMask: boolean;
     supportsNegativePrompt: boolean;
+    supportsReferenceImages: boolean;
     defaultModelId: string;
     models: readonly ModelInfo[];
   };
@@ -314,6 +315,11 @@ export type SubmitGenerateInput = {
   /** PNG of the mask in the *target provider's* convention (caller
    *  has already done any conversion). Optional. */
   maskImage?: Blob;
+  /** Character / style anchor images, sent alongside `sourceImage`
+   *  when the provider's `supportsReferenceImages`. Order is
+   *  preserved end-to-end. Caller is responsible for filtering out
+   *  refs when the picked provider doesn't support them. */
+  referenceImages?: Blob[];
   /** How long to keep polling before giving up. */
   timeoutMs?: number;
   /** How often to poll status. */
@@ -330,6 +336,15 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
   if (typeof input.seed === "number") form.set("seed", String(input.seed));
   form.set("sourceImage", input.sourceImage, "source.png");
   if (input.maskImage) form.set("maskImage", input.maskImage, "mask.png");
+  // Reference images: repeat the same key. The route reads them with
+  // `formData.getAll("referenceImage")` and forwards as an array to
+  // the provider. We use an indexed filename for diagnostics — none
+  // of the providers care about the name itself, only the bytes.
+  if (input.referenceImages && input.referenceImages.length > 0) {
+    input.referenceImages.forEach((ref, idx) => {
+      form.append("referenceImage", ref, `ref-${idx}`);
+    });
+  }
 
   const submit = await fetch("/api/ai/generate", { method: "POST", body: form });
   if (!submit.ok) {

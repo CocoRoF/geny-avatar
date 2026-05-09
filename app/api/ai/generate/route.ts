@@ -11,6 +11,12 @@
  *   maskImage       File?    PNG mask, **already in the provider's
  *                            convention** (client-side conversion in
  *                            lib/ai/maskConvert.ts)
+ *   referenceImage  File*    Zero or more reference images. Order is
+ *                            preserved (`formData.getAll`). Forwarded
+ *                            as `input.referenceImages` to the
+ *                            provider; providers without
+ *                            `supportsReferenceImages` ignore the
+ *                            array entirely.
  *
  * Response: { jobId: string }
  *
@@ -43,6 +49,15 @@ export async function POST(request: Request) {
   const negativePrompt = form.get("negativePrompt");
   const modelId = form.get("modelId");
   const seedStr = form.get("seed");
+  // Multiple reference images come in under the same key. `getAll`
+  // preserves insertion order, which matters because the provider
+  // forwards them to gpt-image-2 as `image[]` after the source.
+  // `FormDataEntryValue` is `string | File`; we keep only Files
+  // (which extend Blob) and pass them through as Blob[] for the
+  // provider — provider treats source / mask / refs uniformly.
+  const referenceImages: Blob[] = form
+    .getAll("referenceImage")
+    .filter((v): v is File => v instanceof File);
 
   if (typeof providerId !== "string" || !isProviderId(providerId)) {
     return NextResponse.json({ error: "providerId required" }, { status: 400 });
@@ -66,9 +81,21 @@ export async function POST(request: Request) {
 
   // Fire the provider in the background; the route returns immediately.
   // Errors land in the job's status so polling clients see them.
+  // Strip refs for providers that don't support them — keeps the
+  // provider implementations honest and avoids surprising the model
+  // with extra inputs it can't make sense of.
+  const supportsRefs = provider.config.capabilities.supportsReferenceImages;
+  const forwardedRefs = supportsRefs ? referenceImages : [];
+  if (referenceImages.length > 0 && !supportsRefs) {
+    console.info(
+      `[ai/generate] dropping ${referenceImages.length} reference image(s) — provider ${providerId} doesn't supportReferenceImages`,
+    );
+  }
+
   void runJob(job.id, provider.generate.bind(provider), {
     sourceImage: sourceFile,
     maskImage: maskFile instanceof Blob ? maskFile : undefined,
+    referenceImages: forwardedRefs.length > 0 ? forwardedRefs : undefined,
     prompt,
     negativePrompt: typeof negativePrompt === "string" ? negativePrompt : undefined,
     modelId: typeof modelId === "string" && modelId ? modelId : undefined,

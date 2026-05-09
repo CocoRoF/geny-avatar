@@ -70,6 +70,7 @@
 | 2026-05-07 | [54 baked_hidden_indicator](2026-05-07_54_baked_hidden_indicator.md) | 4 polish | 완료 — Layer.bakedHidden 추가, Live2DAdapter가 pose3.json 파싱해 forced-hidden parts 식별, LayersPanel/ExportButton에 amber `baked` 표시. 이미 export-import 사이클을 거친 puppet에서 토글이 왜 효과 없는지 사용자에게 보여줌. resolveSiblingUrl도 blob URL 처리하도록 fix (cdi3 displayNames도 덜리 동작) |
 | 2026-05-07 | [55 phase5_kickoff](2026-05-07_55_phase5_kickoff.md) | 5.0 | 진행중 — Phase 5 sub-sprint 분할 (gpt-image-2 단독 정공). 5.1 reference store / 5.2 multi-image input / 5.3 ref selection UX / 5.4 prompt templates / 5.5 comparison viewer. ComfyUI/LoRA는 별도 후속 phase로 deferred |
 | 2026-05-07 | [56 sprint_5_1_reference_store](2026-05-07_56_sprint_5_1_reference_store.md) | 5.1 | 완료 — IDB v7 puppetReferences store + useReferences 훅 + ReferencesPanel + 3개 edit 페이지 와이어링. 인프라만 — 5.2가 OpenAI 호출에 흘려넣음 |
+| 2026-05-07 | [57 sprint_5_2_multi_image_input](2026-05-07_57_sprint_5_2_multi_image_input.md) | 5.2 | 완료 — provider capability `supportsReferenceImages` + `referenceImages?: Blob[]` 입력. OpenAI는 `image[]` 다중 슬롯 + ref anchor 프롬프트 자동 prepend. Gemini/Replicate는 false (server route에서 drop). GeneratePanel이 useReferences 자동 포함 + UI hint |
 
 ## 운영 규칙
 

@@ -61,6 +61,11 @@ export const openaiConfig: ProviderConfig = {
   capabilities: {
     supportsBinaryMask: true,
     supportsNegativePrompt: false, // gpt-image edits don't carry a separate field
+    // gpt-image-2's /v1/images/edits accepts `image[]` arrays — first
+    // entry is the masked source, the rest act as character / style
+    // refs. Older models like dall-e-2 silently ignore the extras;
+    // we let the API decide rather than gating per model id.
+    supportsReferenceImages: true,
     defaultModelId: MODELS[0].id,
     models: MODELS,
   },
@@ -75,6 +80,7 @@ export class OpenAIProvider implements AIProvider {
 
   async generate(input: ProviderGenerateInput): Promise<Blob> {
     const model = input.modelId ?? this.config.capabilities.defaultModelId;
+    const refs = input.referenceImages ?? [];
 
     const form = new FormData();
     form.set("model", model);
@@ -89,14 +95,28 @@ export class OpenAIProvider implements AIProvider {
     // rejects `quality: "auto"` even though gpt-image-1 docs list it).
     // Defaults pick a sensible size from the input dims and return
     // b64_json, which is what we want.
-    form.set("image", input.sourceImage, "source.png");
+    //
+    // Multi-image: the docs use `image[]` array notation
+    //   curl -F "image[]=@a.png" -F "image[]=@b.png" ...
+    // The first entry is the one the mask is applied to. We always put
+    // the layer source there; reference images come after as character
+    // / style anchors. fetch's FormData repeats the key for arrays, so
+    // a single `image` key with multiple appends would be ambiguous —
+    // we use the explicit `image[]` notation for safety.
+    form.append("image[]", input.sourceImage, "source.png");
+    refs.forEach((ref, idx) => {
+      const ext = blobExtension(ref);
+      form.append("image[]", ref, `reference-${idx}.${ext}`);
+    });
     if (input.maskImage) {
       form.set("mask", input.maskImage, "mask.png");
     }
 
     const startedAt = Date.now();
     console.info(
-      `[openai] POST ${ENDPOINT} model=${model} sourceBytes=${input.sourceImage.size} maskBytes=${input.maskImage?.size ?? 0} promptLength=${input.prompt.length}`,
+      `[openai] POST ${ENDPOINT} model=${model} sourceBytes=${input.sourceImage.size} maskBytes=${input.maskImage?.size ?? 0} refs=${refs.length} (${refs
+        .map((r) => `${r.size}B`)
+        .join(",")}) promptLength=${input.prompt.length}`,
     );
 
     const response = await fetch(ENDPOINT, {
@@ -135,16 +155,46 @@ export class OpenAIProvider implements AIProvider {
   }
 
   /**
-   * gpt-image-edits has no negative-prompt field, so we splice the
-   * negation into the main prompt as a stylistic hint. Keep it short
-   * to avoid blowing the prompt budget.
+   * Compose the final prompt for `/v1/images/edits`. Three pieces, in
+   * priority order so the model sees the load-bearing instruction
+   * first:
+   *
+   *   1. The user prompt, verbatim.
+   *   2. (only when reference images are supplied) a short anchor
+   *      sentence telling the model that the second-and-onward images
+   *      are character / style references for the masked region of
+   *      the first one. Without this hint gpt-image-2 sometimes treats
+   *      the additional inputs as "place these objects into the
+   *      scene" instead of "match their style", which gives wildly
+   *      inconsistent results.
+   *   3. (only when negativePrompt set) an "Avoid: ..." line. The
+   *      edits endpoint has no separate negative field.
+   *
+   * Kept terse on purpose — gpt-image-2 has a finite prompt budget
+   * and the user's own text should dominate.
    */
   private composePrompt(input: ProviderGenerateInput): string {
-    if (input.negativePrompt?.trim()) {
-      return `${input.prompt.trim()}\n\nAvoid: ${input.negativePrompt.trim()}`;
+    const parts: string[] = [input.prompt.trim()];
+    const refs = input.referenceImages ?? [];
+    if (refs.length > 0) {
+      parts.push(
+        `Use the additional ${refs.length === 1 ? "image" : `${refs.length} images`} purely as character and style reference for the masked region of the first image: match the silhouette, palette, lighting, and identity shown there. Do not blend reference content into the result outside of style.`,
+      );
     }
-    return input.prompt.trim();
+    if (input.negativePrompt?.trim()) {
+      parts.push(`Avoid: ${input.negativePrompt.trim()}`);
+    }
+    return parts.join("\n\n");
   }
+}
+
+function blobExtension(blob: Blob): string {
+  const t = blob.type.toLowerCase();
+  if (t === "image/png") return "png";
+  if (t === "image/jpeg" || t === "image/jpg") return "jpg";
+  if (t === "image/webp") return "webp";
+  if (t === "image/gif") return "gif";
+  return "png"; // fall back; OpenAI accepts PNG/JPEG/WebP for ref slots
 }
 
 type OpenAIResponse = {

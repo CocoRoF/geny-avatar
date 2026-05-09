@@ -52,6 +52,11 @@ export const geminiConfig: ProviderConfig = {
   capabilities: {
     supportsBinaryMask: false,
     supportsNegativePrompt: true,
+    // Nano Banana does take multi-image inputs in principle, but we
+    // haven't validated that the additional images preserve character
+    // tone the way gpt-image-2's `image[]` does. Sprint 5.2 ships
+    // refs OpenAI-only; revisit when we extend Gemini coverage.
+    supportsReferenceImages: false,
     defaultModelId: MODELS[0].id,
     models: MODELS,
   },

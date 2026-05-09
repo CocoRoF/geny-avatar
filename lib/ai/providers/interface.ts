@@ -18,6 +18,12 @@ export type ProviderCapabilities = {
   supportsBinaryMask: boolean;
   /** Provider supports a separate "negative prompt" field. */
   supportsNegativePrompt: boolean;
+  /** Provider accepts additional reference images alongside the layer
+   *  source — used as character / style anchors at generate time. True
+   *  for OpenAI gpt-image-2's `/v1/images/edits` (image[] array input);
+   *  false for legacy single-image endpoints. The UI uses this to
+   *  decide whether to forward the user's per-puppet references. */
+  supportsReferenceImages: boolean;
   /** Default model id when the user doesn't override. */
   defaultModelId: string;
   /** All models exposed in the picker — id + display name + description. */
@@ -38,6 +44,11 @@ export type ProviderGenerateInput = {
    *  (alpha=255 = "edit this region"). Provider converts internally
    *  if its API uses a different convention. */
   maskImage?: Blob;
+  /** Optional character / style anchor images to send alongside the
+   *  source. Providers that don't `supportsReferenceImages` ignore
+   *  this. Order matters for prompt scaffolding — we put user-uploaded
+   *  refs first, iterative-history refs (Sprint 5.3) after. */
+  referenceImages?: Blob[];
   prompt: string;
   negativePrompt?: string;
   seed?: number;

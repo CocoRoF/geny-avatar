@@ -45,6 +45,10 @@ export const replicateConfig: ProviderConfig = {
   capabilities: {
     supportsBinaryMask: true,
     supportsNegativePrompt: true,
+    // SDXL inpainting on Replicate uses ControlNet conditioning rather
+    // than free-form ref images; IP-Adapter integration is the proper
+    // path and is on the deferred ComfyUI roadmap.
+    supportsReferenceImages: false,
     defaultModelId: MODELS[1].id, // SDXL Inpainting — closest mapping to our flow
     models: MODELS,
   },

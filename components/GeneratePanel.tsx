@@ -13,6 +13,7 @@ import {
 import type { ProviderId } from "@/lib/ai/types";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
+import { useReferences } from "@/lib/avatar/useReferences";
 import { type AIJobRow, listAIJobsForLayer, saveAIJob } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
 
@@ -205,6 +206,13 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   const provider = providers?.find((p) => p.id === providerId);
 
+  // Per-puppet character / style refs. Forwarded as `image[]` to
+  // providers whose capabilities advertise multi-image input
+  // (gpt-image-2). Other providers see them dropped at the route.
+  const { references } = useReferences(puppetKey);
+  const supportsRefs = provider?.capabilities.supportsReferenceImages === true;
+  const activeRefBlobs = supportsRefs ? references.map((r) => r.blob) : [];
+
   async function onSubmit() {
     setPhase({ kind: "submitting" });
     openAIOffsetRef.current = null;
@@ -256,6 +264,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       }
 
       setPhase({ kind: "running" });
+      console.info(
+        `[GeneratePanel] submit: provider=${providerId} model=${modelId || "(default)"} refs=${activeRefBlobs.length}`,
+      );
       const result = await submitGenerate({
         providerId,
         prompt,
@@ -263,6 +274,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         modelId: modelId || undefined,
         sourceImage: sourceBlob,
         maskImage: maskBlob,
+        referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
       });
       const url = URL.createObjectURL(result);
       setPhase({ kind: "succeeded", url, blob: result });
@@ -555,6 +567,36 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
               />
             </div>
+
+            {/* Reference image summary — surfaces what's about to ride
+                along with the source so the user can correlate result
+                quality with the refs they uploaded. Only meaningful for
+                providers that support multi-image input; for others we
+                show a one-liner explaining why their refs aren't being
+                forwarded. */}
+            {provider && references.length > 0 && (
+              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                {supportsRefs ? (
+                  <>
+                    <div className="mb-1 text-[var(--color-fg)]">
+                      {references.length} reference image{references.length === 1 ? "" : "s"} will
+                      ride along
+                    </div>
+                    <div className="text-[var(--color-fg-dim)]">
+                      Sent as <span className="font-mono">image[]</span> after the layer source —
+                      gpt-image-2 uses them as character / style anchors. Manage in the References
+                      panel.
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-[var(--color-fg-dim)]">
+                    {references.length} reference image{references.length === 1 ? "" : "s"} stored,
+                    but {provider.displayName} doesn't accept multi-image input — they'll be ignored
+                    for this generation.
+                  </div>
+                )}
+              </div>
+            )}
 
             <button
               type="button"
