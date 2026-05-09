@@ -171,45 +171,38 @@ export class OpenAIProvider implements AIProvider {
   }
 
   /**
-   * Compose the final prompt for `/v1/images/edits` using gpt-image-2's
-   * documented best practices for multi-image input.
+   * Compose the final prompt for `/v1/images/edits` following
+   * gpt-image-2's multi-image best practices, lightly enough to leave
+   * the user's intent (or the LLM-refined version of it) in charge.
    *
-   * The earlier version gave the user prompt first then bolted on a
-   * one-line ref hint. That left the model guessing which input was
-   * the canvas vs which was a style anchor — when the user typed
-   * "make this look like the reference", the model often pasted the
-   * reference's content (faces, accessories) into the result instead
-   * of just matching its palette / lighting.
+   * Earlier iterations were over-restrictive: "do not copy any
+   * objects / characters / faces / accessories from references" was
+   * meant to stop reference identity from spuriously bleeding into
+   * an unrelated source slot, but it also blocked the *legitimate*
+   * case where the user wanted exactly that — e.g. "[image 1] is a
+   * face slot and the reference is the face I want there." The
+   * pipeline already alpha-clips every result to [image 1]'s
+   * silhouette, so wrong content can't physically land outside the
+   * slot's shape. That makes the prompt's job narrower: just tell
+   * the model which slot is the canvas, where to look in the
+   * references, and what to apply.
    *
-   * The structured composition below is grounded in the
-   * gpt-image-2.art prompting guide:
+   *   1. **Slot map** — `[image 1]` is the canvas, `[image 2..N]`
+   *      are visual references. Mention that the renderer clips the
+   *      output to [image 1]'s silhouette so the model knows the
+   *      shape is fixed without us forbidding content transfer.
    *
-   *   1. **Slot map first** — explicitly label `[image 1]` as the
-   *      texture canvas and `[image 2..N]` as style-only references.
-   *      Spells out "do not copy content" so the model can't conflate
-   *      the two roles even with ambiguous user wording.
+   *   2. **User intent under "Edit"** — the user / refined prompt
+   *      is wrapped in `Edit [image 1]: ...` to bind the instruction
+   *      to the canvas slot.
    *
-   *   2. **User intent under an explicit "Edit" verb** — the user
-   *      prompt is wrapped in `Edit [image 1]: ...` so it's clear
-   *      which image gets modified.
+   *   3. **Preservation hint** — silhouette + crop framing. Short.
+   *      We don't enumerate "no faces, no accessories" anymore.
    *
-   *   3. **Preservation block** — silhouette, geometry, composition,
-   *      and (when no mask is supplied) "any pixels not affected by
-   *      the requested edit". The guide is emphatic that without
-   *      explicit preserves the model reinterprets the whole scene.
+   *   4. **Mask role** — only when a mask blob is attached.
    *
-   *   4. **Mask role hint** — when a mask is present, restate that
-   *      pixels outside the mask must come through unchanged. This
-   *      reinforces the convention image[0]-with-mask and isolates
-   *      the model's freedom to the marked region.
-   *
-   *   5. **Negative prompt as "Avoid:" tail** — no separate field on
-   *      this endpoint; suffix is the documented workaround.
-   *
-   * If the caller passed `refinedPrompt` (from the LLM refinement
-   * pipeline), it replaces the user prompt slot. The other scaffolding
-   * still wraps it so even a refined prompt benefits from the
-   * preservation / role-separation language.
+   *   5. **Negative as "Avoid:" tail** — no separate field on this
+   *      endpoint.
    */
   private composePrompt(input: ProviderGenerateInput): string {
     const refs = input.referenceImages ?? [];
@@ -231,29 +224,22 @@ export class OpenAIProvider implements AIProvider {
       const refLabels =
         refs.length === 1 ? "[image 2]" : refs.map((_, i) => `[image ${i + 2}]`).join(", ");
       sections.push(
-        `Inputs: [image 1] is the texture canvas to edit. ${refLabels} ${
-          refs.length === 1
-            ? "is a style and character reference"
-            : "are style and character references"
-        } — extract palette, lighting, line quality, material rendering, and identity cues, but do NOT copy any objects, characters, faces, accessories, or scene content from ${
-          refs.length === 1 ? "it" : "them"
-        } into the result. The reference content must not appear inside [image 1]'s output.`,
+        `Inputs: [image 1] is the canvas to edit — it represents one slot of a 2D rigged-puppet atlas (skirt, face, hair, accessory, etc.). ${refLabels} ${
+          refs.length === 1 ? "is a visual reference" : "are visual references"
+        } for the desired look. Identify which region of ${
+          refs.length === 1 ? "the reference" : "each reference"
+        } describes [image 1]'s slot, and apply that region's content there. The render pipeline alpha-clips the output to [image 1]'s silhouette automatically, so don't worry about where the shape ends — focus on what fills it.`,
       );
     }
 
     // 2. The actual edit instruction
     sections.push(`Edit [image 1]: ${userIntent}`);
 
-    // 3. Preservation
-    const preservation = [
-      "the silhouette and outline of [image 1]",
-      "the geometry, pose, and proportions",
-      "the composition and crop framing",
-    ];
-    if (!hasMask) {
-      preservation.push("any pixels in [image 1] not affected by the requested edit");
-    }
-    sections.push(`Preserve exactly: ${preservation.join("; ")}.`);
+    // 3. Preservation — short. Alpha-enforcement does the heavy
+    // lifting; we just remind the model the framing stays.
+    sections.push(
+      "Keep [image 1]'s silhouette and crop framing — the renderer expects the result to fit [image 1]'s exact shape.",
+    );
 
     // 4. Mask role
     if (hasMask) {
