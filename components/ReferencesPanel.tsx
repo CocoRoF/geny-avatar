@@ -56,19 +56,28 @@ export function ReferencesPanel({ puppetKey }: Props) {
 
   const persistDisabled = puppetKey === null;
 
-  async function handleUpload(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function handleUpload(files: File[]) {
+    if (files.length === 0) {
+      console.warn("[ReferencesPanel] upload triggered with empty file list");
+      return;
+    }
+    console.info(
+      `[ReferencesPanel] uploading ${files.length} file(s):`,
+      files.map((f) => `${f.name} (${f.type || "?"}, ${f.size}B)`),
+    );
     setBusy(true);
     setError(null);
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         if (!file.type.startsWith("image/")) {
-          setError(`${file.name} is not an image`);
+          setError(`${file.name} is not an image (${file.type || "no MIME"})`);
           continue;
         }
-        await upload(file);
+        const id = await upload(file);
+        console.info(`[ReferencesPanel] saved reference id=${id}`);
       }
     } catch (e) {
+      console.error("[ReferencesPanel] upload failed", e);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -89,9 +98,17 @@ export function ReferencesPanel({ puppetKey }: Props) {
               accept="image/*"
               disabled={busy}
               onChange={(e) => {
-                const f = e.target.files;
-                e.target.value = "";
-                void handleUpload(f);
+                // Snapshot the FileList synchronously into a plain
+                // array BEFORE clearing input.value. The FileList is a
+                // live view backed by the input element — once we set
+                // value="" the browser empties it, so any later reads
+                // (including Array.from inside the async handler) see
+                // zero files. Reproduces as: file picker opens, user
+                // picks files, panel never updates.
+                const input = e.currentTarget;
+                const files = input.files ? Array.from(input.files) : [];
+                input.value = "";
+                void handleUpload(files);
               }}
             />
           </label>
