@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { submitSam } from "@/lib/ai/sam/client";
+import type { SamCandidate, SamPoint } from "@/lib/ai/sam/types";
 import { ID_PREFIX, newId } from "@/lib/avatar/id";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -17,7 +19,17 @@ type Props = {
   puppetKey: string | null;
 };
 
-type BrushMode = "paint" | "erase";
+/**
+ * Tool the brush canvas is currently using:
+ *   - paint / erase: direct stroke into the selected canvas
+ *   - auto: Sprint 6.2 SAM-driven mask. User accumulates click
+ *           points (left = foreground, right = background), hits
+ *           "compute mask" → /api/ai/sam returns 1–3 candidate
+ *           masks → user picks one → it's union'd into the
+ *           selected region's canvas. Available only inside
+ *           "split" studio mode for now.
+ */
+type BrushMode = "paint" | "erase" | "auto";
 /**
  * Top mode toggle:
  *   - "trim"  — classic single-mask paint/erase (existing behavior).
@@ -80,6 +92,17 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const regionCanvasMap = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [splitDirty, setSplitDirty] = useState(false);
+
+  // Sprint 6.2: SAM auto-mask state. Points accumulate while the
+  // brush is in "auto" mode; "compute mask" sends them to the SAM
+  // route and stashes the candidate masks. The user clicks a
+  // candidate to union it into the currently-selected region's
+  // canvas, then optionally refines with paint/erase. Empty until
+  // a brush click in auto mode lands a point.
+  const [samPoints, setSamPoints] = useState<SamPoint[]>([]);
+  const [samCandidates, setSamCandidates] = useState<SamCandidate[] | null>(null);
+  const [samRunning, setSamRunning] = useState(false);
+  const [samError, setSamError] = useState<string | null>(null);
 
   // ----- load source + initial mask -----
   // Source = base layer + texture override (if any). The mask layer is
@@ -301,13 +324,39 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     [mode, brushSize, redraw, studioMode, selectedRegionId],
   );
 
+  /** Sprint 6.2: convert a pointer event in auto mode into a SAM
+   *  point and append. Left button = foreground (label 1), anything
+   *  else = background (label 0). The point lives in source-pixel
+   *  coords so the SAM route can index the source bitmap directly. */
+  const recordSamPoint = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const preview = previewRef.current;
+    if (!preview) return;
+    const rect = preview.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * preview.width);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * preview.height);
+    const label: 0 | 1 = e.button === 0 ? 1 : 0;
+    setSamPoints((prev) => [...prev, { x, y, label }]);
+    // Discard any stale candidate set so the user re-runs compute
+    // after adjusting the points — otherwise old thumbnails imply
+    // a result that no longer matches the current point set.
+    setSamCandidates(null);
+  }, []);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // In auto mode every click is a point — no drag-to-paint, no
+      // pointer capture (so right-click context menu is suppressed
+      // by the canvas's onContextMenu handler instead).
+      if (studioMode === "split" && mode === "auto") {
+        e.preventDefault();
+        recordSamPoint(e);
+        return;
+      }
       paintingRef.current = true;
       (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
       paintAt(e.clientX, e.clientY);
     },
-    [paintAt],
+    [paintAt, recordSamPoint, studioMode, mode],
   );
 
   const onPointerMove = useCallback(
@@ -397,6 +446,104 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setRegionEntries((prev) => prev.map((r) => (r.id === id ? { ...r, name } : r)));
     setSplitDirty(true);
   }, []);
+
+  // ----- Sprint 6.2: SAM auto-mask actions -----
+
+  /** Submit the current fg/bg point set to /api/ai/sam and stash the
+   *  candidate masks for the user to pick from. The source bitmap is
+   *  the layer's upright canvas, encoded as PNG — same source the
+   *  brush is painting on, so click coords map 1:1 to mask coords. */
+  const computeSamMasks = useCallback(async () => {
+    const source = sourceCanvasRef.current;
+    if (!source) return;
+    if (samPoints.length === 0) return;
+    if (!samPoints.some((p) => p.label === 1)) {
+      setSamError("at least one foreground point (left-click) needed before compute");
+      return;
+    }
+    setSamRunning(true);
+    setSamError(null);
+    setSamCandidates(null);
+    try {
+      const blob = await new Promise<Blob | null>((resolve) =>
+        source.toBlob((b) => resolve(b), "image/png"),
+      );
+      if (!blob) {
+        setSamError("failed to encode source canvas");
+        return;
+      }
+      const result = await submitSam({ imageBlob: blob, points: samPoints });
+      setSamCandidates(result.candidates);
+    } catch (e) {
+      setSamError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSamRunning(false);
+    }
+  }, [samPoints]);
+
+  /** Apply one candidate mask to the currently-selected region's
+   *  canvas via union (source-over). The candidate is a binary PNG
+   *  at source dims; drawing it as-is over the region canvas adds
+   *  any opaque pixels to the existing mask. After apply, clear the
+   *  point set + candidates so the user can do another round of
+   *  clicks for a separate area without leaving the auto sub-mode. */
+  const applySamCandidate = useCallback(
+    async (candidate: SamCandidate) => {
+      if (!selectedRegionId) return;
+      const target = regionCanvasMap.current.get(selectedRegionId);
+      if (!target) return;
+      // Decode the candidate blob into an image and draw it onto the
+      // region canvas. SAM masks come back at source dims, so direct
+      // drawImage at (0,0) is correct.
+      const url = URL.createObjectURL(candidate.maskBlob);
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const i = new Image();
+          i.onload = () => resolve(i);
+          i.onerror = () => reject(new Error("candidate image load failed"));
+          i.src = url;
+        });
+        const tctx = target.getContext("2d");
+        if (!tctx) return;
+        tctx.save();
+        if (clipPathRef.current) tctx.clip(clipPathRef.current);
+        tctx.globalCompositeOperation = "source-over";
+        tctx.drawImage(img, 0, 0, target.width, target.height);
+        tctx.restore();
+        setSplitDirty(true);
+        redraw();
+      } catch (e) {
+        setSamError(e instanceof Error ? e.message : String(e));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      setSamPoints([]);
+      setSamCandidates(null);
+    },
+    [selectedRegionId, redraw],
+  );
+
+  /** Drop accumulated points + candidates without applying. Useful
+   *  when the user wants to start over on a new spot. */
+  const resetSamPoints = useCallback(() => {
+    setSamPoints([]);
+    setSamCandidates(null);
+    setSamError(null);
+  }, []);
+
+  // Switching the brush sub-mode out of "auto" should clear the
+  // pending click state — they're only meaningful while the user is
+  // actively pointing at SAM targets. Likewise switching regions or
+  // leaving split mode entirely.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setters are stable
+  useEffect(() => {
+    if (mode !== "auto" || studioMode !== "split") {
+      setSamPoints([]);
+      setSamCandidates(null);
+      setSamError(null);
+      setSamRunning(false);
+    }
+  }, [mode, studioMode, selectedRegionId]);
 
   const onSaveSplit = useCallback(async () => {
     // Bake every region canvas to a binary PNG and persist together.
@@ -552,14 +699,51 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
             ) : !ready ? (
               <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
             ) : (
-              <canvas
-                ref={previewRef}
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerCancel={onPointerUp}
-                className="max-h-full max-w-full cursor-crosshair touch-none border border-[var(--color-border)]"
-              />
+              <div className="relative inline-flex max-h-full max-w-full">
+                <canvas
+                  ref={previewRef}
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
+                  onPointerCancel={onPointerUp}
+                  // Right-click in auto mode adds a background point —
+                  // suppress the browser context menu so the click
+                  // event bubbles cleanly to onPointerDown.
+                  onContextMenu={(e) => {
+                    if (studioMode === "split" && mode === "auto") e.preventDefault();
+                  }}
+                  className="max-h-full max-w-full cursor-crosshair touch-none border border-[var(--color-border)]"
+                />
+                {/* Sprint 6.2: SAM point overlay. Visible only in
+                    split/auto mode while points are being collected.
+                    Coordinates live in source pixel space; the SVG
+                    viewBox lines them up with the canvas regardless
+                    of CSS scale. */}
+                {studioMode === "split" &&
+                  mode === "auto" &&
+                  samPoints.length > 0 &&
+                  previewRef.current && (
+                    <svg
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 h-full w-full"
+                      viewBox={`0 0 ${previewRef.current.width} ${previewRef.current.height}`}
+                      preserveAspectRatio="none"
+                    >
+                      {samPoints.map((p, i) => (
+                        <circle
+                          // biome-ignore lint/suspicious/noArrayIndexKey: points are append-only and order-stable
+                          key={i}
+                          cx={p.x}
+                          cy={p.y}
+                          r={Math.max(4, (previewRef.current?.width ?? 200) / 200)}
+                          fill={p.label === 1 ? "#22c55e" : "#ef4444"}
+                          stroke="#000"
+                          strokeWidth={1}
+                        />
+                      ))}
+                    </svg>
+                  )}
+              </div>
             )}
           </div>
 
@@ -704,13 +888,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
 
                 <div className="mb-3">
                   <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    brush
+                    tool
                   </div>
-                  <div className="mb-2 flex gap-1">
+                  <div className="mb-2 grid grid-cols-3 gap-1">
                     <button
                       type="button"
                       onClick={() => setMode("paint")}
-                      className={`flex-1 rounded border px-2 py-1 ${
+                      className={`rounded border px-2 py-1 ${
                         mode === "paint"
                           ? "border-[var(--color-accent)] text-[var(--color-accent)]"
                           : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
@@ -721,7 +905,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     <button
                       type="button"
                       onClick={() => setMode("erase")}
-                      className={`flex-1 rounded border px-2 py-1 ${
+                      className={`rounded border px-2 py-1 ${
                         mode === "erase"
                           ? "border-[var(--color-accent)] text-[var(--color-accent)]"
                           : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
@@ -729,17 +913,116 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     >
                       erase
                     </button>
+                    {/* Sprint 6.2: SAM-driven mask. Disabled when no
+                        region is selected (the candidate has nowhere
+                        to land). */}
+                    <button
+                      type="button"
+                      onClick={() => setMode("auto")}
+                      disabled={!selectedRegionId}
+                      title={
+                        selectedRegionId
+                          ? "click foreground / right-click background, then compute"
+                          : "select a region first"
+                      }
+                      className={`rounded border px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40 ${
+                        mode === "auto"
+                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                      }`}
+                    >
+                      auto
+                    </button>
                   </div>
-                  <input
-                    type="range"
-                    min={2}
-                    max={200}
-                    value={brushSize}
-                    onChange={(e) => setBrushSize(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="font-mono text-[var(--color-fg-dim)]">{brushSize}px</div>
+                  {mode !== "auto" && (
+                    <>
+                      <input
+                        type="range"
+                        min={2}
+                        max={200}
+                        value={brushSize}
+                        onChange={(e) => setBrushSize(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="font-mono text-[var(--color-fg-dim)]">{brushSize}px</div>
+                    </>
+                  )}
                 </div>
+
+                {/* Sprint 6.2: SAM auto-mask panel. Visible while the
+                    user is in auto sub-mode. Click points list, the
+                    compute button, candidate thumbnails to apply. */}
+                {mode === "auto" && (
+                  <div className="mb-3 rounded border border-[var(--color-border)] p-2">
+                    <div className="mb-1 flex items-baseline justify-between text-[var(--color-fg)]">
+                      <span>auto-mask · SAM</span>
+                      <span className="text-[10px] text-[var(--color-fg-dim)]">
+                        L = fg · R = bg
+                      </span>
+                    </div>
+                    <div className="mb-2 text-[10px] text-[var(--color-fg-dim)]">
+                      points: {samPoints.length} (fg {samPoints.filter((p) => p.label === 1).length}{" "}
+                      / bg {samPoints.filter((p) => p.label === 0).length})
+                    </div>
+                    <div className="mb-2 flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void computeSamMasks();
+                        }}
+                        disabled={
+                          samRunning ||
+                          samPoints.length === 0 ||
+                          !samPoints.some((p) => p.label === 1)
+                        }
+                        className="flex-1 rounded border border-[var(--color-accent)] px-2 py-1 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {samRunning ? "computing…" : "compute mask"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetSamPoints}
+                        disabled={samPoints.length === 0 && samCandidates === null}
+                        className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] disabled:cursor-not-allowed disabled:opacity-40 hover:text-[var(--color-fg)]"
+                      >
+                        reset
+                      </button>
+                    </div>
+                    {samError && (
+                      <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
+                        {samError}
+                      </div>
+                    )}
+                    {samCandidates && samCandidates.length > 0 && (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {samCandidates.map((c, i) => (
+                          <button
+                            type="button"
+                            // biome-ignore lint/suspicious/noArrayIndexKey: candidates array is order-stable per compute call
+                            key={i}
+                            onClick={() => {
+                              void applySamCandidate(c);
+                            }}
+                            title="apply to selected region"
+                            className="overflow-hidden rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]"
+                          >
+                            {/* biome-ignore lint/performance/noImgElement: blob URL preview */}
+                            <img
+                              src={URL.createObjectURL(c.maskBlob)}
+                              alt={`candidate ${i + 1}`}
+                              className="block h-auto w-full"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {samCandidates && samCandidates.length === 0 && (
+                      <div className="text-[10px] text-[var(--color-fg-dim)]">
+                        SAM returned no usable masks
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
                   <div className="mb-1 uppercase tracking-widest">how</div>
@@ -747,6 +1030,10 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     <li>"+ add" to create a region, name it</li>
                     <li>click a region to select; brush strokes go into it</li>
                     <li>paint / erase + brush size apply to the selected region</li>
+                    <li>
+                      <span className="text-[var(--color-fg)]">auto</span>: left-click foreground /
+                      right-click background, then compute → pick a candidate
+                    </li>
                     <li>save persists the region masks to IDB — GeneratePanel uses these</li>
                   </ul>
                 </div>
