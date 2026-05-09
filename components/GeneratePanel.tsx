@@ -264,9 +264,66 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       }
 
       setPhase({ kind: "running" });
-      console.info(
-        `[GeneratePanel] submit: provider=${providerId} model=${modelId || "(default)"} refs=${activeRefBlobs.length}`,
+      // ── structured submit log ────────────────────────────────────
+      // Surfaces exactly what's about to leave the browser so the
+      // user can correlate result quality with inputs. Each Blob is
+      // also given an object-URL so DevTools "preview" links the
+      // raw bytes — click-to-open in a tab. URLs leak intentionally
+      // until panel unmount; size is bounded by ref count.
+      const sourceUrl = URL.createObjectURL(sourceBlob);
+      const maskUrl = maskBlob ? URL.createObjectURL(maskBlob) : null;
+      const refDetails = activeRefBlobs.map((b, i) => {
+        const matched = references.find((r) => r.blob === b);
+        return {
+          slot: `image[${i + 1}]`,
+          name: matched?.name ?? `ref-${i}`,
+          type: b.type || "(no MIME)",
+          bytes: b.size,
+          preview: URL.createObjectURL(b),
+        };
+      });
+      console.groupCollapsed(
+        `[ai/submit] layer="${layer.name}" provider=${providerId} model=${modelId || "(default)"} refs=${activeRefBlobs.length}`,
       );
+      console.info("layer:", {
+        id: layer.id,
+        name: layer.name,
+        externalId: layer.externalId,
+        textureId: layer.texture?.textureId,
+        rect: layer.texture?.rect,
+      });
+      console.info("provider:", { id: providerId, model: modelId || "(provider default)" });
+      console.info("source image (image[0]):", {
+        slot: "image[0]",
+        bytes: sourceBlob.size,
+        type: sourceBlob.type || "(no MIME)",
+        preview: sourceUrl,
+        ...(openAIOffsetRef.current
+          ? { padded: "1024x1024", layerOffset: openAIOffsetRef.current }
+          : {}),
+      });
+      if (maskBlob) {
+        console.info("mask:", {
+          bytes: maskBlob.size,
+          type: maskBlob.type || "(no MIME)",
+          preview: maskUrl,
+          appliesTo: "image[0] only (gpt-image-2 convention)",
+        });
+      } else {
+        console.info("mask: (none — provider runs unmasked / footprint-only)");
+      }
+      if (refDetails.length === 0) {
+        console.info("references: (none)");
+      } else {
+        console.info(`references (${refDetails.length}):`, refDetails);
+      }
+      console.info("prompt (user, verbatim):", prompt);
+      if (negativePrompt.trim()) console.info("negative prompt:", negativePrompt);
+      console.info(
+        "note: provider may compose additional prompt scaffolding (anchor sentence for refs, negative-prompt splice, etc.). Check the [openai] / [gemini] server log for the final composed prompt.",
+      );
+      console.groupEnd();
+
       const result = await submitGenerate({
         providerId,
         prompt,

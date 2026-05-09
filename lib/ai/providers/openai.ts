@@ -82,9 +82,10 @@ export class OpenAIProvider implements AIProvider {
     const model = input.modelId ?? this.config.capabilities.defaultModelId;
     const refs = input.referenceImages ?? [];
 
+    const composedPromptText = this.composePrompt(input);
     const form = new FormData();
     form.set("model", model);
-    form.set("prompt", this.composePrompt(input));
+    form.set("prompt", composedPromptText);
     form.set("n", "1");
     // Image and mask must be PNG with matching dims. The client guarantees
     // both via lib/ai/client.ts (padToOpenAISquare + buildOpenAIMaskCanvas)
@@ -113,10 +114,25 @@ export class OpenAIProvider implements AIProvider {
     }
 
     const startedAt = Date.now();
+    // Server-side structured log — visible in the next.js dev terminal.
+    // Mirrors the client-side [ai/submit] group so the operator can
+    // correlate request shape end-to-end without trusting the network
+    // panel.
     console.info(
-      `[openai] POST ${ENDPOINT} model=${model} sourceBytes=${input.sourceImage.size} maskBytes=${input.maskImage?.size ?? 0} refs=${refs.length} (${refs
-        .map((r) => `${r.size}B`)
-        .join(",")}) promptLength=${input.prompt.length}`,
+      `[openai] POST ${ENDPOINT}\n` +
+        `         model: ${model}\n` +
+        `         image[]: ${1 + refs.length} entries\n` +
+        `           [0] source: ${input.sourceImage.size}B (${input.sourceImage.type || "?"})\n` +
+        refs
+          .map(
+            (r, i) =>
+              `           [${i + 1}] reference: ${r.size}B (${r.type || "?"}) — ride-along anchor`,
+          )
+          .join("\n") +
+        (refs.length > 0 ? "\n" : "") +
+        `         mask: ${input.maskImage ? `${input.maskImage.size}B (applied to image[0])` : "(none)"}\n` +
+        `         user prompt:     ${truncate(input.prompt, 200)}\n` +
+        `         composed prompt: ${truncate(composedPromptText, 600)}`,
     );
 
     const response = await fetch(ENDPOINT, {

@@ -86,11 +86,19 @@ export async function POST(request: Request) {
   // with extra inputs it can't make sense of.
   const supportsRefs = provider.config.capabilities.supportsReferenceImages;
   const forwardedRefs = supportsRefs ? referenceImages : [];
-  if (referenceImages.length > 0 && !supportsRefs) {
-    console.info(
-      `[ai/generate] dropping ${referenceImages.length} reference image(s) — provider ${providerId} doesn't supportReferenceImages`,
-    );
-  }
+  console.info(
+    `[ai/generate] received jobId=${job.id} provider=${providerId} model=${typeof modelId === "string" && modelId ? modelId : "(default)"}\n` +
+      `              source=${(sourceFile as Blob).size}B (${(sourceFile as Blob).type || "?"})\n` +
+      `              mask=${maskFile instanceof Blob ? `${maskFile.size}B (${maskFile.type || "?"})` : "(none)"}\n` +
+      `              refs=${referenceImages.length} received → ${forwardedRefs.length} forwarded` +
+      (referenceImages.length > 0 && !supportsRefs
+        ? ` (provider doesn't supportReferenceImages — dropped)`
+        : "") +
+      (referenceImages.length > 0
+        ? `\n              ref sizes: ${referenceImages.map((r) => `${r.size}B`).join(", ")}`
+        : "") +
+      `\n              promptLength=${prompt.length}`,
+  );
 
   void runJob(job.id, provider.generate.bind(provider), {
     sourceImage: sourceFile,
