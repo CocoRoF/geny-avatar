@@ -180,7 +180,9 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
         )}
       </ul>
 
-      {studioLayer && <DecomposeStudio adapter={adapter} layer={studioLayer} />}
+      {studioLayer && (
+        <DecomposeStudio adapter={adapter} layer={studioLayer} puppetKey={puppetKey} />
+      )}
       {generateLayer && (
         <GeneratePanel adapter={adapter} layer={generateLayer} puppetKey={puppetKey} />
       )}

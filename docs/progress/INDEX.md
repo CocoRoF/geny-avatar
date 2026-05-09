@@ -83,6 +83,7 @@
 | 2026-05-09 | [67 sprint_a_3_region_aware_ui](2026-05-09_67_sprint_a_3_region_aware_ui.md) | A.3 | 완료 — multi-component layer일 때 SOURCE 위 SVG overlay (색별 outline + 번호) + aside REGIONS 섹션 (썸네일 + per-region textarea) + COMMON CONTEXT 라벨 전환. submit 시 region별 prompt 조합 (`<base>\n\nFor [image 1] (region N of M, WxH px): <perRegion>`) → `refinedPrompt` 로 전달. 단일 component layer 기존 UI 유지 |
 | 2026-05-09 | [68 e_kickoff](2026-05-09_68_e_kickoff.md) | E.0 | 진행중 — 사용자 자율 region 정의. E.1 명명+영구저장 / E.2 DecomposeStudio split mode (SAM+brush) / E.3 GeneratePanel manual region 우선 사용. A+B+E 합쳐서 multi-region generation 정밀도 끝까지 |
 | 2026-05-09 | [69 sprint_e_1_component_labels](2026-05-09_69_sprint_e_1_component_labels.md) | E.1 | 완료 — IDB v8 `componentLabels` store + `useComponentLabels` hook + region tile inline name input. 사용자가 region 1/2/3 → "torso", "shoulder frill" 등 명명. 400ms debounced IDB save, bbox signature 키. submit prompt에 "region 'torso' (...)" 형식으로 모델 전달 |
+| 2026-05-09 | [70 sprint_e_2_decompose_split_mode](2026-05-09_70_sprint_e_2_decompose_split_mode.md) | E.2 | 완료 — IDB v9 `regionMasks` store + `useRegionMasks` hook + DecomposeStudio top mode toggle [trim \| split]. split mode에서 사용자가 N개 named region 직접 brush로 정의, region별 binary mask + name + color → IDB 영구 저장. SAM 통합은 follow-up |
 
 ## 운영 규칙
 

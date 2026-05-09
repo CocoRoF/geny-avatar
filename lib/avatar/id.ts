@@ -36,6 +36,7 @@ export const ID_PREFIX = {
   override: "ov",
   reference: "rf",
   componentLabel: "cl",
+  regionMask: "rm",
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIX)[keyof typeof ID_PREFIX];

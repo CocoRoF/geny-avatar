@@ -27,6 +27,7 @@ export type VariantRowId = string;
 export type LayerOverrideRowId = string;
 export type ReferenceRowId = string;
 export type ComponentLabelsRowId = string;
+export type RegionMasksRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -187,6 +188,39 @@ export type ReferenceRow = {
 };
 
 /**
+ * Sprint E.2 — manually-defined regions for a layer. Each entry is a
+ * named, color-tagged binary mask (PNG blob) painted by the user in
+ * DecomposeStudio's "split" mode. When present, GeneratePanel uses
+ * these instead of running connected-components on the layer's
+ * silhouette — letting the user override auto-detect when the
+ * silhouette merges things that should be separate, splits things
+ * that should be one, or simply needs a clearer semantic boundary.
+ *
+ * Single row per (puppetKey, layerExternalId). The `regions` array
+ * is small (typically 2–5 entries); a single-row schema keeps the
+ * write atomic and makes hydration trivial.
+ */
+export type RegionMaskEntry = {
+  /** Stable id within this layer; survives renames. */
+  id: string;
+  /** User-typed label. */
+  name: string;
+  /** Hex color tag — also surfaces in GeneratePanel's region tile. */
+  color: string;
+  /** Source-canvas-sized binary mask PNG. White (alpha>0) = inside,
+   *  transparent = outside. */
+  maskBlob: Blob;
+};
+
+export type RegionMasksRow = {
+  id: RegionMasksRowId;
+  puppetKey: string;
+  layerExternalId: string;
+  regions: RegionMaskEntry[];
+  updatedAt: number;
+};
+
+/**
  * Sprint E.1 — per-component naming for multi-region layers.
  *
  * One row per (puppetKey, layerExternalId). The `labels` map keys
@@ -216,6 +250,7 @@ class GenyAvatarDB extends Dexie {
   puppetSessions!: EntityTable<PuppetSessionRow, "puppetKey">;
   puppetReferences!: EntityTable<ReferenceRow, "id">;
   componentLabels!: EntityTable<ComponentLabelsRow, "id">;
+  regionMasks!: EntityTable<RegionMasksRow, "id">;
 
   constructor() {
     super("geny-avatar");
@@ -311,6 +346,22 @@ class GenyAvatarDB extends Dexie {
       puppetSessions: "puppetKey, updatedAt",
       puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
       componentLabels: "id, puppetKey, [puppetKey+layerExternalId]",
+    });
+    // v9: + regionMasks (Sprint E.2 — manually-defined region masks
+    // painted in DecomposeStudio's split mode). Same indexing
+    // pattern as componentLabels — single-row-per-layer, compound
+    // index for the "load this layer's regions" path, bare
+    // puppetKey for cascade delete.
+    this.version(9).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+      puppetSessions: "puppetKey, updatedAt",
+      puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
+      componentLabels: "id, puppetKey, [puppetKey+layerExternalId]",
+      regionMasks: "id, puppetKey, [puppetKey+layerExternalId]",
     });
   }
 }
@@ -678,4 +729,63 @@ export async function saveComponentLabels(input: {
 
 export async function deleteAllComponentLabelsForPuppet(puppetKey: string): Promise<void> {
   await db().componentLabels.where("puppetKey").equals(puppetKey).delete();
+}
+
+// ----- regionMasks (Sprint E.2) -----
+
+/**
+ * Look up the saved manual regions for a layer. Returns the regions
+ * array directly, or `[]` if no row exists yet for this layer.
+ */
+export async function loadRegionMasks(
+  puppetKey: string,
+  layerExternalId: string,
+): Promise<RegionMaskEntry[]> {
+  const row = await db()
+    .regionMasks.where("[puppetKey+layerExternalId]")
+    .equals([puppetKey, layerExternalId])
+    .first();
+  return row?.regions ?? [];
+}
+
+/**
+ * Upsert the entire region list for a layer. DecomposeStudio's split
+ * mode rebuilds the array on every save (rename / paint / add /
+ * delete) and replaces the row; partial updates aren't needed.
+ */
+export async function saveRegionMasks(input: {
+  puppetKey: string;
+  layerExternalId: string;
+  regions: RegionMaskEntry[];
+}): Promise<void> {
+  const existing = await db()
+    .regionMasks.where("[puppetKey+layerExternalId]")
+    .equals([input.puppetKey, input.layerExternalId])
+    .first();
+  const now = Date.now();
+  if (existing) {
+    await db().regionMasks.update(existing.id, {
+      regions: input.regions,
+      updatedAt: now,
+    });
+  } else {
+    await db().regionMasks.put({
+      id: newId(ID_PREFIX.regionMask),
+      puppetKey: input.puppetKey,
+      layerExternalId: input.layerExternalId,
+      regions: input.regions,
+      updatedAt: now,
+    });
+  }
+}
+
+export async function deleteRegionMasks(puppetKey: string, layerExternalId: string): Promise<void> {
+  await db()
+    .regionMasks.where("[puppetKey+layerExternalId]")
+    .equals([puppetKey, layerExternalId])
+    .delete();
+}
+
+export async function deleteAllRegionMasksForPuppet(puppetKey: string): Promise<void> {
+  await db().regionMasks.where("puppetKey").equals(puppetKey).delete();
 }
