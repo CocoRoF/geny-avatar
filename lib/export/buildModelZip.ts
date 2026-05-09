@@ -27,12 +27,10 @@
 
 import { type Zippable, zipSync } from "fflate";
 import type { AvatarAdapter } from "../adapters/AvatarAdapter";
-import type { Avatar, LayerId } from "../avatar/types";
+import type { Avatar, Layer, LayerId } from "../avatar/types";
 import { loadPuppet, type PuppetId } from "../persistence/db";
 import type { BundleEntry } from "../upload/types";
 import { type BakedAtlasPage, bakeAtlasPages } from "./bakeAtlas";
-
-const HIDE_MOTION_FILENAME = "geny-hide-init.motion3.json";
 
 export type BuildModelZipInput = {
   puppetId: PuppetId;
@@ -125,7 +123,7 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
   let extraFiles: { path: string; bytes: Uint8Array }[] = [];
 
   if (hiddenPartIds.size > 0 && row.runtime === "live2d") {
-    const result = await patchCubismForHide(entries, hiddenPartIds, warnings);
+    const result = await patchCubismForHide(entries, hiddenPartIds, input.avatar.layers, warnings);
     patchedReplacements = result.replacements;
     extraFiles = result.extraFiles;
     if (result.manifestPatch) manifestPatch = result.manifestPatch;
@@ -322,14 +320,88 @@ type CubismPatchResult = {
 async function patchCubismForHide(
   entries: BundleEntry[],
   hiddenPartIds: Set<string>,
+  layers: ReadonlyArray<Layer>,
   warnings: string[],
 ): Promise<CubismPatchResult> {
   const replacements = new Map<string, Uint8Array>();
   const extraFiles: { path: string; bytes: Uint8Array }[] = [];
   let manifestPatch: { path: string; bytes: Uint8Array } | null = null;
 
-  const motionFiles = entries.filter((e) => e.path.toLowerCase().endsWith(".motion3.json"));
+  const manifestEntry = entries.find((e) => e.path.toLowerCase().endsWith(".model3.json"));
+  if (!manifestEntry) {
+    warnings.push("no model3.json — cannot patch hide");
+    return { replacements, extraFiles, manifestPatch };
+  }
+  let manifest: Live2DManifest;
+  try {
+    manifest = JSON.parse(await manifestEntry.blob.text()) as Live2DManifest;
+  } catch (e) {
+    warnings.push(`failed to parse model3.json: ${(e as Error).message}`);
+    return { replacements, extraFiles, manifestPatch };
+  }
+  const manifestDir = pathDirectory(manifestEntry.path);
+  let manifestDirty = false;
 
+  // ----- 1. pose3.json (primary mechanism) -----
+  // Cubism Framework's pose system runs every frame after motion + expression
+  // and forces every part *except the first opacity-> 0 part in each group*
+  // to fade toward 0 over `FadeInTime` seconds. By placing each hidden part
+  // into a group anchored by an always-visible part, we get an auto-applied
+  // hide that doesn't require any motion to be playing — which is critical
+  // because puppets often store motions under non-Idle group names (e.g.
+  // the empty string `""`) that the Framework won't auto-play.
+  const anchorPartId = findAnchorPartId(layers, hiddenPartIds);
+  if (!anchorPartId) {
+    warnings.push(
+      "no always-visible part found to anchor the hide pose; hidden parts may still render",
+    );
+  } else {
+    const poseRel = manifest.FileReferences?.Pose;
+    let posePath: string | null = null;
+    let pose: Live2DPoseFile = { Type: "Live2D Pose", Groups: [] };
+    if (typeof poseRel === "string" && poseRel.length > 0) {
+      posePath = joinPaths(manifestDir, poseRel);
+      const poseEntry = entries.find((e) => e.path === posePath);
+      if (poseEntry) {
+        try {
+          const parsed = JSON.parse(await poseEntry.blob.text()) as Live2DPoseFile;
+          pose = parsed;
+          if (!Array.isArray(pose.Groups)) pose.Groups = [];
+          if (typeof pose.Type !== "string") pose.Type = "Live2D Pose";
+        } catch (e) {
+          warnings.push(`failed to parse existing pose3.json: ${(e as Error).message}`);
+        }
+      }
+    }
+    pose.Groups = pose.Groups ?? [];
+    const newGroup = [
+      { Id: anchorPartId, Link: [] as string[] },
+      ...Array.from(hiddenPartIds).map((id) => ({ Id: id, Link: [] as string[] })),
+    ];
+    pose.Groups.push(newGroup);
+    const poseJson = JSON.stringify(pose, null, 2);
+    if (posePath) {
+      replacements.set(posePath, new TextEncoder().encode(poseJson));
+    } else {
+      const newPoseFile = "geny-hide.pose3.json";
+      extraFiles.push({
+        path: `${manifestDir}${newPoseFile}`,
+        bytes: new TextEncoder().encode(poseJson),
+      });
+      if (!manifest.FileReferences) manifest.FileReferences = {};
+      manifest.FileReferences.Pose = newPoseFile;
+      manifestDirty = true;
+    }
+  }
+
+  // ----- 2. motion3.json patches (defense in depth) -----
+  // Pose alone is sufficient for static hide — but if a puppet's motion
+  // explicitly raises a hidden part's opacity, the pose-fade can lag for
+  // a frame or two before catching up. Adding `PartOpacity = 0` curves
+  // to every motion makes the hide instantaneous regardless of which
+  // motion is playing. Curves with non-existent Ids are ignored by the
+  // Framework, so over-including is safe.
+  const motionFiles = entries.filter((e) => e.path.toLowerCase().endsWith(".motion3.json"));
   if (motionFiles.length > 0) {
     for (const motionEntry of motionFiles) {
       try {
@@ -359,67 +431,35 @@ async function patchCubismForHide(
         warnings.push(`failed to patch motion ${motionEntry.path}: ${(e as Error).message}`);
       }
     }
-  } else {
-    // No motions in the puppet — synthesize one + reference it from
-    // model3.json's Idle group so the Framework auto-plays it.
-    const synthesized = synthesizeHideMotion(hiddenPartIds);
-    const manifestEntry = entries.find((e) => e.path.toLowerCase().endsWith(".model3.json"));
-    if (!manifestEntry) {
-      warnings.push("no model3.json — cannot wire synthesized hide motion");
-      return { replacements, extraFiles, manifestPatch };
-    }
-    const manifestDir = pathDirectory(manifestEntry.path);
-    const newMotionPath = `${manifestDir}${HIDE_MOTION_FILENAME}`;
-    extraFiles.push({
-      path: newMotionPath,
-      bytes: new TextEncoder().encode(JSON.stringify(synthesized, null, 2)),
-    });
-    try {
-      const text = await manifestEntry.blob.text();
-      const manifest = JSON.parse(text) as Live2DManifest;
-      if (!manifest.FileReferences) manifest.FileReferences = {};
-      const refs = manifest.FileReferences;
-      if (!refs.Motions) refs.Motions = {};
-      const motions = refs.Motions;
-      if (!motions.Idle) motions.Idle = [];
-      motions.Idle.unshift({ File: HIDE_MOTION_FILENAME });
-      manifestPatch = {
-        path: manifestEntry.path,
-        bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
-      };
-    } catch (e) {
-      warnings.push(`failed to patch model3.json motion list: ${(e as Error).message}`);
-    }
+  }
+
+  // ----- 3. emit manifest patch if any of the above changed it -----
+  if (manifestDirty) {
+    manifestPatch = {
+      path: manifestEntry.path,
+      bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
+    };
   }
 
   return { replacements, extraFiles, manifestPatch };
 }
 
-function synthesizeHideMotion(hiddenPartIds: Set<string>): Live2DMotionFile {
-  const duration = 1.0;
-  const curves: Live2DCurve[] = [];
-  for (const partId of hiddenPartIds) {
-    curves.push({
-      Target: "PartOpacity",
-      Id: partId,
-      Segments: [0, 0, 0, duration, 0],
-    });
+/**
+ * Pick a part that's visible by default and isn't itself in the hide
+ * set, to anchor a pose group. Cubism's pose system needs at least one
+ * "currently visible" part per group; the others are forced to fade
+ * toward 0. Iteration order matches `Avatar.layers` so the choice is
+ * deterministic across exports.
+ */
+function findAnchorPartId(layers: ReadonlyArray<Layer>, hiddenPartIds: Set<string>): string | null {
+  for (const layer of layers) {
+    if (!layer.defaults.visible) continue;
+    const partId = stripPageSuffix(layer.externalId);
+    if (hiddenPartIds.has(partId)) continue;
+    if (!partId) continue;
+    return partId;
   }
-  return {
-    Version: 3,
-    Meta: {
-      Duration: duration,
-      Fps: 30,
-      Loop: true,
-      AreBeziersRestricted: true,
-      CurveCount: curves.length,
-      TotalSegmentCount: curves.length,
-      TotalPointCount: curves.length * 2,
-      UserDataCount: 0,
-      TotalUserDataSize: 0,
-    },
-    Curves: curves,
-  };
+  return null;
 }
 
 // ----- Spine model-file patching for hide -----
@@ -498,9 +538,16 @@ type Live2DManifest = {
   Version?: number;
   FileReferences?: {
     Motions?: Record<string, { File: string }[]>;
+    Pose?: string;
     [key: string]: unknown;
   };
   [key: string]: unknown;
+};
+
+type Live2DPoseFile = {
+  Type?: string;
+  FadeInTime?: number;
+  Groups?: Array<Array<{ Id: string; Link?: string[] }>>;
 };
 
 type Live2DMotionFile = {
