@@ -66,6 +66,7 @@
 | 2026-05-07 | [50 export_model_hide_via_model_patch](2026-05-07_50_export_model_hide_via_model_patch.md) | 4 fix | 완료 — atlas erase 접근 폐기, hidden part는 모델 파일 패치로 처리 (Cubism: 모든 motion3.json에 PartOpacity=0 커브 주입, Spine JSON: slot.attachment="" 비우기). atlas는 mask + AI texture만 합성. |
 | 2026-05-07 | [51 export_model_pose_hide](2026-05-07_51_export_model_pose_hide.md) | 4 fix | 완료 — motion 패치만으로는 motions 그룹이 ""인 puppet에서 안 됨 (Framework가 auto-play 안 함). pose3.json에 [anchor, hidden] 그룹 추가하는 게 진짜 정답 — 매 프레임 자동 적용 |
 | 2026-05-07 | [52 cubism_id_csmstring_unwrap](2026-05-07_52_cubism_id_csmstring_unwrap.md) | 4 fix | 완료 — coerceCubismId가 csmString을 인식 못해 모든 layer.externalId가 fallback `part_<idx>`였던 결정적 버그 수정. 이게 47-51까지 export model이 모두 실패한 진짜 원인 (pose/motion id가 진짜 moc3 ID와 안 맞아 매칭 실패) |
+| 2026-05-07 | [53 export_staged_chips](2026-05-07_53_export_staged_chips.md) | 4 polish | 완료 — LayerRow의 hide 배지 + name 취소선, LayersPanel 헤더의 hide count chip, ExportButton 옆 staged 요약 chip + tooltip. 사용자 토글이 export에 베이크된다는 신호를 한 눈에 보이게 |
 
 ## 운영 규칙
 

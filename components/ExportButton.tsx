@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { buildExportZip } from "@/lib/export/buildBundle";
 import { buildModelZip } from "@/lib/export/buildModelZip";
@@ -50,14 +50,38 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
 
   const disabled = puppetId === null || savingMode !== "none";
   const modelDisabled = disabled || adapter === null || avatar === null;
+
+  // Same predicate Export Model uses to decide which parts to bake into
+  // pose3.json (and counterparts on Spine). Surface it as a tiny chip
+  // beside the button + in its title so the user can tell what's
+  // currently load-bearing for the export.
+  const bakedHideCount = useMemo(
+    () =>
+      layers.reduce(
+        (n, l) => (visibility[l.id] === false && l.defaults.visible === true ? n + 1 : n),
+        0,
+      ),
+    [layers, visibility],
+  );
+  const maskCount = Object.keys(layerMasks).length;
+  const aiTextureCount = Object.keys(layerTextureOverrides).length;
+
   const saveTitle = puppetId
-    ? "Download a .geny-avatar.zip — re-importable session (variants + overrides)"
+    ? `Download a .geny-avatar.zip — re-importable session (variants + overrides${
+        bakedHideCount + maskCount + aiTextureCount > 0
+          ? `, will include: ${bakedHideCount} hide / ${maskCount} mask / ${aiTextureCount} gen`
+          : ""
+      })`
     : "Save this puppet to the library to enable export";
   const modelTitle = !puppetId
     ? "Save this puppet to the library to enable export"
     : !adapter || !avatar
       ? "Wait for the puppet to finish loading"
-      : "Download a runtime-ready .zip — atlas pages have edits baked in (no sidecar)";
+      : `Download a runtime-ready .zip — atlas + model patches baked in${
+          bakedHideCount + maskCount + aiTextureCount > 0
+            ? ` (${bakedHideCount} hide via pose3.json / ${maskCount} mask / ${aiTextureCount} gen on atlas)`
+            : ""
+        }`;
 
   async function handleSave() {
     if (!puppetId) return;
@@ -115,6 +139,8 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     }
   }
 
+  const stagedSummary = formatStagedSummary(bakedHideCount, maskCount, aiTextureCount);
+
   return (
     <span className={`inline-flex items-center gap-1 ${className}`}>
       <button
@@ -135,9 +161,26 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
       >
         {savingMode === "model" ? "baking…" : "export model"}
       </button>
+      {!disabled && stagedSummary && (
+        <span
+          className="rounded border border-[var(--color-border)] px-1 font-mono text-[10px] text-[var(--color-fg-dim)]"
+          title="edits staged for the next export"
+        >
+          {stagedSummary}
+        </span>
+      )}
       {error && <span className="text-[10px] text-red-400">{error}</span>}
     </span>
   );
+}
+
+function formatStagedSummary(hides: number, masks: number, gens: number): string | null {
+  if (hides === 0 && masks === 0 && gens === 0) return null;
+  const parts: string[] = [];
+  if (hides > 0) parts.push(`${hides} hide`);
+  if (masks > 0) parts.push(`${masks} mask`);
+  if (gens > 0) parts.push(`${gens} gen`);
+  return parts.join(" · ");
 }
 
 function triggerDownload(blob: Blob, filename: string): void {

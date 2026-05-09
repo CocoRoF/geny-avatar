@@ -69,6 +69,19 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
 
   const filteredIds = useMemo(() => filtered.map((l) => l.id), [filtered]);
 
+  // Layers the user explicitly toggled off from a default-visible state —
+  // exactly the set Export Model bakes into pose3.json. We surface a count
+  // in the header + a `hide` badge per row so it's obvious which toggles
+  // will follow the puppet out.
+  const bakedHideCount = useMemo(
+    () =>
+      layers.reduce(
+        (n, l) => (visibility[l.id] === false && l.defaults.visible === true ? n + 1 : n),
+        0,
+      ),
+    [layers, visibility],
+  );
+
   return (
     <div className="flex min-h-0 flex-col">
       <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
@@ -76,6 +89,14 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
           <span>
             Layers ({filtered.length}/{layers.length})
           </span>
+          {bakedHideCount > 0 && (
+            <span
+              className="rounded border border-red-400/60 px-1 font-mono text-[10px] normal-case tracking-normal text-red-400"
+              title="layers that Export Model will hide via a pose3.json patch"
+            >
+              {bakedHideCount} hide
+            </span>
+          )}
         </div>
         <input
           type="text"
@@ -105,6 +126,11 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
       <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {filtered.map((layer, i) => {
           const visible = visibility[layer.id] ?? layer.defaults.visible;
+          // Only flag rows whose state is interesting for export: the
+          // user turned off something that was visible by default. A
+          // layer that's hidden because it was always default-hidden
+          // doesn't get a badge, since the export wouldn't patch it.
+          const willBakeHide = !visible && layer.defaults.visible === true;
           return (
             <LayerRow
               key={layer.id}
@@ -112,6 +138,7 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
               layer={layer}
               index={i}
               visible={visible}
+              willBakeHide={willBakeHide}
               hasMask={!!layerMasks[layer.id]}
               hasGenerated={!!layerTextureOverrides[layer.id]}
               onToggle={() => onToggleLayer(layer.id, !visible)}
@@ -141,6 +168,11 @@ type LayerRowProps = {
   layer: Layer;
   index: number;
   visible: boolean;
+  /** True when the row's hidden state will be baked into a model file
+   *  patch (Cubism pose3.json / Spine slot.attachment="") on Export
+   *  Model. We surface this with a `hide` badge so the user can tell
+   *  load-bearing toggles from default-hidden layers at a glance. */
+  willBakeHide: boolean;
   hasMask: boolean;
   hasGenerated: boolean;
   onToggle: () => void;
@@ -153,6 +185,7 @@ function LayerRow({
   layer,
   index,
   visible,
+  willBakeHide,
   hasMask,
   hasGenerated,
   onToggle,
@@ -186,9 +219,21 @@ function LayerRow({
         <span className="font-mono text-xs text-[var(--color-fg-dim)]">
           {String(index).padStart(2, "0")}
         </span>
-        <span className="truncate">{layer.name}</span>
-        {(hasMask || hasGenerated) && (
+        <span
+          className={`truncate ${willBakeHide ? "text-[var(--color-fg-dim)] line-through decoration-red-400/60" : ""}`}
+        >
+          {layer.name}
+        </span>
+        {(hasMask || hasGenerated || willBakeHide) && (
           <span className="ml-auto flex shrink-0 gap-1">
+            {willBakeHide && (
+              <span
+                className="rounded border border-red-400/60 px-1 font-mono text-[10px] text-red-400"
+                title="will be baked into the exported model so this part doesn't render — Cubism: pose3.json group / Spine: slot.attachment=&quot;&quot;"
+              >
+                hide
+              </span>
+            )}
             {hasGenerated && (
               <span
                 className="rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
