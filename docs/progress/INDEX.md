@@ -87,6 +87,7 @@
 | 2026-05-09 | [71 sprint_e_3_manual_regions_in_panel](2026-05-09_71_sprint_e_3_manual_regions_in_panel.md) | E.3 | 완료 — GeneratePanel이 manual regions 우선 사용. `prepareOpenAISourcesFromMasks` (manual variant) + `bboxFromMask` + `ComponentInfo` extended with optional name/color. mount 시 manual 있으면 그대로 hydrate, 아니면 auto-detect. UI에 [manual]/[auto] chip + 색깔 매치. A+B+E 정공 정밀도 마무리 |
 | 2026-05-09 | [72 f_kickoff](2026-05-09_72_f_kickoff.md) | F.0 | 진행중 — Phase 6 진입 전 GeneratePanel 4가지 nopen-blocker. F.1 sticky actions footer / F.2 per-region 선택 재생성 / F.3 applied texture revert |
 | 2026-05-09 | [73 sprint_f_pre_phase6_polish](2026-05-09_73_sprint_f_pre_phase6_polish.md) | F.1+F.2+F.3 | 완료 — aside 를 scrollable content + sticky actions footer 로 분리 (긴 region list 도 generate/apply 항상 visible, history 자동 가시화). `regionStates` per-region 상태 + `runRegionGen` helper + `regenerateOneRegion` ↻ 버튼 (단일 region 재호출, cached refinement). `onRevertTexture` 빨간 actions 버튼 (confirm + IDB row 삭제 + atlas 원본 복귀) |
+| 2026-05-09 | [74 sprint_f_4_per_region_regen_fix](2026-05-09_74_sprint_f_4_per_region_regen_fix.md) | F.4 | 완료 — F.2 의 ↻ button 이 prompt 가드 빠진 채로 enabled → API 400 → silent failure 버그 수정. `regenDisabled` 에 prompt 체크 추가, `runRegionGen` 이 panel prompt 비면 per-region 을 raw prompt 로 fallback, fail-fast guard, tile 에 inline failure reason + per-region ✕ clear 버튼 |
 
 ## 운영 규칙
 

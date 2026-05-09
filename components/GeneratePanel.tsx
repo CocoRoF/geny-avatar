@@ -488,16 +488,32 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       const regionDescriptor = label
         ? `region '${label}' (${idx + 1} of ${prepared.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`
         : `region ${idx + 1} of ${prepared.length} (${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`;
-      const composedPrompt = perRegion
-        ? `${baseText}\n\nFor [image 1] (${regionDescriptor}): ${perRegion}`
-        : label
-          ? `${baseText}\n\n[image 1] is the ${label} region.`
-          : baseText;
+      // F.4: when the user is doing per-region work and didn't fill
+      // COMMON CONTEXT, the panel-level `prompt` is empty — the API
+      // route rejects that with a 400 (`prompt` is required). Fall
+      // back to the per-region textarea as the raw prompt in that
+      // case so the request is well-formed even without a shared
+      // common context.
+      const baseTrimmed = baseText.trim();
+      const composedPrompt =
+        baseTrimmed.length > 0
+          ? perRegion
+            ? `${baseText}\n\nFor [image 1] (${regionDescriptor}): ${perRegion}`
+            : label
+              ? `${baseText}\n\n[image 1] is the ${label} region.`
+              : baseText
+          : perRegion
+            ? `For [image 1] (${regionDescriptor}): ${perRegion}`
+            : label
+              ? `[image 1] is the ${label} region.`
+              : "";
+      const rawPromptForRoute =
+        prompt.trim().length > 0 ? prompt : perRegion.length > 0 ? perRegion : "";
       const compSourceBlob = await canvasToPngBlob(comp.padded);
       const rawResult = await submitGenerate({
         providerId,
-        prompt,
-        refinedPrompt: composedPrompt,
+        prompt: rawPromptForRoute,
+        refinedPrompt: composedPrompt || undefined,
         negativePrompt: negativePrompt.trim() || undefined,
         modelId: modelId || undefined,
         sourceImage: compSourceBlob,
@@ -550,9 +566,37 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       if (!prepared || providerId !== "openai") return;
       if (!provider) return;
 
+      // F.4: fail fast on empty-prompt — the API rejects a request
+      // without `prompt`, and the surfaced "failed" tile with no
+      // reason was confusing. Now we set the failure reason in-band
+      // before the fetch so the inline error block can guide the
+      // user to fix it.
+      const perRegionText = (componentPrompts[idx] ?? "").trim();
+      const baseTrimmed = prompt.trim();
+      if (perRegionText.length === 0 && baseTrimmed.length === 0) {
+        setRegionStates((prev) => {
+          const next = [...prev];
+          if (next[idx]) {
+            next[idx] = {
+              ...next[idx],
+              status: "failed" as const,
+              failedReason:
+                "type a prompt before regenerating — either in COMMON CONTEXT or this region's textarea",
+            };
+          }
+          return next;
+        });
+        return;
+      }
+
       setRegionStates((prev) => {
         const next = [...prev];
-        if (next[idx]) next[idx] = { ...next[idx], status: "running" as const };
+        if (next[idx])
+          next[idx] = {
+            ...next[idx],
+            status: "running" as const,
+            failedReason: undefined,
+          };
         return next;
       });
       // Re-use cached refinement when the prompt is unchanged; otherwise
@@ -583,7 +627,16 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         });
       }
     },
-    [providerId, provider, refinement, prompt, runRegionGen, activeRefBlobs, recompositeResult],
+    [
+      providerId,
+      provider,
+      refinement,
+      prompt,
+      runRegionGen,
+      activeRefBlobs,
+      recompositeResult,
+      componentPrompts,
+    ],
   );
 
   async function onSubmit() {
@@ -1291,6 +1344,16 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                       const regionState = regionStates[idx];
                       const isRegionRunning = regionState?.status === "running";
                       const isRegionFailed = regionState?.status === "failed";
+                      // F.4: gate ↻ on having *some* prompt to send. The
+                      // panel-level Generate button has the same guard
+                      // (`submitDisabled` includes `!prompt.trim()`); the
+                      // ↻ button used to skip it and the API would 400
+                      // with "prompt required", which surfaced as a
+                      // mysterious "failed" tile. Now ↻ is disabled when
+                      // both the common context and this region's
+                      // textarea are empty — and the tooltip says why.
+                      const regionHasPrompt =
+                        prompt.trim().length > 0 || (componentPrompts[idx] ?? "").trim().length > 0;
                       const regenDisabled =
                         !provider?.available ||
                         providerId !== "openai" ||
@@ -1298,7 +1361,8 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                         phase.kind === "running" ||
                         phase.kind === "applying" ||
                         isRegionRunning ||
-                        refining;
+                        refining ||
+                        !regionHasPrompt;
                       return (
                         <div
                           key={c.id}
@@ -1367,6 +1431,36 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                                     className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
                                   />
                                 )}
+                                {/* F.4: per-region clear. Resets just
+                                    this region's status + textarea to
+                                    idle without disrupting the others.
+                                    Useful when the failed/running tile
+                                    is stuck and you want a fresh start. */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setComponentPrompts((prev) => {
+                                      const next = [...prev];
+                                      next[idx] = "";
+                                      return next;
+                                    });
+                                    setRegionStates((prev) => {
+                                      const next = [...prev];
+                                      if (next[idx])
+                                        next[idx] = {
+                                          ...next[idx],
+                                          status: "idle" as const,
+                                          failedReason: undefined,
+                                        };
+                                      return next;
+                                    });
+                                  }}
+                                  disabled={isRegionRunning}
+                                  title="clear this region's prompt + status"
+                                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  ✕
+                                </button>
                                 {/* F.2: per-region regenerate. Reburns
                                     just this island's API call without
                                     touching the others. Cheap iteration
@@ -1380,7 +1474,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                                   title={
                                     isRegionRunning
                                       ? "regenerating this region…"
-                                      : "regenerate just this region (1 OpenAI call)"
+                                      : !regionHasPrompt
+                                        ? "type a prompt (common context or this region's textarea) before regenerating"
+                                        : "regenerate just this region (1 OpenAI call)"
                                   }
                                   className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -1400,6 +1496,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                                   </span>
                                 )}
                               </div>
+                              {/* F.4: inline failure reason. Tooltips
+                                  alone are too easy to miss; expand
+                                  the reason under the tile so the user
+                                  knows what to fix before retrying. */}
+                              {isRegionFailed && regionState?.failedReason && (
+                                <div className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
+                                  {regionState.failedReason}
+                                </div>
+                              )}
                               <textarea
                                 value={componentPrompts[idx] ?? ""}
                                 onChange={(e) =>
