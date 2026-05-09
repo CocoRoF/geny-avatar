@@ -102,6 +102,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
    *  component call. */
   const [componentPrompts, setComponentPrompts] = useState<string[]>([]);
 
+  /** G: which region the modal is currently focused on. Drives the
+   *  single-region UX — SOURCE / RESULT / prompt / generate all bind
+   *  to this one region. Multi-region layers default to `null` so
+   *  the user lands on a picker view first and explicitly enters a
+   *  region; single-component layers auto-focus index 0 so they
+   *  look identical to the legacy single-source UX. The earlier
+   *  "generate all 6 at once" flow is deliberately gone — per the
+   *  user, simultaneous edits across many regions don't reflect how
+   *  the work actually goes (you fix one region at a time). */
+  const [focusedRegionIdx, setFocusedRegionIdx] = useState<number | null>(null);
+
   /** F.2: per-region run state. Each entry tracks the latest blob
    *  this region contributes to the composite + its current call
    *  status. On mount we seed every region with its isolated source
@@ -319,6 +330,13 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         setRegionStates([]);
       }
 
+      // G: pick the initial focused region. Single-component layers
+      // (and Gemini single-source) auto-enter focus on index 0 so
+      // the existing UX is preserved end-to-end. Multi-region layers
+      // start at the picker view (focus = null) — the user explicitly
+      // picks which region to work on.
+      setFocusedRegionIdx(regionList.length === 1 ? 0 : null);
+
       setReady(true);
     })();
 
@@ -332,15 +350,52 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   // rendered when `ready === true`, so its ref isn't attached during the
   // same effect tick that flips ready. This effect runs after the next
   // render, when the canvas is actually in the DOM.
+  //
+  // G: when focused on a specific region in a multi-region layer, we
+  // tight-crop the AI source to that region's bbox + apply the
+  // component mask, so the SOURCE preview shows only the region the
+  // user is editing (not the whole layer with other regions visible
+  // in the corners). Single-component layers and the picker view
+  // both fall through to painting the full preview.
   useEffect(() => {
     if (!ready) return;
     const display = sourceRef.current;
+    if (!display) return;
+
+    if (components.length > 1 && focusedRegionIdx !== null && components[focusedRegionIdx]) {
+      const c = components[focusedRegionIdx];
+      const aiSource = aiSourceCanvasRef.current;
+      if (aiSource) {
+        display.width = c.bbox.w;
+        display.height = c.bbox.h;
+        const ctx = display.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(0, 0, display.width, display.height);
+          ctx.drawImage(aiSource, c.bbox.x, c.bbox.y, c.bbox.w, c.bbox.h, 0, 0, c.bbox.w, c.bbox.h);
+          ctx.globalCompositeOperation = "destination-in";
+          ctx.drawImage(
+            c.maskCanvas,
+            c.bbox.x,
+            c.bbox.y,
+            c.bbox.w,
+            c.bbox.h,
+            0,
+            0,
+            c.bbox.w,
+            c.bbox.h,
+          );
+          ctx.globalCompositeOperation = "source-over";
+        }
+        return;
+      }
+    }
+
     const preview = previewSourceRef.current;
-    if (!display || !preview) return;
+    if (!preview) return;
     display.width = preview.width;
     display.height = preview.height;
     display.getContext("2d")?.drawImage(preview, 0, 0);
-  }, [ready]);
+  }, [ready, focusedRegionIdx, components]);
 
   // ----- mount: load AI job history for this layer -----
   useEffect(() => {
@@ -1052,13 +1107,41 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setLastResultBlob(null);
   }
 
+  /** G: focus-mode binding helpers. When the panel is focused on a
+   *  specific region of a multi-region layer, the textarea reads /
+   *  writes that region's componentPrompts entry; the legacy panel
+   *  `prompt` state stays the source of truth for everything else
+   *  (Gemini single-source, single-component OpenAI). The Generate
+   *  button likewise dispatches to `regenerateOneRegion(focused)`
+   *  in multi-region focus or `onSubmit` otherwise. */
+  const isFocusedMulti =
+    components.length > 1 && focusedRegionIdx !== null && focusedRegionIdx >= 0;
+  const focusedPromptValue = isFocusedMulti
+    ? (componentPrompts[focusedRegionIdx ?? 0] ?? "")
+    : prompt;
+  const setFocusedPromptValue = (val: string) => {
+    if (isFocusedMulti && focusedRegionIdx !== null) {
+      const idx = focusedRegionIdx;
+      setComponentPrompts((prev) => {
+        const next = [...prev];
+        next[idx] = val;
+        return next;
+      });
+    } else {
+      setPrompt(val);
+    }
+  };
+  const focusedRegionState =
+    isFocusedMulti && focusedRegionIdx !== null ? regionStates[focusedRegionIdx] : null;
+
   const submitDisabled =
     !ready ||
     !provider?.available ||
     phase.kind === "submitting" ||
     phase.kind === "running" ||
     phase.kind === "applying" ||
-    !prompt.trim();
+    focusedRegionState?.status === "running" ||
+    !focusedPromptValue.trim();
 
   const previewBg = useMemo<React.CSSProperties>(
     () => ({
@@ -1083,6 +1166,41 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
           <span className="font-mono text-[var(--color-accent)]">generate · v1</span>
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
+          {/* G: focused-region breadcrumb + back navigation. Only
+              shown when there's more than one region — single-
+              component layers stay on the legacy single-source UX
+              with no picker / no back button. */}
+          {components.length > 1 && focusedRegionIdx !== null && (
+            <>
+              <span className="text-[var(--color-fg-dim)]">·</span>
+              {(() => {
+                const c = components[focusedRegionIdx];
+                const sig = c ? componentSignature(c.bbox) : "";
+                const regionName = c
+                  ? (c.name ?? componentLabels[sig] ?? `region ${focusedRegionIdx + 1}`)
+                  : `region ${focusedRegionIdx + 1}`;
+                const color =
+                  c?.color ?? COMPONENT_COLORS[focusedRegionIdx % COMPONENT_COLORS.length];
+                return (
+                  <>
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-sm"
+                      style={{ background: color }}
+                    />
+                    <span className="font-medium text-[var(--color-fg)]">{regionName}</span>
+                    <button
+                      type="button"
+                      onClick={() => setFocusedRegionIdx(null)}
+                      className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                      title="back to region picker"
+                    >
+                      ← regions
+                    </button>
+                  </>
+                );
+              })()}
+            </>
+          )}
           {existingMask && provider?.capabilities.supportsBinaryMask && (
             <span
               className="rounded border border-[var(--color-accent)] px-1 font-mono text-[10px] text-[var(--color-accent)]"
@@ -1109,718 +1227,89 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           </button>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[1fr_1fr_320px] overflow-hidden">
-          {/* source */}
-          <div
-            className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 border-r border-[var(--color-border)] p-4"
-            style={previewBg}
-          >
-            <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
-              source
-              {components.length > 1 && (
-                <span className="ml-2 text-[var(--color-accent)]">
-                  · {components.length} regions
-                </span>
-              )}
+        {/* G: when there are multiple regions and no focus, show the
+            picker — a full-modal grid of region tiles. The user
+            picks one, the modal switches into focus mode for that
+            region. Skips entirely for single-component layers
+            (they go straight into focus mode at mount). */}
+        {components.length > 1 && focusedRegionIdx === null ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
+            <div className="mb-4 text-sm">
+              <div className="mb-1 text-[var(--color-fg)]">pick a region to edit</div>
+              <p className="text-[var(--color-fg-dim)]">
+                this layer has {components.length} disjoint silhouettes. each is edited
+                independently — pick one, type a prompt for it, generate. references and refine
+                settings are shared across regions. (atlas changes from previous regions stay
+                applied.)
+              </p>
             </div>
-            {error ? (
-              <div className="text-sm text-red-400">{error}</div>
-            ) : !ready ? (
-              <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
-            ) : (
-              <div className="relative inline-flex max-h-full max-w-full">
-                <canvas
-                  ref={sourceRef}
-                  className="max-h-full max-w-full border border-[var(--color-border)]"
-                />
-                {/* Color-coded bbox overlay for multi-component layers.
-                    Renders only when ≥ 2 components are detected; the
-                    SVG sits on top of the canvas in the same flex
-                    cell so its viewBox can match the canvas's source
-                    pixel dims. */}
-                {components.length > 1 && previewSourceRef.current && (
-                  <svg
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                    viewBox={`0 0 ${previewSourceRef.current.width} ${previewSourceRef.current.height}`}
-                    preserveAspectRatio="none"
-                    aria-hidden="true"
-                  >
-                    {components.map((c, idx) => {
-                      const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
-                      const labelSize = Math.max(20, Math.min(c.bbox.w, c.bbox.h) / 4);
-                      return (
-                        <g key={c.id}>
-                          <rect
-                            x={c.bbox.x}
-                            y={c.bbox.y}
-                            width={c.bbox.w}
-                            height={c.bbox.h}
-                            fill="none"
-                            stroke={color}
-                            strokeWidth={Math.max(2, Math.min(c.bbox.w, c.bbox.h) / 40)}
-                            strokeDasharray={`${labelSize / 3} ${labelSize / 6}`}
-                          />
-                          <circle
-                            cx={c.bbox.x + labelSize}
-                            cy={c.bbox.y + labelSize}
-                            r={labelSize}
-                            fill={color}
-                          />
-                          <text
-                            x={c.bbox.x + labelSize}
-                            y={c.bbox.y + labelSize}
-                            textAnchor="middle"
-                            dominantBaseline="central"
-                            fontSize={labelSize * 1.2}
-                            fontWeight="700"
-                            fill="#000"
-                          >
-                            {idx + 1}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* result */}
-          <div
-            className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 p-4"
-            style={previewBg}
-          >
-            <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
-              result
-            </div>
-            {phase.kind === "idle" && (
-              <div className="text-sm text-[var(--color-fg-dim)]">generate to see output</div>
-            )}
-            {phase.kind === "submitting" && (
-              <div className="text-sm text-[var(--color-fg-dim)]">submitting…</div>
-            )}
-            {phase.kind === "running" && (
-              <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
-                <span>generating · provider call in flight</span>
-                <span className="text-xs">Gemini ~5–15s · OpenAI ~10–30s · don't dismiss</span>
-              </div>
-            )}
-            {phase.kind === "failed" && (
-              <div className="max-w-md text-sm text-red-400">
-                <div className="mb-2 font-medium">failed</div>
-                <div className="text-xs">{phase.reason}</div>
-                <div className="mt-3 flex gap-2">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {components.map((c, idx) => {
+                const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                const sig = componentSignature(c.bbox);
+                const isManual = c.name !== undefined;
+                const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
+                const thumb = componentThumbs[idx];
+                const state = regionStates[idx];
+                return (
                   <button
                     type="button"
-                    onClick={onRetry}
-                    className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
-                    title="re-run with the same prompt and provider"
+                    key={c.id}
+                    onClick={() => setFocusedRegionIdx(idx)}
+                    className="group relative flex flex-col gap-2 rounded border-2 bg-[var(--color-bg)] p-2 text-left transition hover:bg-[var(--color-accent)]/5"
+                    style={{ borderColor: color }}
                   >
-                    retry
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onReset}
-                    className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                  >
-                    dismiss
-                  </button>
-                </div>
-              </div>
-            )}
-            {phase.kind === "succeeded" && (
-              // biome-ignore lint/performance/noImgElement: blob URL output
-              <img
-                src={phase.url}
-                alt="generated"
-                className="max-h-full max-w-full border border-[var(--color-border)]"
-              />
-            )}
-          </div>
-
-          <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)] text-xs">
-            {/* F.1: scrollable content + sticky actions footer. The
-                content area takes all the space the actions don't
-                claim, and overflow-y-auto keeps the buttons in view
-                even when the user has 6+ regions or a long history.
-                Without this split the buttons used to scroll off the
-                bottom of the modal entirely. */}
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="mb-3">
-                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  provider
-                </div>
-                <select
-                  value={providerId}
-                  onChange={(e) => setProviderId(e.target.value as ProviderId)}
-                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
-                >
-                  {(providers ?? []).map((p) => (
-                    <option key={p.id} value={p.id} disabled={!p.available}>
-                      {p.displayName}
-                      {!p.available ? ` · ${p.reason}` : ""}
-                    </option>
-                  ))}
-                </select>
-                {provider && !provider.available && (
-                  <div className="mt-1 text-[var(--color-fg-dim)]">{provider.reason}</div>
-                )}
-              </div>
-
-              {provider && provider.capabilities.models.length > 1 && (
-                <div className="mb-3">
-                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    model
-                  </div>
-                  <select
-                    value={modelId}
-                    onChange={(e) => setModelId(e.target.value)}
-                    className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
-                  >
-                    {provider.capabilities.models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.displayName} · {m.id}
-                      </option>
-                    ))}
-                  </select>
-                  {(() => {
-                    const m = provider.capabilities.models.find((x) => x.id === modelId);
-                    return m?.description ? (
-                      <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
-                        {m.description}
-                      </p>
-                    ) : null;
-                  })()}
-                </div>
-              )}
-
-              {/* Per-region tiles. Only shown when this layer split into
-                multiple silhouette islands. Each tile shows a thumb
-                (with the matching outline color from the SOURCE
-                overlay) and a textarea for region-specific prompt
-                language. Submit composes one prompt per component as
-                `<common> + "Region N: <per-region>"`, so the user can
-                say "common: skin tone soft peach" and "region 1:
-                exposed midriff" / "region 2: lace frill". */}
-              {components.length > 1 && (
-                <div className="mb-3">
-                  <div className="mb-1 flex items-baseline justify-between">
-                    <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
-                      regions
-                      <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
-                        · {components.length} OpenAI calls
-                      </span>
-                    </div>
-                    {/* E.3: surface which path produced these regions
-                      so the user knows whether DecomposeStudio split
-                      mode is winning over auto-detect. */}
-                    <span
-                      className={`rounded px-1 font-mono text-[10px] ${
-                        regionSource === "manual"
-                          ? "border border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                      title={
-                        regionSource === "manual"
-                          ? "user-defined regions from DecomposeStudio split mode"
-                          : "auto-detected by connected-components — open DecomposeStudio split mode to override"
-                      }
+                    <div
+                      className="relative flex h-32 items-center justify-center overflow-hidden rounded"
+                      style={{ background: "rgba(255,255,255,0.04)" }}
                     >
-                      {regionSource}
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {components.map((c, idx) => {
-                      const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
-                      const thumb = componentThumbs[idx];
-                      const sig = componentSignature(c.bbox);
-                      // Manual regions carry their own name (read-only
-                      // here — DecomposeStudio owns editing). Auto
-                      // regions pull from the E.1 label dictionary,
-                      // editable inline.
-                      const isManual = c.name !== undefined;
-                      const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
-                      const regionState = regionStates[idx];
-                      const isRegionRunning = regionState?.status === "running";
-                      const isRegionFailed = regionState?.status === "failed";
-                      // F.4: gate ↻ on having *some* prompt to send. The
-                      // panel-level Generate button has the same guard
-                      // (`submitDisabled` includes `!prompt.trim()`); the
-                      // ↻ button used to skip it and the API would 400
-                      // with "prompt required", which surfaced as a
-                      // mysterious "failed" tile. Now ↻ is disabled when
-                      // both the common context and this region's
-                      // textarea are empty — and the tooltip says why.
-                      const regionHasPrompt =
-                        prompt.trim().length > 0 || (componentPrompts[idx] ?? "").trim().length > 0;
-                      const regenDisabled =
-                        !provider?.available ||
-                        providerId !== "openai" ||
-                        phase.kind === "submitting" ||
-                        phase.kind === "running" ||
-                        phase.kind === "applying" ||
-                        isRegionRunning ||
-                        refining ||
-                        !regionHasPrompt;
-                      return (
-                        <div
-                          key={c.id}
-                          className="rounded border bg-[var(--color-bg)] p-1.5"
-                          style={{ borderColor: color }}
-                        >
-                          <div className="flex gap-2">
-                            <div
-                              className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded"
-                              style={{ background: "rgba(255,255,255,0.04)" }}
-                            >
-                              {thumb && (
-                                // biome-ignore lint/performance/noImgElement: thumbnail comes from a runtime data URL — next/image can't process it
-                                <img
-                                  src={thumb.toDataURL("image/png")}
-                                  alt={`region ${idx + 1}`}
-                                  className="max-h-full max-w-full"
-                                  draggable={false}
-                                />
-                              )}
-                              <span
-                                className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-black"
-                                style={{ background: color }}
-                              >
-                                {idx + 1}
-                              </span>
-                              {/* F.2: per-region status overlay. Spinner
-                                  on running, red dot on failed. Idle
-                                  and succeeded are silent. */}
-                              {isRegionRunning && (
-                                <span className="absolute inset-0 flex items-center justify-center rounded bg-black/50 text-[10px] text-white">
-                                  …
-                                </span>
-                              )}
-                              {isRegionFailed && (
-                                <span
-                                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white"
-                                  title={regionState?.failedReason ?? "failed"}
-                                >
-                                  !
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex min-w-0 flex-1 flex-col gap-1">
-                              <div className="flex items-center gap-1">
-                                {isManual ? (
-                                  // Manual regions: name is set in
-                                  // DecomposeStudio split mode. Show
-                                  // read-only here so the source of truth
-                                  // stays single.
-                                  <div className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--color-fg)]">
-                                    {name || (
-                                      <span className="italic text-[var(--color-fg-dim)]">
-                                        (unnamed)
-                                      </span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  // E.1: editable region name. Persists per
-                                  // (puppet, layer, component bbox) signature.
-                                  <input
-                                    type="text"
-                                    value={name}
-                                    onChange={(e) => setComponentLabel(sig, e.target.value)}
-                                    placeholder={`name (e.g. torso, frill)`}
-                                    className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                                  />
-                                )}
-                                {/* F.4: per-region clear. Resets just
-                                    this region's status + textarea to
-                                    idle without disrupting the others.
-                                    Useful when the failed/running tile
-                                    is stuck and you want a fresh start. */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setComponentPrompts((prev) => {
-                                      const next = [...prev];
-                                      next[idx] = "";
-                                      return next;
-                                    });
-                                    setRegionStates((prev) => {
-                                      const next = [...prev];
-                                      if (next[idx])
-                                        next[idx] = {
-                                          ...next[idx],
-                                          status: "idle" as const,
-                                          failedReason: undefined,
-                                        };
-                                      return next;
-                                    });
-                                  }}
-                                  disabled={isRegionRunning}
-                                  title="clear this region's prompt + status"
-                                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                  ✕
-                                </button>
-                                {/* F.2: per-region regenerate. Reburns
-                                    just this island's API call without
-                                    touching the others. Cheap iteration
-                                    when one tile came out wrong. */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    void regenerateOneRegion(idx);
-                                  }}
-                                  disabled={regenDisabled}
-                                  title={
-                                    isRegionRunning
-                                      ? "regenerating this region…"
-                                      : !regionHasPrompt
-                                        ? "type a prompt (common context or this region's textarea) before regenerating"
-                                        : "regenerate just this region (1 OpenAI call)"
-                                  }
-                                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                  ↻
-                                </button>
-                              </div>
-                              <div className="flex items-center justify-between text-[10px] text-[var(--color-fg-dim)]">
-                                <span>
-                                  {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
-                                </span>
-                                {regionState?.status === "succeeded" && (
-                                  <span className="text-[var(--color-accent)]">✓ generated</span>
-                                )}
-                                {isRegionFailed && (
-                                  <span className="text-red-400" title={regionState?.failedReason}>
-                                    failed
-                                  </span>
-                                )}
-                              </div>
-                              {/* F.4: inline failure reason. Tooltips
-                                  alone are too easy to miss; expand
-                                  the reason under the tile so the user
-                                  knows what to fix before retrying. */}
-                              {isRegionFailed && regionState?.failedReason && (
-                                <div className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
-                                  {regionState.failedReason}
-                                </div>
-                              )}
-                              <textarea
-                                value={componentPrompts[idx] ?? ""}
-                                onChange={(e) =>
-                                  setComponentPrompts((prev) => {
-                                    const next = [...prev];
-                                    next[idx] = e.target.value;
-                                    return next;
-                                  })
-                                }
-                                placeholder={
-                                  name
-                                    ? `${name} — what should fill this region?`
-                                    : `region ${idx + 1} — what should fill this island?`
-                                }
-                                className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <div className="mb-3">
-                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  {components.length > 1 ? "common context" : "prompt"}
-                  {components.length > 1 && (
-                    <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
-                      · sent to every region
-                    </span>
-                  )}
-                </div>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder={
-                    components.length > 1
-                      ? "shared context — style, palette, character identity"
-                      : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
-                  }
-                  className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                />
-              </div>
-
-              <div className="mb-3">
-                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  negative prompt
-                  <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
-                    (optional)
-                  </span>
-                </div>
-                <textarea
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                  placeholder="things to avoid"
-                  className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                />
-              </div>
-
-              {/* Active references — full control over what rides along
-                this submit. Two channels:
-                  1. Puppet refs (uploaded via ReferencesPanel) — toggle
-                     individually for "skip this one this time" decisions.
-                  2. Last result anchor — feeds the most recent succeeded
-                     blob back as a reference so chained edits refine
-                     rather than restart from scratch. The cloud-API
-                     equivalent of `previous_response_id` chaining. */}
-              {provider && (references.length > 0 || lastResultBlob) && (
-                <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
-                  {supportsRefs ? (
-                    <>
-                      <div className="mb-1.5 flex items-center justify-between text-[var(--color-fg)]">
-                        <span>
-                          Active references ({activeRefBlobs.length}/
-                          {references.length + (lastResultBlob ? 1 : 0)})
-                        </span>
-                        <span className="text-[10px] text-[var(--color-fg-dim)]">
-                          sent as <span className="font-mono">image[]</span> after source
-                        </span>
-                      </div>
-                      {references.length > 0 && (
-                        <ul className="mb-1 space-y-0.5">
-                          {references.map((r) => {
-                            const enabled = !disabledRefIds.has(r.id);
-                            return (
-                              <li key={r.id} className="flex items-center gap-1.5">
-                                <input
-                                  type="checkbox"
-                                  checked={enabled}
-                                  onChange={() => {
-                                    setDisabledRefIds((prev) => {
-                                      const next = new Set(prev);
-                                      if (enabled) next.add(r.id);
-                                      else next.delete(r.id);
-                                      return next;
-                                    });
-                                  }}
-                                  className="h-3 w-3"
-                                  aria-label={`toggle reference ${r.name}`}
-                                />
-                                <span
-                                  className={`flex-1 truncate font-mono ${
-                                    enabled
-                                      ? "text-[var(--color-fg)]"
-                                      : "text-[var(--color-fg-dim)] line-through"
-                                  }`}
-                                  title={r.name}
-                                >
-                                  {r.name}
-                                </span>
-                                <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
-                                  {(r.blob.size / 1024).toFixed(0)}KB
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ul>
+                      {thumb && (
+                        // biome-ignore lint/performance/noImgElement: data URL thumbnail
+                        <img
+                          src={thumb.toDataURL("image/png")}
+                          alt={`region ${idx + 1}`}
+                          className="max-h-full max-w-full"
+                          draggable={false}
+                        />
                       )}
-                      {lastResultBlob && (
-                        <label className="flex items-center gap-1.5 border-t border-[var(--color-border)] pt-1">
-                          <input
-                            type="checkbox"
-                            checked={useLastResult}
-                            onChange={(e) => setUseLastResult(e.target.checked)}
-                            className="h-3 w-3"
-                            aria-label="toggle last-result iterative anchor"
-                          />
-                          <span
-                            className={`flex-1 italic ${
-                              useLastResult
-                                ? "text-[var(--color-accent)]"
-                                : "text-[var(--color-fg-dim)] line-through"
-                            }`}
-                            title="Most recent succeeded result, fed back as a reference so the next generation refines instead of restarting"
-                          >
-                            last result · iteration anchor
-                          </span>
-                          <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
-                            {(lastResultBlob.size / 1024).toFixed(0)}KB
-                          </span>
-                        </label>
-                      )}
-                    </>
-                  ) : (
-                    <div className="text-[var(--color-fg-dim)]">
-                      {references.length} reference image{references.length === 1 ? "" : "s"}{" "}
-                      stored, but {provider.displayName} doesn't accept multi-image input — they'll
-                      be ignored for this generation.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Prompt refinement (Sprint 5.4) — chat-model rewrite
-                of the user prompt into structured gpt-image-2 edit
-                language. Only meaningful for OpenAI; the toggle stays
-                visible even for other providers but is force-off so
-                the user understands which lever applies where. */}
-              {provider && providerId === "openai" && (
-                <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={usePromptRefine}
-                      onChange={(e) => setUsePromptRefine(e.target.checked)}
-                      className="h-3 w-3"
-                      aria-label="toggle prompt refinement"
-                    />
-                    <span className="flex-1 text-[var(--color-fg)]">
-                      Refine prompt via chat model before submit
-                    </span>
-                    {refining && (
-                      <span className="text-[10px] text-[var(--color-accent)]">refining…</span>
-                    )}
-                  </label>
-                  <p className="mt-1 text-[var(--color-fg-dim)]">
-                    Rewrites your prompt as structured <span className="font-mono">[image 1]</span>{" "}
-                    edit instructions following gpt-image-2's prompting guide so the model doesn't
-                    conflate the source canvas with the style references.
-                  </p>
-                  {refinement && refinement.rawAtRefine === prompt && (
-                    <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5">
-                      <summary className="cursor-pointer text-[var(--color-fg-dim)]">
-                        refined prompt ready · model={refinement.model}
-                      </summary>
-                      <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-[var(--color-fg)]">
-                        {refinement.refined}
-                      </pre>
-                    </details>
-                  )}
-                  {refineError && (
-                    <p className="mt-1 text-[10px] text-red-400">
-                      refine failed — falling back to raw prompt: {refineError}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {phase.kind === "applying" && (
-                <div className="mb-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
-              )}
-
-              {history.length > 0 && (
-                <div className="mt-4 flex min-h-0 shrink-0 flex-col">
-                  <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    <span>history · {history.length}</span>
-                    <span className="normal-case tracking-normal text-[10px]">
-                      click to revisit · ☐ to compare
-                    </span>
-                  </div>
-                  {comparisonIds.length > 0 && (
-                    <div className="mb-1 flex items-center gap-1.5 text-[10px]">
-                      <span className="text-[var(--color-fg-dim)]">
-                        {comparisonIds.length}/2 selected
+                      <span
+                        className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold text-black"
+                        style={{ background: color }}
+                      >
+                        {idx + 1}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setComparisonOpen(true)}
-                        disabled={comparisonRows.length < 1}
-                        className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        compare
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setComparisonIds([])}
-                        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                      >
-                        clear
-                      </button>
+                      {state?.status === "succeeded" && (
+                        <span className="absolute right-1.5 top-1.5 rounded bg-[var(--color-accent)]/90 px-1.5 py-0.5 text-[10px] font-bold text-black">
+                          ✓
+                        </span>
+                      )}
+                      {state?.status === "running" && (
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white">
+                          generating…
+                        </span>
+                      )}
+                      {state?.status === "failed" && (
+                        <span className="absolute right-1.5 top-1.5 rounded bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          !
+                        </span>
+                      )}
                     </div>
-                  )}
-                  <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
-                    {history.map((row) => (
-                      <HistoryRow
-                        key={row.id}
-                        row={row}
-                        onRevisit={onRevisit}
-                        selected={comparisonIds.includes(row.id)}
-                        onToggleCompare={() => toggleComparison(row.id)}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {comparisonOpen && comparisonRows.length > 0 && (
-                <ComparisonModal rows={comparisonRows} onClose={() => setComparisonOpen(false)} />
-              )}
-
-              <div className="mt-4 leading-relaxed text-[var(--color-fg-dim)]">
-                <div className="mb-1 uppercase tracking-widest">flow</div>
-                <ul className="list-inside list-disc space-y-1">
-                  <li>
-                    <span className="text-[var(--color-fg)]">decompose</span> refines the mask first
-                    (optional)
-                  </li>
-                  <li>provider inpaints and returns a new texture</li>
-                  <li>
-                    <span className="text-[var(--color-fg)]">apply</span> composites it onto the
-                    atlas page · live render reflects it next frame
-                  </li>
-                  <li>esc dismisses · result stays in the layer's overrides until reset</li>
-                  {!puppetKey && (
-                    <li className="text-yellow-400">
-                      history is disabled until this puppet is saved to the library
-                    </li>
-                  )}
-                </ul>
-              </div>
+                    <div className="text-[12px] font-medium text-[var(--color-fg)]">
+                      {name || (
+                        <span className="italic text-[var(--color-fg-dim)]">region {idx + 1}</span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-[var(--color-fg-dim)]">
+                      {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-
-            {/* F.1: sticky actions footer. Always visible regardless
-                of how long the scrollable content above gets. */}
-            <div className="flex flex-none flex-col gap-1.5 border-t border-[var(--color-border)] bg-[var(--color-bg)] p-3">
-              <button
-                type="button"
-                onClick={onSubmit}
-                disabled={submitDisabled || refining}
-                className="rounded border border-[var(--color-accent)] px-3 py-1.5 text-sm text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {phase.kind === "running"
-                  ? "generating…"
-                  : phase.kind === "submitting"
-                    ? "submitting…"
-                    : refining
-                      ? "refining prompt…"
-                      : components.length > 1
-                        ? `generate ${components.length} regions`
-                        : "generate"}
-              </button>
-              {phase.kind === "succeeded" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={onApply}
-                    className="rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-1.5 text-sm text-[var(--color-accent)]"
-                    title="composite the result onto the atlas page"
-                  >
-                    apply to atlas
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onReset}
-                    className="rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                  >
-                    reset · keep generating
-                  </button>
-                </>
-              )}
-              {/* F.3: revert applied texture. Only enabled when an
-                  AI texture is currently on the layer. Destructive
-                  (confirms first) — atlas falls back to its original
-                  content. */}
+            {/* Picker-mode actions: only revert is meaningful at the
+                layer level — generate / apply require a focused region.
+                The user can revert any time to wipe applied AI texture. */}
+            <div className="mt-6 flex shrink-0 gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -1837,8 +1326,767 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 revert texture
               </button>
             </div>
-          </aside>
-        </div>
+          </div>
+        ) : (
+          <div className="grid min-h-0 flex-1 grid-cols-[1fr_1fr_320px] overflow-hidden">
+            {/* source */}
+            <div
+              className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 border-r border-[var(--color-border)] p-4"
+              style={previewBg}
+            >
+              <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+                source
+                {isFocusedMulti && focusedRegionIdx !== null && components[focusedRegionIdx] && (
+                  <span className="ml-2 text-[var(--color-accent)]">
+                    · region {focusedRegionIdx + 1} of {components.length}
+                  </span>
+                )}
+              </div>
+              {error ? (
+                <div className="text-sm text-red-400">{error}</div>
+              ) : !ready ? (
+                <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
+              ) : (
+                <div className="relative inline-flex max-h-full max-w-full">
+                  <canvas
+                    ref={sourceRef}
+                    className="max-h-full max-w-full border border-[var(--color-border)]"
+                  />
+                  {/* G: bbox SVG overlay used to live here (E.3) for the
+                    unfocused multi-region case. The picker view now
+                    owns region selection, and focus mode shows a
+                    tight-cropped isolated region — both make the
+                    overlay redundant, so it's gone. */}
+                </div>
+              )}
+            </div>
+
+            {/* result */}
+            <div
+              className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 p-4"
+              style={previewBg}
+            >
+              <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+                result
+              </div>
+              {phase.kind === "idle" && (
+                <div className="text-sm text-[var(--color-fg-dim)]">generate to see output</div>
+              )}
+              {phase.kind === "submitting" && (
+                <div className="text-sm text-[var(--color-fg-dim)]">submitting…</div>
+              )}
+              {phase.kind === "running" && (
+                <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
+                  <span>generating · provider call in flight</span>
+                  <span className="text-xs">Gemini ~5–15s · OpenAI ~10–30s · don't dismiss</span>
+                </div>
+              )}
+              {phase.kind === "failed" && (
+                <div className="max-w-md text-sm text-red-400">
+                  <div className="mb-2 font-medium">failed</div>
+                  <div className="text-xs">{phase.reason}</div>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={onRetry}
+                      className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
+                      title="re-run with the same prompt and provider"
+                    >
+                      retry
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onReset}
+                      className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+              {phase.kind === "succeeded" && (
+                // biome-ignore lint/performance/noImgElement: blob URL output
+                <img
+                  src={phase.url}
+                  alt="generated"
+                  className="max-h-full max-w-full border border-[var(--color-border)]"
+                />
+              )}
+            </div>
+
+            <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)] text-xs">
+              {/* F.1: scrollable content + sticky actions footer. The
+                content area takes all the space the actions don't
+                claim, and overflow-y-auto keeps the buttons in view
+                even when the user has 6+ regions or a long history.
+                Without this split the buttons used to scroll off the
+                bottom of the modal entirely. */}
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="mb-3">
+                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    provider
+                  </div>
+                  <select
+                    value={providerId}
+                    onChange={(e) => setProviderId(e.target.value as ProviderId)}
+                    className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                  >
+                    {(providers ?? []).map((p) => (
+                      <option key={p.id} value={p.id} disabled={!p.available}>
+                        {p.displayName}
+                        {!p.available ? ` · ${p.reason}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {provider && !provider.available && (
+                    <div className="mt-1 text-[var(--color-fg-dim)]">{provider.reason}</div>
+                  )}
+                </div>
+
+                {provider && provider.capabilities.models.length > 1 && (
+                  <div className="mb-3">
+                    <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                      model
+                    </div>
+                    <select
+                      value={modelId}
+                      onChange={(e) => setModelId(e.target.value)}
+                      className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                    >
+                      {provider.capabilities.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName} · {m.id}
+                        </option>
+                      ))}
+                    </select>
+                    {(() => {
+                      const m = provider.capabilities.models.find((x) => x.id === modelId);
+                      return m?.description ? (
+                        <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
+                          {m.description}
+                        </p>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
+
+                {/* Per-region tiles. Only shown when this layer split into
+                multiple silhouette islands. Each tile shows a thumb
+                (with the matching outline color from the SOURCE
+                overlay) and a textarea for region-specific prompt
+                language. Submit composes one prompt per component as
+                `<common> + "Region N: <per-region>"`, so the user can
+                say "common: skin tone soft peach" and "region 1:
+                exposed midriff" / "region 2: lace frill". */}
+                {/* G: legacy multi-region tile list inside aside. The
+                  picker view (rendered when focused === null) now
+                  owns the region-picking UX, so this block only
+                  fires when focusedRegionIdx is set AND we still
+                  want a contextual reminder of where the user is. To
+                  avoid duplicating the picker — and the per-tile
+                  ↻ buttons that confused the multi-region story —
+                  we hide this entirely. The current focused region's
+                  controls live above (prompt textarea + clear). */}
+                {false && components.length > 1 && (
+                  <div className="mb-3">
+                    <div className="mb-1 flex items-baseline justify-between">
+                      <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
+                        regions
+                        <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
+                          · {components.length} OpenAI calls
+                        </span>
+                      </div>
+                      {/* E.3: surface which path produced these regions
+                      so the user knows whether DecomposeStudio split
+                      mode is winning over auto-detect. */}
+                      <span
+                        className={`rounded px-1 font-mono text-[10px] ${
+                          regionSource === "manual"
+                            ? "border border-[var(--color-accent)] text-[var(--color-accent)]"
+                            : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                        }`}
+                        title={
+                          regionSource === "manual"
+                            ? "user-defined regions from DecomposeStudio split mode"
+                            : "auto-detected by connected-components — open DecomposeStudio split mode to override"
+                        }
+                      >
+                        {regionSource}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {components.map((c, idx) => {
+                        const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                        const thumb = componentThumbs[idx];
+                        const sig = componentSignature(c.bbox);
+                        // Manual regions carry their own name (read-only
+                        // here — DecomposeStudio owns editing). Auto
+                        // regions pull from the E.1 label dictionary,
+                        // editable inline.
+                        const isManual = c.name !== undefined;
+                        const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
+                        const regionState = regionStates[idx];
+                        const isRegionRunning = regionState?.status === "running";
+                        const isRegionFailed = regionState?.status === "failed";
+                        // F.4: gate ↻ on having *some* prompt to send. The
+                        // panel-level Generate button has the same guard
+                        // (`submitDisabled` includes `!prompt.trim()`); the
+                        // ↻ button used to skip it and the API would 400
+                        // with "prompt required", which surfaced as a
+                        // mysterious "failed" tile. Now ↻ is disabled when
+                        // both the common context and this region's
+                        // textarea are empty — and the tooltip says why.
+                        const regionHasPrompt =
+                          prompt.trim().length > 0 ||
+                          (componentPrompts[idx] ?? "").trim().length > 0;
+                        const regenDisabled =
+                          !provider?.available ||
+                          providerId !== "openai" ||
+                          phase.kind === "submitting" ||
+                          phase.kind === "running" ||
+                          phase.kind === "applying" ||
+                          isRegionRunning ||
+                          refining ||
+                          !regionHasPrompt;
+                        return (
+                          <div
+                            key={c.id}
+                            className="rounded border bg-[var(--color-bg)] p-1.5"
+                            style={{ borderColor: color }}
+                          >
+                            <div className="flex gap-2">
+                              <div
+                                className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded"
+                                style={{ background: "rgba(255,255,255,0.04)" }}
+                              >
+                                {thumb && (
+                                  // biome-ignore lint/performance/noImgElement: thumbnail comes from a runtime data URL — next/image can't process it
+                                  <img
+                                    src={thumb.toDataURL("image/png")}
+                                    alt={`region ${idx + 1}`}
+                                    className="max-h-full max-w-full"
+                                    draggable={false}
+                                  />
+                                )}
+                                <span
+                                  className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-black"
+                                  style={{ background: color }}
+                                >
+                                  {idx + 1}
+                                </span>
+                                {/* F.2: per-region status overlay. Spinner
+                                  on running, red dot on failed. Idle
+                                  and succeeded are silent. */}
+                                {isRegionRunning && (
+                                  <span className="absolute inset-0 flex items-center justify-center rounded bg-black/50 text-[10px] text-white">
+                                    …
+                                  </span>
+                                )}
+                                {isRegionFailed && (
+                                  <span
+                                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white"
+                                    title={regionState?.failedReason ?? "failed"}
+                                  >
+                                    !
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                                <div className="flex items-center gap-1">
+                                  {isManual ? (
+                                    // Manual regions: name is set in
+                                    // DecomposeStudio split mode. Show
+                                    // read-only here so the source of truth
+                                    // stays single.
+                                    <div className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--color-fg)]">
+                                      {name || (
+                                        <span className="italic text-[var(--color-fg-dim)]">
+                                          (unnamed)
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    // E.1: editable region name. Persists per
+                                    // (puppet, layer, component bbox) signature.
+                                    <input
+                                      type="text"
+                                      value={name}
+                                      onChange={(e) => setComponentLabel(sig, e.target.value)}
+                                      placeholder={`name (e.g. torso, frill)`}
+                                      className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                                    />
+                                  )}
+                                  {/* F.4: per-region clear. Resets just
+                                    this region's status + textarea to
+                                    idle without disrupting the others.
+                                    Useful when the failed/running tile
+                                    is stuck and you want a fresh start. */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setComponentPrompts((prev) => {
+                                        const next = [...prev];
+                                        next[idx] = "";
+                                        return next;
+                                      });
+                                      setRegionStates((prev) => {
+                                        const next = [...prev];
+                                        if (next[idx])
+                                          next[idx] = {
+                                            ...next[idx],
+                                            status: "idle" as const,
+                                            failedReason: undefined,
+                                          };
+                                        return next;
+                                      });
+                                    }}
+                                    disabled={isRegionRunning}
+                                    title="clear this region's prompt + status"
+                                    className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    ✕
+                                  </button>
+                                  {/* F.2: per-region regenerate. Reburns
+                                    just this island's API call without
+                                    touching the others. Cheap iteration
+                                    when one tile came out wrong. */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void regenerateOneRegion(idx);
+                                    }}
+                                    disabled={regenDisabled}
+                                    title={
+                                      isRegionRunning
+                                        ? "regenerating this region…"
+                                        : !regionHasPrompt
+                                          ? "type a prompt (common context or this region's textarea) before regenerating"
+                                          : "regenerate just this region (1 OpenAI call)"
+                                    }
+                                    className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    ↻
+                                  </button>
+                                </div>
+                                <div className="flex items-center justify-between text-[10px] text-[var(--color-fg-dim)]">
+                                  <span>
+                                    {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
+                                  </span>
+                                  {regionState?.status === "succeeded" && (
+                                    <span className="text-[var(--color-accent)]">✓ generated</span>
+                                  )}
+                                  {isRegionFailed && (
+                                    <span
+                                      className="text-red-400"
+                                      title={regionState?.failedReason}
+                                    >
+                                      failed
+                                    </span>
+                                  )}
+                                </div>
+                                {/* F.4: inline failure reason. Tooltips
+                                  alone are too easy to miss; expand
+                                  the reason under the tile so the user
+                                  knows what to fix before retrying. */}
+                                {isRegionFailed && regionState?.failedReason && (
+                                  <div className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
+                                    {regionState.failedReason}
+                                  </div>
+                                )}
+                                <textarea
+                                  value={componentPrompts[idx] ?? ""}
+                                  onChange={(e) =>
+                                    setComponentPrompts((prev) => {
+                                      const next = [...prev];
+                                      next[idx] = e.target.value;
+                                      return next;
+                                    })
+                                  }
+                                  placeholder={
+                                    name
+                                      ? `${name} — what should fill this region?`
+                                      : `region ${idx + 1} — what should fill this island?`
+                                  }
+                                  className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mb-3">
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
+                      prompt
+                      {isFocusedMulti && (
+                        <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
+                          · this region only
+                        </span>
+                      )}
+                    </div>
+                    {/* G: per-region status / clear in focus mode. */}
+                    {isFocusedMulti && focusedRegionState && (
+                      <div className="flex items-center gap-1 text-[10px]">
+                        {focusedRegionState.status === "succeeded" && (
+                          <span className="text-[var(--color-accent)]">✓ generated</span>
+                        )}
+                        {focusedRegionState.status === "running" && (
+                          <span className="text-[var(--color-fg-dim)]">running…</span>
+                        )}
+                        {focusedRegionState.status === "failed" && (
+                          <span className="text-red-400">failed</span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFocusedPromptValue("");
+                            if (focusedRegionIdx !== null) {
+                              const idx = focusedRegionIdx;
+                              setRegionStates((prev) => {
+                                const next = [...prev];
+                                if (next[idx])
+                                  next[idx] = {
+                                    ...next[idx],
+                                    status: "idle" as const,
+                                    failedReason: undefined,
+                                  };
+                                return next;
+                              });
+                            }
+                          }}
+                          className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                          title="clear this region's prompt + status"
+                        >
+                          clear
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <textarea
+                    value={focusedPromptValue}
+                    onChange={(e) => setFocusedPromptValue(e.target.value)}
+                    placeholder={
+                      isFocusedMulti
+                        ? `describe what should fill this region — e.g. 'navy pleated skirt with white lace hem'`
+                        : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
+                    }
+                    className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                  />
+                  {isFocusedMulti &&
+                    focusedRegionState?.status === "failed" &&
+                    focusedRegionState.failedReason && (
+                      <div className="mt-1 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
+                        {focusedRegionState.failedReason}
+                      </div>
+                    )}
+                </div>
+
+                <div className="mb-3">
+                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    negative prompt
+                    <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
+                      (optional)
+                    </span>
+                  </div>
+                  <textarea
+                    value={negativePrompt}
+                    onChange={(e) => setNegativePrompt(e.target.value)}
+                    placeholder="things to avoid"
+                    className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                  />
+                </div>
+
+                {/* Active references — full control over what rides along
+                this submit. Two channels:
+                  1. Puppet refs (uploaded via ReferencesPanel) — toggle
+                     individually for "skip this one this time" decisions.
+                  2. Last result anchor — feeds the most recent succeeded
+                     blob back as a reference so chained edits refine
+                     rather than restart from scratch. The cloud-API
+                     equivalent of `previous_response_id` chaining. */}
+                {provider && (references.length > 0 || lastResultBlob) && (
+                  <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                    {supportsRefs ? (
+                      <>
+                        <div className="mb-1.5 flex items-center justify-between text-[var(--color-fg)]">
+                          <span>
+                            Active references ({activeRefBlobs.length}/
+                            {references.length + (lastResultBlob ? 1 : 0)})
+                          </span>
+                          <span className="text-[10px] text-[var(--color-fg-dim)]">
+                            sent as <span className="font-mono">image[]</span> after source
+                          </span>
+                        </div>
+                        {references.length > 0 && (
+                          <ul className="mb-1 space-y-0.5">
+                            {references.map((r) => {
+                              const enabled = !disabledRefIds.has(r.id);
+                              return (
+                                <li key={r.id} className="flex items-center gap-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={enabled}
+                                    onChange={() => {
+                                      setDisabledRefIds((prev) => {
+                                        const next = new Set(prev);
+                                        if (enabled) next.add(r.id);
+                                        else next.delete(r.id);
+                                        return next;
+                                      });
+                                    }}
+                                    className="h-3 w-3"
+                                    aria-label={`toggle reference ${r.name}`}
+                                  />
+                                  <span
+                                    className={`flex-1 truncate font-mono ${
+                                      enabled
+                                        ? "text-[var(--color-fg)]"
+                                        : "text-[var(--color-fg-dim)] line-through"
+                                    }`}
+                                    title={r.name}
+                                  >
+                                    {r.name}
+                                  </span>
+                                  <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                                    {(r.blob.size / 1024).toFixed(0)}KB
+                                  </span>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                        {lastResultBlob && (
+                          <label className="flex items-center gap-1.5 border-t border-[var(--color-border)] pt-1">
+                            <input
+                              type="checkbox"
+                              checked={useLastResult}
+                              onChange={(e) => setUseLastResult(e.target.checked)}
+                              className="h-3 w-3"
+                              aria-label="toggle last-result iterative anchor"
+                            />
+                            <span
+                              className={`flex-1 italic ${
+                                useLastResult
+                                  ? "text-[var(--color-accent)]"
+                                  : "text-[var(--color-fg-dim)] line-through"
+                              }`}
+                              title="Most recent succeeded result, fed back as a reference so the next generation refines instead of restarting"
+                            >
+                              last result · iteration anchor
+                            </span>
+                            <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                              {(lastResultBlob.size / 1024).toFixed(0)}KB
+                            </span>
+                          </label>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-[var(--color-fg-dim)]">
+                        {references.length} reference image{references.length === 1 ? "" : "s"}{" "}
+                        stored, but {provider.displayName} doesn't accept multi-image input —
+                        they'll be ignored for this generation.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Prompt refinement (Sprint 5.4) — chat-model rewrite
+                of the user prompt into structured gpt-image-2 edit
+                language. Only meaningful for OpenAI; the toggle stays
+                visible even for other providers but is force-off so
+                the user understands which lever applies where. */}
+                {provider && providerId === "openai" && (
+                  <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={usePromptRefine}
+                        onChange={(e) => setUsePromptRefine(e.target.checked)}
+                        className="h-3 w-3"
+                        aria-label="toggle prompt refinement"
+                      />
+                      <span className="flex-1 text-[var(--color-fg)]">
+                        Refine prompt via chat model before submit
+                      </span>
+                      {refining && (
+                        <span className="text-[10px] text-[var(--color-accent)]">refining…</span>
+                      )}
+                    </label>
+                    <p className="mt-1 text-[var(--color-fg-dim)]">
+                      Rewrites your prompt as structured{" "}
+                      <span className="font-mono">[image 1]</span> edit instructions following
+                      gpt-image-2's prompting guide so the model doesn't conflate the source canvas
+                      with the style references.
+                    </p>
+                    {refinement && refinement.rawAtRefine === prompt && (
+                      <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5">
+                        <summary className="cursor-pointer text-[var(--color-fg-dim)]">
+                          refined prompt ready · model={refinement.model}
+                        </summary>
+                        <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-[var(--color-fg)]">
+                          {refinement.refined}
+                        </pre>
+                      </details>
+                    )}
+                    {refineError && (
+                      <p className="mt-1 text-[10px] text-red-400">
+                        refine failed — falling back to raw prompt: {refineError}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {phase.kind === "applying" && (
+                  <div className="mb-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
+                )}
+
+                {history.length > 0 && (
+                  <div className="mt-4 flex min-h-0 shrink-0 flex-col">
+                    <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
+                      <span>history · {history.length}</span>
+                      <span className="normal-case tracking-normal text-[10px]">
+                        click to revisit · ☐ to compare
+                      </span>
+                    </div>
+                    {comparisonIds.length > 0 && (
+                      <div className="mb-1 flex items-center gap-1.5 text-[10px]">
+                        <span className="text-[var(--color-fg-dim)]">
+                          {comparisonIds.length}/2 selected
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setComparisonOpen(true)}
+                          disabled={comparisonRows.length < 1}
+                          className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          compare
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setComparisonIds([])}
+                          className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                        >
+                          clear
+                        </button>
+                      </div>
+                    )}
+                    <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
+                      {history.map((row) => (
+                        <HistoryRow
+                          key={row.id}
+                          row={row}
+                          onRevisit={onRevisit}
+                          selected={comparisonIds.includes(row.id)}
+                          onToggleCompare={() => toggleComparison(row.id)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {comparisonOpen && comparisonRows.length > 0 && (
+                  <ComparisonModal rows={comparisonRows} onClose={() => setComparisonOpen(false)} />
+                )}
+
+                <div className="mt-4 leading-relaxed text-[var(--color-fg-dim)]">
+                  <div className="mb-1 uppercase tracking-widest">flow</div>
+                  <ul className="list-inside list-disc space-y-1">
+                    <li>
+                      <span className="text-[var(--color-fg)]">decompose</span> refines the mask
+                      first (optional)
+                    </li>
+                    <li>provider inpaints and returns a new texture</li>
+                    <li>
+                      <span className="text-[var(--color-fg)]">apply</span> composites it onto the
+                      atlas page · live render reflects it next frame
+                    </li>
+                    <li>esc dismisses · result stays in the layer's overrides until reset</li>
+                    {!puppetKey && (
+                      <li className="text-yellow-400">
+                        history is disabled until this puppet is saved to the library
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+
+              {/* F.1: sticky actions footer. Always visible regardless
+                of how long the scrollable content above gets. */}
+              <div className="flex flex-none flex-col gap-1.5 border-t border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                {/* G: in multi-region focus mode, the main button calls
+                  the per-region helper so it spends one OpenAI call,
+                  not N. Single-component / Gemini path runs the
+                  legacy onSubmit. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isFocusedMulti && focusedRegionIdx !== null) {
+                      void regenerateOneRegion(focusedRegionIdx);
+                    } else {
+                      void onSubmit();
+                    }
+                  }}
+                  disabled={submitDisabled || refining}
+                  className="rounded border border-[var(--color-accent)] px-3 py-1.5 text-sm text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {focusedRegionState?.status === "running"
+                    ? "generating this region…"
+                    : phase.kind === "running"
+                      ? "generating…"
+                      : phase.kind === "submitting"
+                        ? "submitting…"
+                        : refining
+                          ? "refining prompt…"
+                          : isFocusedMulti
+                            ? "generate this region"
+                            : "generate"}
+                </button>
+                {phase.kind === "succeeded" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={onApply}
+                      className="rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-1.5 text-sm text-[var(--color-accent)]"
+                      title="composite the result onto the atlas page"
+                    >
+                      apply to atlas
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onReset}
+                      className="rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                    >
+                      reset · keep generating
+                    </button>
+                  </>
+                )}
+                {/* F.3: revert applied texture. Only enabled when an
+                  AI texture is currently on the layer. Destructive
+                  (confirms first) — atlas falls back to its original
+                  content. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onRevertTexture();
+                  }}
+                  disabled={!existingTexture}
+                  title={
+                    existingTexture
+                      ? "clear the applied AI texture and restore the original atlas content"
+                      : "no AI texture applied to this layer"
+                  }
+                  className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  revert texture
+                </button>
+              </div>
+            </aside>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -88,6 +88,7 @@
 | 2026-05-09 | [72 f_kickoff](2026-05-09_72_f_kickoff.md) | F.0 | 진행중 — Phase 6 진입 전 GeneratePanel 4가지 nopen-blocker. F.1 sticky actions footer / F.2 per-region 선택 재생성 / F.3 applied texture revert |
 | 2026-05-09 | [73 sprint_f_pre_phase6_polish](2026-05-09_73_sprint_f_pre_phase6_polish.md) | F.1+F.2+F.3 | 완료 — aside 를 scrollable content + sticky actions footer 로 분리 (긴 region list 도 generate/apply 항상 visible, history 자동 가시화). `regionStates` per-region 상태 + `runRegionGen` helper + `regenerateOneRegion` ↻ 버튼 (단일 region 재호출, cached refinement). `onRevertTexture` 빨간 actions 버튼 (confirm + IDB row 삭제 + atlas 원본 복귀) |
 | 2026-05-09 | [74 sprint_f_4_per_region_regen_fix](2026-05-09_74_sprint_f_4_per_region_regen_fix.md) | F.4 | 완료 — F.2 의 ↻ button 이 prompt 가드 빠진 채로 enabled → API 400 → silent failure 버그 수정. `regenDisabled` 에 prompt 체크 추가, `runRegionGen` 이 panel prompt 비면 per-region 을 raw prompt 로 fallback, fail-fast guard, tile 에 inline failure reason + per-region ✕ clear 버튼 |
+| 2026-05-09 | [75 sprint_g_focus_mode_redesign](2026-05-09_75_sprint_g_focus_mode_redesign.md) | G | 완료 — multi-region UX 정공 재설계. modal이 picker view → focus mode 흐름. PICKER: 큰 카드 그리드, click 하면 그 region focus 진입. FOCUS: SOURCE 에 isolated region tight crop, 단일 prompt textarea (region 별 보존), generate 버튼은 그 region 한 개만 호출. "generate all" 제거. single-component layer 는 자동 focus 0 으로 기존 UX 유지 |
 
 ## 운영 규칙
 
