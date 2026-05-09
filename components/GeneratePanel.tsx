@@ -8,6 +8,7 @@ import {
   type ProviderAvailability,
   padToOpenAISquare,
   postprocessGeneratedBlob,
+  refinePrompt,
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
@@ -87,6 +88,23 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   /** Most recent succeeded blob in this panel session. Replaced after
    *  every success; not persisted, so closing the panel resets it. */
   const [lastResultBlob, setLastResultBlob] = useState<Blob | null>(null);
+
+  /** Sprint 5.4 — when ON, the user's prompt is run through a chat
+   *  model on the way to gpt-image-2 so vague phrasing gets reshaped
+   *  into the explicit slot-mapping / preservation language the
+   *  image edit endpoint responds best to. Default ON for OpenAI;
+   *  meaningless for providers that don't take refs. */
+  const [usePromptRefine, setUsePromptRefine] = useState(true);
+  /** The most recent server-returned refined prompt + the model that
+   *  produced it, shown in the "what we actually sent" diagnostic
+   *  block once a generate cycle completes its refinement step. */
+  const [refinement, setRefinement] = useState<{
+    refined: string;
+    rawAtRefine: string;
+    model: string;
+  } | null>(null);
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
 
   const [phase, setPhase] = useState<
     | { kind: "idle" }
@@ -299,6 +317,48 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         maskBlob = existingMask ?? undefined;
       }
 
+      // ── prompt refinement (optional) ────────────────────────────
+      // When usePromptRefine is on AND the picked provider is OpenAI,
+      // run the user's prompt through `/api/ai/refine-prompt` so the
+      // chat model can rewrite it as the structured slot-mapping
+      // language gpt-image-2 responds best to. Result is stashed in
+      // `refinement` for the diagnostic block + threaded into
+      // submitGenerate as `refinedPrompt`. Failures here fall back to
+      // the raw prompt — refinement is a quality booster, not a
+      // hard dependency.
+      let refinedPromptForSubmit: string | undefined;
+      if (usePromptRefine && providerId === "openai" && prompt.trim().length > 0) {
+        setRefining(true);
+        setRefineError(null);
+        try {
+          const result = await refinePrompt({
+            userPrompt: prompt,
+            layerName: layer.name,
+            refCount: activeRefBlobs.length,
+            hasMask: !!maskBlob,
+            negativePrompt: negativePrompt.trim() || undefined,
+          });
+          refinedPromptForSubmit = result.refinedPrompt;
+          setRefinement({
+            refined: result.refinedPrompt,
+            rawAtRefine: prompt,
+            model: result.model,
+          });
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn("[GeneratePanel] prompt refine failed, sending raw prompt", reason);
+          setRefineError(reason);
+          // intentionally keep refinedPromptForSubmit undefined — fall
+          // back to the raw prompt below
+        } finally {
+          setRefining(false);
+        }
+      } else if (refinement && refinement.rawAtRefine !== prompt) {
+        // user edited the prompt since the last refine; clear stale
+        // refinement so the diagnostic doesn't lie about what was sent
+        setRefinement(null);
+      }
+
       setPhase({ kind: "running" });
       // ── structured submit log ────────────────────────────────────
       // Surfaces exactly what's about to leave the browser so the
@@ -356,15 +416,21 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         console.info(`references (${refDetails.length}):`, refDetails);
       }
       console.info("prompt (user, verbatim):", prompt);
+      if (refinedPromptForSubmit) {
+        console.info("prompt (refined by chat model):", refinedPromptForSubmit);
+      } else if (usePromptRefine && providerId === "openai") {
+        console.info("prompt refinement: skipped (refine off / empty / errored)");
+      }
       if (negativePrompt.trim()) console.info("negative prompt:", negativePrompt);
       console.info(
-        "note: provider may compose additional prompt scaffolding (anchor sentence for refs, negative-prompt splice, etc.). Check the [openai] / [gemini] server log for the final composed prompt.",
+        "note: provider wraps the (refined) prompt in slot-mapping + preservation scaffolding. Check the [openai] server log for the full composed text actually sent to /v1/images/edits.",
       );
       console.groupEnd();
 
       const result = await submitGenerate({
         providerId,
         prompt,
+        refinedPrompt: refinedPromptForSubmit,
         negativePrompt: negativePrompt.trim() || undefined,
         modelId: modelId || undefined,
         sourceImage: sourceBlob,
@@ -757,17 +823,64 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               </div>
             )}
 
+            {/* Prompt refinement (Sprint 5.4) — chat-model rewrite
+                of the user prompt into structured gpt-image-2 edit
+                language. Only meaningful for OpenAI; the toggle stays
+                visible even for other providers but is force-off so
+                the user understands which lever applies where. */}
+            {provider && providerId === "openai" && (
+              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={usePromptRefine}
+                    onChange={(e) => setUsePromptRefine(e.target.checked)}
+                    className="h-3 w-3"
+                    aria-label="toggle prompt refinement"
+                  />
+                  <span className="flex-1 text-[var(--color-fg)]">
+                    Refine prompt via chat model before submit
+                  </span>
+                  {refining && (
+                    <span className="text-[10px] text-[var(--color-accent)]">refining…</span>
+                  )}
+                </label>
+                <p className="mt-1 text-[var(--color-fg-dim)]">
+                  Rewrites your prompt as structured <span className="font-mono">[image 1]</span>{" "}
+                  edit instructions following gpt-image-2's prompting guide so the model doesn't
+                  conflate the source canvas with the style references.
+                </p>
+                {refinement && refinement.rawAtRefine === prompt && (
+                  <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5">
+                    <summary className="cursor-pointer text-[var(--color-fg-dim)]">
+                      refined prompt ready · model={refinement.model}
+                    </summary>
+                    <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-[var(--color-fg)]">
+                      {refinement.refined}
+                    </pre>
+                  </details>
+                )}
+                {refineError && (
+                  <p className="mt-1 text-[10px] text-red-400">
+                    refine failed — falling back to raw prompt: {refineError}
+                  </p>
+                )}
+              </div>
+            )}
+
             <button
               type="button"
               onClick={onSubmit}
-              disabled={submitDisabled}
+              disabled={submitDisabled || refining}
               className="rounded border border-[var(--color-accent)] px-3 py-1.5 text-sm text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {phase.kind === "running"
                 ? "generating…"
                 : phase.kind === "submitting"
                   ? "submitting…"
-                  : "generate"}
+                  : refining
+                    ? "refining prompt…"
+                    : "generate"}
             </button>
             {phase.kind === "succeeded" && (
               <div className="mt-2 flex flex-col gap-1">

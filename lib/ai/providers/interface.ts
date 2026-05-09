@@ -50,6 +50,13 @@ export type ProviderGenerateInput = {
    *  refs first, iterative-history refs (Sprint 5.3) after. */
   referenceImages?: Blob[];
   prompt: string;
+  /** Sprint 5.4 — when the prompt-refinement pipeline reshapes the
+   *  user's text via a chat model (`/api/ai/refine-prompt`), the
+   *  refined version arrives here. Providers that build structured
+   *  prompts (OpenAI gpt-image-2) substitute this in place of the
+   *  raw user prompt while keeping every preservation / slot-mapping
+   *  scaffold the gpt-image-2 guide recommends. */
+  refinedPrompt?: string;
   negativePrompt?: string;
   seed?: number;
   /** Model override; falls back to `capabilities.defaultModelId`. */

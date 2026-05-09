@@ -171,36 +171,96 @@ export class OpenAIProvider implements AIProvider {
   }
 
   /**
-   * Compose the final prompt for `/v1/images/edits`. Three pieces, in
-   * priority order so the model sees the load-bearing instruction
-   * first:
+   * Compose the final prompt for `/v1/images/edits` using gpt-image-2's
+   * documented best practices for multi-image input.
    *
-   *   1. The user prompt, verbatim.
-   *   2. (only when reference images are supplied) a short anchor
-   *      sentence telling the model that the second-and-onward images
-   *      are character / style references for the masked region of
-   *      the first one. Without this hint gpt-image-2 sometimes treats
-   *      the additional inputs as "place these objects into the
-   *      scene" instead of "match their style", which gives wildly
-   *      inconsistent results.
-   *   3. (only when negativePrompt set) an "Avoid: ..." line. The
-   *      edits endpoint has no separate negative field.
+   * The earlier version gave the user prompt first then bolted on a
+   * one-line ref hint. That left the model guessing which input was
+   * the canvas vs which was a style anchor — when the user typed
+   * "make this look like the reference", the model often pasted the
+   * reference's content (faces, accessories) into the result instead
+   * of just matching its palette / lighting.
    *
-   * Kept terse on purpose — gpt-image-2 has a finite prompt budget
-   * and the user's own text should dominate.
+   * The structured composition below is grounded in the
+   * gpt-image-2.art prompting guide:
+   *
+   *   1. **Slot map first** — explicitly label `[image 1]` as the
+   *      texture canvas and `[image 2..N]` as style-only references.
+   *      Spells out "do not copy content" so the model can't conflate
+   *      the two roles even with ambiguous user wording.
+   *
+   *   2. **User intent under an explicit "Edit" verb** — the user
+   *      prompt is wrapped in `Edit [image 1]: ...` so it's clear
+   *      which image gets modified.
+   *
+   *   3. **Preservation block** — silhouette, geometry, composition,
+   *      and (when no mask is supplied) "any pixels not affected by
+   *      the requested edit". The guide is emphatic that without
+   *      explicit preserves the model reinterprets the whole scene.
+   *
+   *   4. **Mask role hint** — when a mask is present, restate that
+   *      pixels outside the mask must come through unchanged. This
+   *      reinforces the convention image[0]-with-mask and isolates
+   *      the model's freedom to the marked region.
+   *
+   *   5. **Negative prompt as "Avoid:" tail** — no separate field on
+   *      this endpoint; suffix is the documented workaround.
+   *
+   * If the caller passed `refinedPrompt` (from the LLM refinement
+   * pipeline), it replaces the user prompt slot. The other scaffolding
+   * still wraps it so even a refined prompt benefits from the
+   * preservation / role-separation language.
    */
   private composePrompt(input: ProviderGenerateInput): string {
-    const parts: string[] = [input.prompt.trim()];
     const refs = input.referenceImages ?? [];
-    if (refs.length > 0) {
-      parts.push(
-        `Use the additional ${refs.length === 1 ? "image" : `${refs.length} images`} purely as character and style reference for the masked region of the first image: match the silhouette, palette, lighting, and identity shown there. Do not blend reference content into the result outside of style.`,
+    const hasRefs = refs.length > 0;
+    const hasMask = !!input.maskImage;
+    const userIntent = (input.refinedPrompt ?? input.prompt).trim();
+
+    const sections: string[] = [];
+
+    // 1. Slot map (only meaningful when refs are attached)
+    if (hasRefs) {
+      const refLabels =
+        refs.length === 1 ? "[image 2]" : refs.map((_, i) => `[image ${i + 2}]`).join(", ");
+      sections.push(
+        `Inputs: [image 1] is the texture canvas to edit. ${refLabels} ${
+          refs.length === 1
+            ? "is a style and character reference"
+            : "are style and character references"
+        } — extract palette, lighting, line quality, material rendering, and identity cues, but do NOT copy any objects, characters, faces, accessories, or scene content from ${
+          refs.length === 1 ? "it" : "them"
+        } into the result. The reference content must not appear inside [image 1]'s output.`,
       );
     }
-    if (input.negativePrompt?.trim()) {
-      parts.push(`Avoid: ${input.negativePrompt.trim()}`);
+
+    // 2. The actual edit instruction
+    sections.push(`Edit [image 1]: ${userIntent}`);
+
+    // 3. Preservation
+    const preservation = [
+      "the silhouette and outline of [image 1]",
+      "the geometry, pose, and proportions",
+      "the composition and crop framing",
+    ];
+    if (!hasMask) {
+      preservation.push("any pixels in [image 1] not affected by the requested edit");
     }
-    return parts.join("\n\n");
+    sections.push(`Preserve exactly: ${preservation.join("; ")}.`);
+
+    // 4. Mask role
+    if (hasMask) {
+      sections.push(
+        "The mask channel marks the editable region of [image 1]. Pixels outside the mask must come through unchanged.",
+      );
+    }
+
+    // 5. Negative
+    if (input.negativePrompt?.trim()) {
+      sections.push(`Avoid: ${input.negativePrompt.trim()}`);
+    }
+
+    return sections.join("\n\n");
   }
 }
 

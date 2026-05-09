@@ -72,6 +72,7 @@
 | 2026-05-07 | [56 sprint_5_1_reference_store](2026-05-07_56_sprint_5_1_reference_store.md) | 5.1 | 완료 — IDB v7 puppetReferences store + useReferences 훅 + ReferencesPanel + 3개 edit 페이지 와이어링. 인프라만 — 5.2가 OpenAI 호출에 흘려넣음 |
 | 2026-05-07 | [57 sprint_5_2_multi_image_input](2026-05-07_57_sprint_5_2_multi_image_input.md) | 5.2 | 완료 — provider capability `supportsReferenceImages` + `referenceImages?: Blob[]` 입력. OpenAI는 `image[]` 다중 슬롯 + ref anchor 프롬프트 자동 prepend. Gemini/Replicate는 false (server route에서 drop). GeneratePanel이 useReferences 자동 포함 + UI hint |
 | 2026-05-07 | [58 sprint_5_3_active_refs_iteration](2026-05-07_58_sprint_5_3_active_refs_iteration.md) | 5.3 | 완료 — Active references 박스 (puppet ref 체크박스 + last-result iterative anchor 토글). 직전 succeeded blob을 자동으로 image[]에 ride along — cloud-API 단독 previous_response_id 등가 |
+| 2026-05-07 | [59 sprint_5_4_prompt_refinement](2026-05-07_59_sprint_5_4_prompt_refinement.md) | 5.4 | 완료 — gpt-image-2 docs 가이드 따라 composePrompt 재설계 ([image 1]/[image 2..N] slot map + role separation + preservation block). LLM refinement endpoint `/api/ai/refine-prompt` (gpt-4o-mini 기본) + 토글 + refined preview |
 
 ## 운영 규칙
 

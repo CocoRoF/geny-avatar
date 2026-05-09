@@ -40,6 +40,41 @@ export async function fetchProviders(): Promise<ProviderAvailability[]> {
   return data.providers;
 }
 
+// ----- prompt refinement (Sprint 5.4) -----
+
+export type RefinePromptInput = {
+  userPrompt: string;
+  layerName?: string;
+  refCount: number;
+  hasMask: boolean;
+  negativePrompt?: string;
+};
+
+export type RefinePromptResult = {
+  refinedPrompt: string;
+  model: string;
+};
+
+/**
+ * Optional pre-pass that asks an OpenAI chat model to rewrite the
+ * user's prompt as a precise gpt-image-2 edit instruction. Returns
+ * the refined text (and which model produced it). Errors when the
+ * server can't reach the chat endpoint or the OPENAI_API_KEY env
+ * isn't set — caller falls back to the raw prompt.
+ */
+export async function refinePrompt(input: RefinePromptInput): Promise<RefinePromptResult> {
+  const r = await fetch("/api/ai/refine-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) {
+    const body = await safeJson(r);
+    throw new Error(`refine-prompt ${r.status}: ${body?.error ?? r.statusText}`);
+  }
+  return (await r.json()) as RefinePromptResult;
+}
+
 // ----- canvas → blob -----
 
 export async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
@@ -307,6 +342,11 @@ export async function postprocessGeneratedBlob(opts: {
 export type SubmitGenerateInput = {
   providerId: ProviderId;
   prompt: string;
+  /** Sprint 5.4 — optional refined version of `prompt` produced by
+   *  the chat-based refinement pass. Server forwards both to the
+   *  provider; OpenAI substitutes `refinedPrompt` into its prompt
+   *  scaffolding while keeping the raw prompt available for logs. */
+  refinedPrompt?: string;
   negativePrompt?: string;
   modelId?: string;
   seed?: number;
@@ -331,6 +371,7 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
   const form = new FormData();
   form.set("providerId", input.providerId);
   form.set("prompt", input.prompt);
+  if (input.refinedPrompt) form.set("refinedPrompt", input.refinedPrompt);
   if (input.negativePrompt) form.set("negativePrompt", input.negativePrompt);
   if (input.modelId) form.set("modelId", input.modelId);
   if (typeof input.seed === "number") form.set("seed", String(input.seed));

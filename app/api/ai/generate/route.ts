@@ -44,6 +44,7 @@ export async function POST(request: Request) {
 
   const providerId = form.get("providerId");
   const prompt = form.get("prompt");
+  const refinedPrompt = form.get("refinedPrompt");
   const sourceFile = form.get("sourceImage");
   const maskFile = form.get("maskImage");
   const negativePrompt = form.get("negativePrompt");
@@ -105,6 +106,8 @@ export async function POST(request: Request) {
     maskImage: maskFile instanceof Blob ? maskFile : undefined,
     referenceImages: forwardedRefs.length > 0 ? forwardedRefs : undefined,
     prompt,
+    refinedPrompt:
+      typeof refinedPrompt === "string" && refinedPrompt.trim() ? refinedPrompt : undefined,
     negativePrompt: typeof negativePrompt === "string" ? negativePrompt : undefined,
     modelId: typeof modelId === "string" && modelId ? modelId : undefined,
     seed: typeof seedStr === "string" && seedStr ? Number(seedStr) : undefined,
