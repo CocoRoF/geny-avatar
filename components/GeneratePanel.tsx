@@ -751,11 +751,59 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           };
         return next;
       });
-      // Re-use cached refinement when the prompt is unchanged; otherwise
-      // skip refinement on a single-region run to stay fast (user can
-      // run "generate all" if they want fresh refine).
-      const refinedReady = refinement?.rawAtRefine === prompt ? refinement.refined : undefined;
-      const baseText = refinedReady ?? prompt;
+
+      // G.9: per-region refinement. Earlier this branch only re-used
+      // a cached refined prompt and never *called* `refinePrompt`
+      // itself — so in focus mode (where every generate runs through
+      // here, not through onSubmit) the "Refine prompt via chat
+      // model" toggle was effectively a no-op. Now we run the chat
+      // refiner with this region's prompt + isolated source so the
+      // LLM sees just the region we're editing, then the resulting
+      // refined text rides as `baseText` into runRegionGen.
+      //
+      // Cache key is the raw user prompt that drove the refine —
+      // jumping between regions whose prompts differ produces
+      // cache misses (one chat call per region). Same region with
+      // unchanged prompt re-uses the cached refined text.
+      const userPromptForRefine = perRegionText.length > 0 ? perRegionText : baseTrimmed;
+      let refinedText: string | undefined;
+      if (usePromptRefine && userPromptForRefine.length > 0) {
+        if (refinement?.rawAtRefine === userPromptForRefine) {
+          refinedText = refinement.refined;
+        } else {
+          setRefining(true);
+          setRefineError(null);
+          try {
+            // Use the focused region's isolated source so the LLM's
+            // visual analysis is scoped to the region under edit
+            // (not the whole layer with other silhouettes visible).
+            const preparedComp = prepared[idx];
+            const refineSourceBlob = await canvasToPngBlob(preparedComp.isolatedSource);
+            const result = await refinePrompt({
+              userPrompt: userPromptForRefine,
+              layerName: layer.name,
+              hasMask: false,
+              negativePrompt: negativePrompt.trim() || undefined,
+              sourceImage: refineSourceBlob,
+              referenceImages: activeRefBlobs,
+            });
+            refinedText = result.refinedPrompt;
+            setRefinement({
+              refined: result.refinedPrompt,
+              rawAtRefine: userPromptForRefine,
+              model: result.model,
+            });
+          } catch (e) {
+            const reason = e instanceof Error ? e.message : String(e);
+            console.warn("[GeneratePanel] per-region refine failed", reason);
+            setRefineError(reason);
+            // fall back to unrefined text below
+          } finally {
+            setRefining(false);
+          }
+        }
+      }
+      const baseText = refinedText ?? userPromptForRefine;
       try {
         const newBlob = await runRegionGen(idx, prepared, baseText, activeRefBlobs);
         // G.8: build the composite source-of-truth from the
@@ -795,6 +843,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       activeRefBlobs,
       recompositeResult,
       componentPrompts,
+      usePromptRefine,
+      layer.name,
+      negativePrompt,
     ],
   );
 
