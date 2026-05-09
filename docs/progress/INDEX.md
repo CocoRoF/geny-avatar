@@ -63,6 +63,7 @@
 | 2026-05-07 | [47 export_model_baked](2026-05-07_47_export_model_baked.md) | 4 polish | 완료 — "export model" 두 번째 모드 추가: edit이 atlas 픽셀에 베이크된 표준 puppet zip (visibility erase + mask + AI texture를 모든 atlas page에 한 번에 베이크) |
 | 2026-05-07 | [48 unzip_double_decode_fix](2026-05-07_48_unzip_double_decode_fix.md) | 4 fix | 완료 — recodeZipName이 EFS-flagged zip(우리 export 포함)을 다시 디코드해 CJK 파일명을 망가뜨리던 버그 수정 |
 | 2026-05-07 | [49 export_model_hide_cascade](2026-05-07_49_export_model_hide_cascade.md) | 4 fix | 완료 — Export Model의 visibility erase가 Cubism part hierarchy cascade를 따르지 않던 버그 수정 (어댑터에 listHiddenAtlasFootprints 추가, Live2D는 partToDescendantDrawables로 자식 drawables까지 expand) |
+| 2026-05-07 | [50 export_model_hide_via_model_patch](2026-05-07_50_export_model_hide_via_model_patch.md) | 4 fix | 완료 — atlas erase 접근 폐기, hidden part는 모델 파일 패치로 처리 (Cubism: 모든 motion3.json에 PartOpacity=0 커브 주입, Spine JSON: slot.attachment="" 비우기). atlas는 mask + AI texture만 합성. |
 
 ## 운영 규칙
 

@@ -103,6 +103,8 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
       console.info(
         `[export:model] ${result.filename} · ${result.fileCount} files · ${(result.bytes / 1024).toFixed(0)} KB · baked=${result.bakedPages}${
           result.unmatchedPages > 0 ? ` unmatched=${result.unmatchedPages}` : ""
+        } · hiddenParts=${result.hiddenParts}${
+          result.patchedFiles.length > 0 ? ` patched=${result.patchedFiles.length}` : ""
         }`,
       );
     } catch (e) {
