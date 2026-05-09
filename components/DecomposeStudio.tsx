@@ -926,7 +926,10 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           </button>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[1fr_240px] overflow-hidden">
+        {/* Sidebar gets 1.5× the original 240px so the regions list /
+            tool controls / SAM panel don't feel cramped. The canvas
+            column still stretches to take whatever's left. */}
+        <div className="grid min-h-0 flex-1 grid-cols-[1fr_360px] overflow-hidden">
           <div
             className="flex min-h-0 min-w-0 items-center justify-center p-6"
             style={previewStyle}
