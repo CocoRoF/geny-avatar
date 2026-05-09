@@ -120,6 +120,14 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  switches the modal box to the full viewport so the canvas
    *  gets every pixel CSS can give it. */
   const [fullscreen, setFullscreen] = useState(false);
+  /** Flag: the user has explicitly entered split mode at least once
+   *  this session. We use it to fire `autoDetectRegions` exactly
+   *  once per panel mount when there are no persisted regions —
+   *  surfacing the auto-detect baseline immediately rather than
+   *  forcing a click. Re-entering split mode after manual edits
+   *  doesn't reset the regions; only the very first entry seeds
+   *  them. */
+  const splitAutoSeededRef = useRef(false);
 
   // ----- load source + initial mask -----
   // Source = base layer + texture override (if any). The mask layer is
@@ -229,17 +237,40 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   }, [ready, persistedRegions]);
 
   // ----- redraw preview whenever something changes -----
+  // 6.5+: preview canvas backing is the source dim multiplied by
+  // a fullscreen-aware density factor. Default mode keeps 1× so
+  // memory stays predictable; fullscreen scales to max(2, dpr)
+  // so when CSS upscales the canvas to fill the viewport the
+  // rasterized texture stays crisp instead of looking like a
+  // bilinear-blurred screenshot. Brush + SAM coord math always
+  // works in source pixel space (paintAt / recordSamPoint use
+  // source.width directly), so the backing change is invisible
+  // to the rest of the pipeline.
   const redraw = useCallback(() => {
     const preview = previewRef.current;
     const source = sourceCanvasRef.current;
     const mask = maskCanvasRef.current;
     if (!preview || !source || !mask) return;
-    if (preview.width !== source.width || preview.height !== source.height) {
-      preview.width = source.width;
-      preview.height = source.height;
+    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const density = fullscreen ? Math.max(2, dpr) : 1;
+    const targetW = Math.max(1, Math.round(source.width * density));
+    const targetH = Math.max(1, Math.round(source.height * density));
+    if (preview.width !== targetW || preview.height !== targetH) {
+      preview.width = targetW;
+      preview.height = targetH;
     }
     const ctx = preview.getContext("2d");
     if (!ctx) return;
+    // High-quality scaling for the up-sample case (fullscreen). Default
+    // bilinear gives a slightly soft look; "high" lets the browser
+    // pick its best (lanczos/cubic depending on impl).
+    if ("imageSmoothingQuality" in ctx) {
+      try {
+        ctx.imageSmoothingQuality = "high";
+      } catch {
+        // older browsers / canvas impl — ignore
+      }
+    }
     ctx.clearRect(0, 0, preview.width, preview.height);
 
     if (studioMode === "split") {
@@ -247,19 +278,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       // mask painted in its assigned color (semi-transparent so the
       // user can see what's underneath). The selected region gets a
       // stronger fill so it's clear which one a brush stroke will
-      // land in.
-      ctx.drawImage(source, 0, 0);
+      // land in. drawImage at preview dim auto-scales source/region
+      // canvases to the higher backing resolution.
+      ctx.drawImage(source, 0, 0, preview.width, preview.height);
       for (const entry of regionEntries) {
         const rc = regionCanvasMap.current.get(entry.id);
         if (!rc) continue;
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = entry.id === selectedRegionId ? 0.55 : 0.3;
-        // Tint the region's binary alpha mask with the region color.
-        // Strategy: stamp a solid color rect, mask it with the region
-        // canvas via destination-in, then composite onto preview.
-        // We do this on a tmp canvas to keep preview's other layers
-        // intact.
         const tmp = document.createElement("canvas");
         tmp.width = preview.width;
         tmp.height = preview.height;
@@ -268,7 +295,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           tctx.fillStyle = entry.color;
           tctx.fillRect(0, 0, tmp.width, tmp.height);
           tctx.globalCompositeOperation = "destination-in";
-          tctx.drawImage(rc, 0, 0);
+          tctx.drawImage(rc, 0, 0, tmp.width, tmp.height);
           ctx.drawImage(tmp, 0, 0);
         }
         ctx.restore();
@@ -277,7 +304,9 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     }
 
     // Trim mode (existing): source × (1 - effectiveMask), where
-    // effectiveMask = max(thresholdMask, paintedMask).
+    // effectiveMask = max(thresholdMask, paintedMask). Computed at
+    // source dim then scaled up to preview dim — putImageData can't
+    // scale, so we composite to a tmp canvas first.
     const srcCtx = source.getContext("2d");
     const maskCtx = mask.getContext("2d");
     if (!srcCtx || !maskCtx) return;
@@ -297,8 +326,26 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       const out = (sa * (255 - effective)) / 255;
       srcData.data[i + 3] = out;
     }
-    ctx.putImageData(srcData, 0, 0);
-  }, [threshold, studioMode, regionEntries, selectedRegionId]);
+    if (density === 1) {
+      ctx.putImageData(srcData, 0, 0);
+    } else {
+      const tmp = document.createElement("canvas");
+      tmp.width = source.width;
+      tmp.height = source.height;
+      const tctx = tmp.getContext("2d");
+      if (tctx) {
+        tctx.putImageData(srcData, 0, 0);
+        if ("imageSmoothingQuality" in ctx) {
+          try {
+            ctx.imageSmoothingQuality = "high";
+          } catch {
+            // ignore
+          }
+        }
+        ctx.drawImage(tmp, 0, 0, preview.width, preview.height);
+      }
+    }
+  }, [threshold, studioMode, regionEntries, selectedRegionId, fullscreen]);
 
   useEffect(() => {
     if (!ready) return;
@@ -309,10 +356,14 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const paintAt = useCallback(
     (clientX: number, clientY: number) => {
       const preview = previewRef.current;
-      if (!preview) return;
+      const source = sourceCanvasRef.current;
+      if (!preview || !source) return;
       const rect = preview.getBoundingClientRect();
-      const sx = ((clientX - rect.left) / rect.width) * preview.width;
-      const sy = ((clientY - rect.top) / rect.height) * preview.height;
+      // Brush coords are in source pixel space — region/mask canvases
+      // are at source dim, so scaling by preview backing (which may
+      // be higher than source dim in fullscreen) would paint outside.
+      const sx = ((clientX - rect.left) / rect.width) * source.width;
+      const sy = ((clientY - rect.top) / rect.height) * source.height;
 
       // Pick the target canvas: in split mode it's the selected region's
       // canvas; in trim mode it's the layer's single mask canvas.
@@ -347,10 +398,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  coords so the SAM route can index the source bitmap directly. */
   const recordSamPoint = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const preview = previewRef.current;
-    if (!preview) return;
+    const source = sourceCanvasRef.current;
+    if (!preview || !source) return;
     const rect = preview.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * preview.width);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * preview.height);
+    // Source-pixel-space coords; preview backing may be 2× in
+    // fullscreen but SAM works against the source bitmap.
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * source.width);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * source.height);
     const label: 0 | 1 = e.button === 0 ? 1 : 0;
     setSamPoints((prev) => [...prev, { x, y, label }]);
     // Discard any stale candidate set so the user re-runs compute
@@ -474,58 +528,99 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  wipes the existing list (and their painted progress); add
    *  appends the components as new regions next to the existing
    *  ones. Cancel does nothing. */
-  const autoDetectRegions = useCallback(() => {
-    const source = sourceCanvasRef.current;
-    if (!source) return;
-    const detected = findAlphaComponents(source);
-    if (detected.length === 0) {
-      setSamError(null);
-      // Soft signal — there's no SAM error here. Re-use the dirty
-      // flag-free toast pattern with window.alert which is rare in
-      // this codebase but acceptable for "nothing to do".
-      if (typeof window !== "undefined") {
-        window.alert("no silhouette components detected on this layer");
+  const autoDetectRegions = useCallback(
+    (opts?: { silent?: boolean }) => {
+      const source = sourceCanvasRef.current;
+      if (!source) return;
+      const detected = findAlphaComponents(source);
+      if (detected.length === 0) {
+        setSamError(null);
+        // Soft signal — there's no SAM error here. Re-use the dirty
+        // flag-free toast pattern with window.alert which is rare in
+        // this codebase but acceptable for "nothing to do". The
+        // auto-seed effect calls this with `silent` to skip the
+        // popup when there's no component to detect (the empty
+        // regions list itself is feedback enough).
+        if (!opts?.silent && typeof window !== "undefined") {
+          window.alert("no silhouette components detected on this layer");
+        }
+        return;
       }
-      return;
-    }
-    let action: "replace" | "add" = "replace";
-    if (regionEntries.length > 0 && typeof window !== "undefined") {
-      const ok = window.confirm(
-        `Replace the ${regionEntries.length} existing region${
-          regionEntries.length === 1 ? "" : "s"
-        } with ${detected.length} auto-detected component${
-          detected.length === 1 ? "" : "s"
-        }? (Cancel = append instead.)`,
-      );
-      action = ok ? "replace" : "add";
-    }
-    if (action === "replace") {
-      regionCanvasMap.current.clear();
-    }
-    const startIdx = action === "replace" ? 0 : regionEntries.length;
-    const newEntries: { id: string; name: string; color: string }[] = [];
-    detected.forEach((comp, i) => {
-      const id = newId(ID_PREFIX.regionMask);
-      const color = REGION_COLORS[(startIdx + i) % REGION_COLORS.length];
-      // Seed each region's canvas with the component's binary mask
-      // (white inside the component, transparent outside) at full
-      // source dim — same shape as a paint stroke would build.
-      const c = document.createElement("canvas");
-      c.width = source.width;
-      c.height = source.height;
-      const cctx = c.getContext("2d");
-      if (cctx) cctx.drawImage(comp.maskCanvas, 0, 0);
-      regionCanvasMap.current.set(id, c);
-      newEntries.push({
-        id,
-        name: detected.length === 1 ? "" : `region ${startIdx + i + 1}`,
-        color,
+      let action: "replace" | "add" = "replace";
+      if (regionEntries.length > 0 && typeof window !== "undefined") {
+        const ok = window.confirm(
+          `Replace the ${regionEntries.length} existing region${
+            regionEntries.length === 1 ? "" : "s"
+          } with ${detected.length} auto-detected component${
+            detected.length === 1 ? "" : "s"
+          }? (Cancel = append instead.)`,
+        );
+        action = ok ? "replace" : "add";
+      }
+      if (action === "replace") {
+        regionCanvasMap.current.clear();
+      }
+      const startIdx = action === "replace" ? 0 : regionEntries.length;
+      const newEntries: { id: string; name: string; color: string }[] = [];
+      detected.forEach((comp, i) => {
+        const id = newId(ID_PREFIX.regionMask);
+        const color = REGION_COLORS[(startIdx + i) % REGION_COLORS.length];
+        // Seed each region's canvas with the component's binary mask
+        // (white inside the component, transparent outside) at full
+        // source dim — same shape as a paint stroke would build.
+        const c = document.createElement("canvas");
+        c.width = source.width;
+        c.height = source.height;
+        const cctx = c.getContext("2d");
+        if (cctx) cctx.drawImage(comp.maskCanvas, 0, 0);
+        regionCanvasMap.current.set(id, c);
+        newEntries.push({
+          id,
+          name: detected.length === 1 ? "" : `region ${startIdx + i + 1}`,
+          color,
+        });
       });
-    });
-    setRegionEntries((prev) => (action === "replace" ? newEntries : [...prev, ...newEntries]));
-    setSelectedRegionId(newEntries[0]?.id ?? null);
+      setRegionEntries((prev) => (action === "replace" ? newEntries : [...prev, ...newEntries]));
+      setSelectedRegionId(newEntries[0]?.id ?? null);
+      setSplitDirty(true);
+    },
+    [regionEntries.length],
+  );
+
+  /** Bulk delete every region. Confirms first because painted /
+   *  SAM-applied content is unrecoverable. */
+  const clearAllRegions = useCallback(() => {
+    if (regionEntries.length === 0) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        `Delete all ${regionEntries.length} region${
+          regionEntries.length === 1 ? "" : "s"
+        }? Painted strokes and SAM masks will be lost.`,
+      );
+      if (!ok) return;
+    }
+    regionCanvasMap.current.clear();
+    setRegionEntries([]);
+    setSelectedRegionId(null);
     setSplitDirty(true);
   }, [regionEntries.length]);
+
+  /** First-entry auto-seed: when the user flips into split mode for
+   *  the first time this panel session, AND no persisted regions
+   *  hydrated, AND no manual region was added in trim mode by mistake
+   *  — kick off `autoDetectRegions` once so the user lands on a
+   *  populated state instead of an empty list. The user's earlier
+   *  manual painting (if any) and any IDB-hydrated regions both
+   *  short-circuit this. */
+  useEffect(() => {
+    if (!ready) return;
+    if (studioMode !== "split") return;
+    if (splitAutoSeededRef.current) return;
+    if (regionEntries.length > 0) return;
+    if (persistedRegions.length > 0) return;
+    splitAutoSeededRef.current = true;
+    autoDetectRegions({ silent: true });
+  }, [ready, studioMode, regionEntries.length, persistedRegions.length, autoDetectRegions]);
 
   // ----- Sprint 6.2: SAM auto-mask actions -----
 
@@ -818,16 +913,18 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                 {/* Sprint 6.2: SAM point overlay. Visible only in
                     split/auto mode while points are being collected.
                     Coordinates live in source pixel space; the SVG
-                    viewBox lines them up with the canvas regardless
-                    of CSS scale. */}
+                    viewBox uses source dim (not preview backing —
+                    fullscreen bumps preview backing past source dim
+                    for sharper texture, but the click coords stay
+                    sourced in source pixels). */}
                 {studioMode === "split" &&
                   mode === "auto" &&
                   samPoints.length > 0 &&
-                  previewRef.current && (
+                  sourceCanvasRef.current && (
                     <svg
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-0 h-full w-full"
-                      viewBox={`0 0 ${previewRef.current.width} ${previewRef.current.height}`}
+                      viewBox={`0 0 ${sourceCanvasRef.current.width} ${sourceCanvasRef.current.height}`}
                       preserveAspectRatio="none"
                     >
                       {samPoints.map((p, i) => (
@@ -836,7 +933,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                           key={i}
                           cx={p.x}
                           cy={p.y}
-                          r={Math.max(4, (previewRef.current?.width ?? 200) / 200)}
+                          r={Math.max(4, (sourceCanvasRef.current?.width ?? 200) / 200)}
                           fill={p.label === 1 ? "#22c55e" : "#ef4444"}
                           stroke="#000"
                           strokeWidth={1}
@@ -928,17 +1025,18 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                   <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
                     regions ({regionEntries.length})
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap gap-1 justify-end">
                     {/* Sprint 6.4: seed regions from connected
                         silhouette components. Useful first step on
                         any multi-island layer — lets the user start
                         from auto-detect and refine instead of
-                        painting from scratch. */}
+                        painting from scratch. Auto-fires once on
+                        first split-mode entry (no click needed). */}
                     <button
                       type="button"
-                      onClick={autoDetectRegions}
+                      onClick={() => autoDetectRegions()}
                       className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-                      title="auto-detect regions from connected silhouettes"
+                      title="re-detect regions from connected silhouettes"
                     >
                       auto-detect
                     </button>
@@ -950,6 +1048,16 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     >
                       + add
                     </button>
+                    {regionEntries.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearAllRegions}
+                        className="rounded border border-red-500/40 px-1.5 py-0.5 text-red-300 hover:bg-red-500/10"
+                        title={`delete all ${regionEntries.length} region${regionEntries.length === 1 ? "" : "s"}`}
+                      >
+                        clear all
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -966,38 +1074,58 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                       const selected = r.id === selectedRegionId;
                       return (
                         <li key={r.id}>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedRegionId(r.id)}
-                            className={`flex w-full items-center gap-1.5 rounded border px-1.5 py-1 ${
+                          {/* G/6.x: row was a <button> nesting another
+                              <button> (the delete ✕) which is invalid
+                              HTML and triggered a Next.js hydration
+                              error. Restructured as a flex row of
+                              siblings: a select-tile button, an
+                              inline name input, and a delete button —
+                              all coplanar so neither nests the other. */}
+                          <div
+                            className={`flex w-full items-stretch rounded border ${
                               selected ? "bg-[var(--color-accent)]/10" : "bg-transparent"
                             }`}
                             style={{ borderColor: r.color }}
                           >
-                            <span
-                              className="h-3 w-3 shrink-0 rounded-sm"
-                              style={{ background: r.color }}
-                            />
+                            <button
+                              type="button"
+                              onClick={() => setSelectedRegionId(r.id)}
+                              title={selected ? "selected region" : "select this region"}
+                              className="flex shrink-0 items-center gap-1.5 rounded-l px-1.5 hover:bg-[var(--color-accent)]/5"
+                            >
+                              <span
+                                className="h-3 w-3 shrink-0 rounded-sm"
+                                style={{ background: r.color }}
+                              />
+                              {selected && (
+                                <span className="text-[10px] text-[var(--color-accent)]">●</span>
+                              )}
+                            </button>
                             <input
                               type="text"
                               value={r.name}
                               onChange={(e) => renameRegion(r.id, e.target.value)}
-                              onClick={(e) => e.stopPropagation()}
+                              onFocus={() => setSelectedRegionId(r.id)}
                               placeholder="name (e.g. torso)"
-                              className="min-w-0 flex-1 bg-transparent text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none"
+                              className="min-w-0 flex-1 bg-transparent px-1 py-1 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none"
                             />
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
+                              onClick={() => {
+                                if (typeof window !== "undefined") {
+                                  const ok = window.confirm(
+                                    `Delete region${r.name ? ` "${r.name}"` : ""}? Painted strokes / SAM masks for this region will be lost.`,
+                                  );
+                                  if (!ok) return;
+                                }
                                 removeRegion(r.id);
                               }}
-                              className="text-[var(--color-fg-dim)] hover:text-red-400"
-                              title="delete region"
+                              className="flex shrink-0 items-center justify-center rounded-r px-2 text-[var(--color-fg-dim)] hover:bg-red-500/15 hover:text-red-300"
+                              title={`delete region${r.name ? ` "${r.name}"` : ""}`}
                             >
                               ✕
                             </button>
-                          </button>
+                          </div>
                         </li>
                       );
                     })}
