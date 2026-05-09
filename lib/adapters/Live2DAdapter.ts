@@ -171,6 +171,13 @@ export class Live2DAdapter implements AvatarAdapter {
     const partDisplayNames = cdi3.partNames;
     this.cdi3PartGroups = cdi3.partGroups;
 
+    // Pull pose3.json and identify any parts that the Cubism Framework
+    // will force to invisible regardless of editor toggles. The set is
+    // surfaced to the UI via `Layer.bakedHidden` so re-imports of a
+    // previously-exported puppet visibly mark the parts that are
+    // already locked off by the model file.
+    const bakedHiddenPartIds = await this.loadPose3HiddenParts(input.model3);
+
     const model = await Live2DModel.from(input.model3);
     this.model = model;
 
@@ -332,6 +339,7 @@ export class Live2DAdapter implements AvatarAdapter {
         const partExternalId = coerceCubismId(coreModel.getPartId?.(partIdx), `part_${partIdx}`);
         const partDisplayName = partDisplayNames.get(partExternalId) ?? partExternalId;
         const partOpacity: number = coreModel.getPartOpacity?.(partIdx) ?? 1;
+        const partBakedHidden = bakedHiddenPartIds.has(partExternalId);
         const direct = this.partToDirectDrawables.get(partIdx) ?? [];
 
         // Group drawables by atlas page index. Drawables with no valid
@@ -367,6 +375,7 @@ export class Live2DAdapter implements AvatarAdapter {
               color: { r: 1, g: 1, b: 1, a: 1 },
               opacity: partOpacity,
             },
+            bakedHidden: partBakedHidden,
           };
           partLayers.push(layer);
           layers.push(layer);
@@ -396,6 +405,7 @@ export class Live2DAdapter implements AvatarAdapter {
                 color: { r: 1, g: 1, b: 1, a: 1 },
                 opacity: partOpacity,
               },
+              bakedHidden: partBakedHidden,
             };
             const slice = this.buildSliceForPage(
               coreModel,
@@ -1062,6 +1072,57 @@ export class Live2DAdapter implements AvatarAdapter {
     return { partNames, partGroups };
   }
 
+  /**
+   * Read the puppet's pose3.json (if it has one) and collect the part
+   * ids that the Cubism Framework will force to invisible every frame.
+   *
+   * Pose-group semantics: within each group the **first** entry is the
+   * "anchor" (visible), every other entry is faded toward opacity 0.
+   * That's exactly what our own Export Model writes when the user
+   * hides a part — so re-importing a previously-exported puppet leaves
+   * those parts permanently hidden no matter what the editor's
+   * visibility toggles say. The UI uses this set to render a `baked`
+   * badge on the affected rows + explain why the toggle is inert.
+   */
+  private async loadPose3HiddenParts(manifestUrl: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    try {
+      const manifestRes = await fetch(manifestUrl);
+      const manifest = (await manifestRes.json()) as {
+        FileReferences?: { Pose?: string };
+      };
+      const rel = manifest?.FileReferences?.Pose;
+      if (typeof rel !== "string" || rel.length === 0) {
+        return out;
+      }
+      const poseUrl = resolveSiblingUrl(manifestUrl, rel);
+      const poseRes = await fetch(poseUrl);
+      if (!poseRes.ok) {
+        console.warn(`[Live2DAdapter] pose3 fetch failed: ${poseRes.status} ${poseUrl}`);
+        return out;
+      }
+      const pose = (await poseRes.json()) as {
+        Groups?: { Id?: unknown }[][];
+      };
+      const groups = Array.isArray(pose?.Groups) ? pose.Groups : [];
+      for (const group of groups) {
+        if (!Array.isArray(group)) continue;
+        // First entry is the anchor (visible). Every other entry in the
+        // group is forced to opacity 0 by `CubismPose.doFade`.
+        for (let i = 1; i < group.length; i++) {
+          const id = group[i]?.Id;
+          if (typeof id === "string" && id.length > 0) out.add(id);
+        }
+      }
+      if (out.size > 0) {
+        console.info(`[Live2DAdapter] pose3 baked-hidden parts: ${out.size}`);
+      }
+    } catch (e) {
+      console.warn("[Live2DAdapter] pose3 parse failed (continuing without baked-hidden hints)", e);
+    }
+    return out;
+  }
+
   private async waitForCubismCore(timeoutMs = 5000): Promise<void> {
     const start = performance.now();
     while (performance.now() - start < timeoutMs) {
@@ -1086,13 +1147,21 @@ export class Live2DAdapter implements AvatarAdapter {
 }
 
 /**
- * Resolve a path relative to a manifest URL — `model3.json`'s file
+ * Resolve a path relative to a manifest URL. `model3.json`'s file
  * references are siblings (e.g. "Hiyori.cdi3.json" lives next to
- * "Hiyori.model3.json"). We strip the manifest's filename and append
- * the relative path. Works for both absolute (`/samples/.../`) and
- * blob URLs whose querystring carries the original path.
+ * "Hiyori.model3.json"). For static / built-in puppets the
+ * `relPath` is a relative filename and we strip the manifest's
+ * filename + append.
+ *
+ * Uploaded puppets go through `rewriteLive2DManifest`, which
+ * replaces every internal reference with a `blob:` URL that's
+ * already absolute. Concatenating it onto the manifest's directory
+ * would produce garbage like `blob:http://.../blob:http://.../`, so
+ * detect absolute URLs (`blob:`, `http(s):`, `data:`) and pass them
+ * through unchanged.
  */
 function resolveSiblingUrl(manifestUrl: string, relPath: string): string {
+  if (/^(blob:|https?:|data:)/i.test(relPath)) return relPath;
   const slashIdx = manifestUrl.lastIndexOf("/");
   const base = slashIdx >= 0 ? manifestUrl.substring(0, slashIdx + 1) : "";
   return base + relPath;

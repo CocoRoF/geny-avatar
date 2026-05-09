@@ -63,13 +63,26 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
       ),
     [layers, visibility],
   );
+  // Parts the puppet *already* locks off via its own pose3.json (e.g.
+  // from a previous round-trip). These ride along into the next export
+  // unchanged — we don't add or remove them. Counting unique part ids
+  // (multi-page split duplicates the flag).
+  const bakedAlreadyHiddenCount = useMemo(() => {
+    const seen = new Set<string>();
+    for (const l of layers) {
+      if (!l.bakedHidden) continue;
+      seen.add(l.externalId.replace(/#p\d+$/, ""));
+    }
+    return seen.size;
+  }, [layers]);
   const maskCount = Object.keys(layerMasks).length;
   const aiTextureCount = Object.keys(layerTextureOverrides).length;
 
+  const totalLoadBearing = bakedHideCount + bakedAlreadyHiddenCount + maskCount + aiTextureCount;
   const saveTitle = puppetId
     ? `Download a .geny-avatar.zip — re-importable session (variants + overrides${
-        bakedHideCount + maskCount + aiTextureCount > 0
-          ? `, will include: ${bakedHideCount} hide / ${maskCount} mask / ${aiTextureCount} gen`
+        totalLoadBearing > 0
+          ? `, will include: ${bakedHideCount} hide / ${bakedAlreadyHiddenCount} baked / ${maskCount} mask / ${aiTextureCount} gen`
           : ""
       })`
     : "Save this puppet to the library to enable export";
@@ -78,8 +91,8 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     : !adapter || !avatar
       ? "Wait for the puppet to finish loading"
       : `Download a runtime-ready .zip — atlas + model patches baked in${
-          bakedHideCount + maskCount + aiTextureCount > 0
-            ? ` (${bakedHideCount} hide via pose3.json / ${maskCount} mask / ${aiTextureCount} gen on atlas)`
+          totalLoadBearing > 0
+            ? ` (${bakedHideCount} hide via pose3.json / ${bakedAlreadyHiddenCount} already-baked carried over / ${maskCount} mask / ${aiTextureCount} gen on atlas)`
             : ""
         }`;
 
@@ -139,7 +152,12 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     }
   }
 
-  const stagedSummary = formatStagedSummary(bakedHideCount, maskCount, aiTextureCount);
+  const stagedSummary = formatStagedSummary(
+    bakedHideCount,
+    bakedAlreadyHiddenCount,
+    maskCount,
+    aiTextureCount,
+  );
 
   return (
     <span className={`inline-flex items-center gap-1 ${className}`}>
@@ -174,10 +192,16 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
   );
 }
 
-function formatStagedSummary(hides: number, masks: number, gens: number): string | null {
-  if (hides === 0 && masks === 0 && gens === 0) return null;
+function formatStagedSummary(
+  hides: number,
+  baked: number,
+  masks: number,
+  gens: number,
+): string | null {
+  if (hides === 0 && baked === 0 && masks === 0 && gens === 0) return null;
   const parts: string[] = [];
   if (hides > 0) parts.push(`${hides} hide`);
+  if (baked > 0) parts.push(`${baked} baked`);
   if (masks > 0) parts.push(`${masks} mask`);
   if (gens > 0) parts.push(`${gens} gen`);
   return parts.join(" · ");

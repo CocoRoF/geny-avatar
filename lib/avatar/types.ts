@@ -85,6 +85,15 @@ export type Layer = {
     color: RGBA;
     opacity: number;
   };
+  /**
+   * Set when the puppet's own model files force this part hidden every
+   * frame regardless of motion / parameter input — i.e. a previous
+   * "Export Model" round-trip baked it into pose3.json. The visibility
+   * toggle in the panel is effectively inert for these rows; the value
+   * exists so the UI can mark them "baked-hidden" and tell the user
+   * why their toggle does nothing.
+   */
+  bakedHidden?: boolean;
 };
 
 export type LayerGroup = {

@@ -82,6 +82,21 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
     [layers, visibility],
   );
 
+  // Layers that the puppet's own files (loaded pose3.json from a
+  // previous Export Model round-trip) already hold at opacity 0 every
+  // frame. Toggling these in the panel can't actually un-hide them
+  // since the runtime overrides our value. Counting unique parts (the
+  // multi-page split duplicates the flag across page-suffixed layers).
+  const bakedAlreadyHiddenCount = useMemo(() => {
+    const seen = new Set<string>();
+    for (const l of layers) {
+      if (!l.bakedHidden) continue;
+      const baseId = l.externalId.replace(/#p\d+$/, "");
+      seen.add(baseId);
+    }
+    return seen.size;
+  }, [layers]);
+
   return (
     <div className="flex min-h-0 flex-col">
       <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-3">
@@ -89,14 +104,24 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
           <span>
             Layers ({filtered.length}/{layers.length})
           </span>
-          {bakedHideCount > 0 && (
-            <span
-              className="rounded border border-red-400/60 px-1 font-mono text-[10px] normal-case tracking-normal text-red-400"
-              title="layers that Export Model will hide via a pose3.json patch"
-            >
-              {bakedHideCount} hide
-            </span>
-          )}
+          <span className="flex items-center gap-1">
+            {bakedAlreadyHiddenCount > 0 && (
+              <span
+                className="rounded border border-amber-400/60 px-1 font-mono text-[10px] normal-case tracking-normal text-amber-400"
+                title="parts already locked off by the puppet's own pose3.json (e.g. from a previous Export Model). Visibility toggles on these rows are inert until you re-export without them."
+              >
+                {bakedAlreadyHiddenCount} baked
+              </span>
+            )}
+            {bakedHideCount > 0 && (
+              <span
+                className="rounded border border-red-400/60 px-1 font-mono text-[10px] normal-case tracking-normal text-red-400"
+                title="layers that Export Model will hide via a pose3.json patch on the next export"
+              >
+                {bakedHideCount} hide
+              </span>
+            )}
+          </span>
         </div>
         <input
           type="text"
@@ -192,6 +217,12 @@ function LayerRow({
   onOpenStudio,
   onOpenGenerate,
 }: LayerRowProps) {
+  // Already locked off by the puppet's own model files (pose3.json from
+  // a prior Export Model round-trip). Toggle clicks still go through
+  // store + adapter, but the runtime forces opacity back to 0 every
+  // frame so the user sees no change. We surface this so they don't
+  // think the toggle is broken.
+  const baked = layer.bakedHidden === true;
   const thumbUrl = useLayerThumbnail(adapter, layer);
   const canDecompose = !!layer.texture;
   return (
@@ -220,13 +251,27 @@ function LayerRow({
           {String(index).padStart(2, "0")}
         </span>
         <span
-          className={`truncate ${willBakeHide ? "text-[var(--color-fg-dim)] line-through decoration-red-400/60" : ""}`}
+          className={`truncate ${
+            baked
+              ? "text-[var(--color-fg-dim)] line-through decoration-amber-400/70"
+              : willBakeHide
+                ? "text-[var(--color-fg-dim)] line-through decoration-red-400/60"
+                : ""
+          }`}
         >
           {layer.name}
         </span>
-        {(hasMask || hasGenerated || willBakeHide) && (
+        {(hasMask || hasGenerated || willBakeHide || baked) && (
           <span className="ml-auto flex shrink-0 gap-1">
-            {willBakeHide && (
+            {baked && (
+              <span
+                className="rounded border border-amber-400/60 px-1 font-mono text-[10px] text-amber-400"
+                title="part is already locked hidden by the puppet's pose3.json (likely from a previous Export Model). The visibility toggle is inert until you re-export this puppet without including it."
+              >
+                baked
+              </span>
+            )}
+            {willBakeHide && !baked && (
               <span
                 className="rounded border border-red-400/60 px-1 font-mono text-[10px] text-red-400"
                 title="will be baked into the exported model so this part doesn't render — Cubism: pose3.json group / Spine: slot.attachment=&quot;&quot;"
