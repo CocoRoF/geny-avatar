@@ -33,7 +33,14 @@
 
 import { NextResponse } from "next/server";
 
-const REFINER_MODEL = process.env.OPENAI_PROMPT_REFINER_MODEL ?? "gpt-4o-mini";
+// Default to OpenAI's flagship `gpt-5` so the refinement pass has the
+// best language-quality lever available — vague phrasing like "make it
+// look like the reference" needs real reasoning to be rewritten as the
+// strict slot-mapping / preservation language gpt-image-2 wants.
+// Override per-deployment via OPENAI_PROMPT_REFINER_MODEL when the
+// account doesn't have gpt-5 access or you want to fall back to a
+// cheaper tier (e.g. `gpt-5-mini`, `gpt-4o-mini`).
+const REFINER_MODEL = process.env.OPENAI_PROMPT_REFINER_MODEL ?? "gpt-5";
 const ENDPOINT = "https://api.openai.com/v1/chat/completions";
 
 const SYSTEM_PROMPT = `You are a prompt engineer for OpenAI's gpt-image-2 image-edit API. You rewrite a user's vague edit request into a precise structured instruction that the image model will follow without conflating roles.
