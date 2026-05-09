@@ -79,6 +79,7 @@
 | 2026-05-09 | [63 openai_alignment_fix](2026-05-09_63_openai_alignment_fix.md) | 5 fix | 완료 — gpt-image-2 결과 위치/크기 mismatch 해소. (1) `prepareOpenAISource` 가 silhouette tight-crop 후 1024²에 pad → 모델 frame이 subject로 꽉 참 → 페인트 위치 정확. (2) submit 직후 `postprocessGeneratedBlob` 즉시 실행 → preview/apply/history 가 같은 후처리 blob 공유. `openAIPadding`에 `sourceBBox` 추가, `postprocess`가 source canvas의 정확한 위치로 re-composite |
 | 2026-05-09 | [64 multi_component_kickoff](2026-05-09_64_multi_component_kickoff.md) | 5 polish | 진행중 — disjoint silhouette을 여럿 가진 layer (예: torso + shoulder frill) 의 generation 깨짐 해소 정공. A+B 결정 (auto component split + region-aware UI). sub-sprint A.1~A.3 분할 |
 | 2026-05-09 | [65 sprint_a_1_connected_components](2026-05-09_65_sprint_a_1_connected_components.md) | A.1 | 완료 — `findAlphaComponents` 8-connected 라벨링 + `isolateWithMask` GPU composite + `prepareOpenAISourcesPerComponent` per-island submit-ready package. 라이브러리만, UI 변경 없음 |
+| 2026-05-09 | [66 sprint_a_2_parallel_submit](2026-05-09_66_sprint_a_2_parallel_submit.md) | A.2 | 완료 — GeneratePanel OpenAI 경로 multi-component 전환. N개 island 자동 분리 → 병렬 N submit → per-component postprocess (sourceBBox + binary mask alpha-enforce) → `compositeProcessedComponents` 로 합성. 단일 component layer 동일 동작. UI 변경 없음 (A.3에서 region-aware UI) |
 
 ## 운영 규칙
 

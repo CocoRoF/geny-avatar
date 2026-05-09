@@ -4,10 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
   canvasToPngBlob,
+  compositeProcessedComponents,
   fetchProviders,
   type ProviderAvailability,
   postprocessGeneratedBlob,
-  prepareOpenAISource,
+  prepareOpenAISourcesPerComponent,
   refinePrompt,
   submitGenerate,
 } from "@/lib/ai/client";
@@ -66,17 +67,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
 
-  /** Tracks the OpenAI submit-time geometry across submit→success so the
-   *  apply step (and, since this fix, the preview) can crop the result
-   *  out of the 1024² square and place it back at the silhouette's
-   *  original position inside the source canvas. `paddingOffset` =
-   *  where the (tight-cropped) input sat inside the 1024². `sourceBBox`
-   *  = where that tight crop came from inside the original source
-   *  canvas. Reset on every submit / revisit / reset. */
-  const openAIPaddingRef = useRef<{
-    paddingOffset: { x: number; y: number; w: number; h: number };
-    sourceBBox: { x: number; y: number; w: number; h: number };
-  } | null>(null);
+  /** Last submit's component count, surfaced in the structured submit
+   *  log so the user can correlate result quality with how many
+   *  per-island calls fired. Multi-component layers (e.g. torso +
+   *  shoulder frill in one slot) split into N parallel OpenAI calls
+   *  and N postprocesses are composited back into a single texture. */
+  const lastComponentCountRef = useRef<number>(0);
 
   /** Persisted history for this layer. Newest first. Repopulated on
    *  every successful save so the list reflects what's in IDB. */
@@ -304,66 +300,49 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   async function onSubmit() {
     setPhase({ kind: "submitting" });
-    openAIPaddingRef.current = null;
+    lastComponentCountRef.current = 0;
     try {
       const sourceCanvas = aiSourceCanvasRef.current;
       if (!sourceCanvas) throw new Error("source not ready");
       if (!provider) throw new Error("provider unavailable");
 
-      let sourceBlob: Blob;
-      let maskBlob: Blob | undefined;
-
-      if (providerId === "openai") {
-        // OpenAI gets the source only — never the mask.
-        //
-        // The DecomposeStudio mask is a *live-render* destination-out
-        // wipe ("erase this region from the final atlas"); it is NOT
-        // an instruction to gpt-image-2. Past iterations sent it as
-        // an edit hint and broke the user's actual workflow:
-        //   - User paints a region to erase later, runs gen with a
-        //     prompt about a different region of the layer.
-        //   - Sending the mask told the model "edit only this bbox"
-        //     or "preserve the painted region" — both interpretations
-        //     produced wrong outputs (small grid patterns, color
-        //     biases toward dark, partially-respected mask, etc).
-        //
-        // What works (the original, mask-less behavior the user
-        // confirmed): send the dense, white-padded source + the
-        // prompt. gpt-image-2 reads the layer visually, applies the
-        // prompt, returns an edited 1024². Postprocess crops back to
-        // the layer rect, alpha-enforces against the layer's
-        // silhouette so model over-paint doesn't leak past the
-        // footprint. The live compositor then applies the user's
-        // mask as destination-out at render time. The two effects
-        // (gen and erase) compose cleanly — exactly what the user
-        // asked for ("edit으로 지우고 gen으로 바꾸는" workflow).
-        // Tight-crop to the silhouette before padding so the model
-        // sees a frame filled by the subject (instead of a small shape
-        // pinned in one corner of a mostly-white canvas). Without this,
-        // gpt-image-2 frequently paints its edit at a position that
-        // doesn't match where the silhouette actually sits inside the
-        // source canvas — the apply-time alpha enforce then zeros the
-        // misaligned content out, leaving the user with empty / wrong
-        // results. See `prepareOpenAISource` for the details.
-        const prepared = prepareOpenAISource(sourceCanvas);
-        openAIPaddingRef.current = {
-          paddingOffset: prepared.paddingOffset,
-          sourceBBox: prepared.sourceBBox,
-        };
-        sourceBlob = await canvasToPngBlob(prepared.padded);
-        // maskBlob deliberately stays undefined.
+      // OpenAI gets the source only — never the mask. The DecomposeStudio
+      // mask is a *live-render* destination-out wipe ("erase this region
+      // from the final atlas"); sending it as an inpaint mask caused
+      // model-side confusion ("edit only this bbox" / "preserve the
+      // painted region" — both wrong). The mask-less behavior the user
+      // confirmed: dense source + prompt → edited 1024² → postprocess
+      // crops + alpha-enforces. The live compositor's mask runs as
+      // destination-out at render time; the two effects compose cleanly.
+      //
+      // For Gemini we still pass the raw mask through — Gemini does
+      // accept a binary mask and uses it correctly.
+      const useMultiComponent = providerId === "openai";
+      const components = useMultiComponent
+        ? await prepareOpenAISourcesPerComponent(sourceCanvas)
+        : null;
+      if (components) {
+        lastComponentCountRef.current = components.length;
         console.info(
           `[GeneratePanel] openai submit: sourceCanvas=${sourceCanvas.width}x${sourceCanvas.height}, ` +
-            `tightCrop=${prepared.sourceBBox.w}x${prepared.sourceBBox.h}@(${prepared.sourceBBox.x},${prepared.sourceBBox.y}), ` +
-            `padded=${prepared.padded.width}x${prepared.padded.height}, ` +
-            `paddingOffset=${JSON.stringify(prepared.paddingOffset)}, hasUserMask=${!!existingMask}, maskSentToAI=false`,
+            `components=${components.length}` +
+            components
+              .map(
+                (c, i) =>
+                  `\n  [${i}] sourceBBox=${c.sourceBBox.w}x${c.sourceBBox.h}@(${c.sourceBBox.x},${c.sourceBBox.y}) ` +
+                  `area=${c.area} padded=${c.padded.width}x${c.padded.height}`,
+              )
+              .join("") +
+            `\n hasUserMask=${!!existingMask}, maskSentToAI=false`,
         );
-      } else {
-        // Gemini: arbitrary input dims. Pass source + raw mask through.
-        // Footprint is enforced post-hoc via alpha multiplication in
-        // postprocessGeneratedBlob.
-        sourceBlob = await canvasToPngBlob(sourceCanvas);
-        maskBlob = existingMask ?? undefined;
+      }
+
+      // Gemini path — single source + raw mask. Used only when not OpenAI.
+      let geminiSourceBlob: Blob | undefined;
+      let geminiMaskBlob: Blob | undefined;
+      if (!useMultiComponent) {
+        geminiSourceBlob = await canvasToPngBlob(sourceCanvas);
+        geminiMaskBlob = existingMask ?? undefined;
       }
 
       // ── prompt refinement (optional) ────────────────────────────
@@ -381,16 +360,23 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         setRefineError(null);
         try {
           // Hand the LLM the *unpadded* source so it focuses on the
-          // actual layer texture, not the white border that
-          // padToOpenAISquare adds. Active refs are already what
-          // we'll send to the image model — same blobs go to the
-          // refiner so its description targets the exact bytes the
-          // image edit step will see.
+          // actual layer texture, not the white border that the
+          // OpenAI padding adds. Active refs are already what we'll
+          // send to the image model — same blobs go to the refiner
+          // so its description targets the exact bytes the image
+          // edit step will see. For multi-component layers we still
+          // refine against the full source canvas in this sprint —
+          // per-component refinement lands in A.4. The single shared
+          // refined prompt then rides along on every component
+          // submit, which is enough to give each call the same
+          // structured language without ballooning chat costs.
           const refineSourceBlob = await canvasToPngBlob(sourceCanvas);
           const result = await refinePrompt({
             userPrompt: prompt,
             layerName: layer.name,
-            hasMask: !!maskBlob,
+            // Mask never reaches OpenAI in this pipeline; non-OpenAI
+            // paths set hasMask via geminiMaskBlob below.
+            hasMask: !!geminiMaskBlob,
             negativePrompt: negativePrompt.trim() || undefined,
             sourceImage: refineSourceBlob,
             referenceImages: activeRefBlobs,
@@ -423,8 +409,6 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // also given an object-URL so DevTools "preview" links the
       // raw bytes — click-to-open in a tab. URLs leak intentionally
       // until panel unmount; size is bounded by ref count.
-      const sourceUrl = URL.createObjectURL(sourceBlob);
-      const maskUrl = maskBlob ? URL.createObjectURL(maskBlob) : null;
       const refDetails = activeRefBlobs.map((b, i) => {
         const matched = references.find((r) => r.blob === b);
         const isLastResult = !matched && b === lastResultBlob;
@@ -438,7 +422,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         };
       });
       console.groupCollapsed(
-        `[ai/submit] layer="${layer.name}" provider=${providerId} model=${modelId || "(default)"} refs=${activeRefBlobs.length}`,
+        `[ai/submit] layer="${layer.name}" provider=${providerId} model=${modelId || "(default)"} ` +
+          `refs=${activeRefBlobs.length}` +
+          (components ? ` components=${components.length}` : ""),
       );
       console.info("layer:", {
         id: layer.id,
@@ -448,28 +434,37 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         rect: layer.texture?.rect,
       });
       console.info("provider:", { id: providerId, model: modelId || "(provider default)" });
-      console.info("source image (image[0]):", {
-        slot: "image[0]",
-        bytes: sourceBlob.size,
-        type: sourceBlob.type || "(no MIME)",
-        preview: sourceUrl,
-        ...(openAIPaddingRef.current
-          ? {
-              padded: "1024x1024",
-              paddingOffset: openAIPaddingRef.current.paddingOffset,
-              sourceBBox: openAIPaddingRef.current.sourceBBox,
-            }
-          : {}),
-      });
-      if (maskBlob) {
+      if (components) {
+        console.info(
+          `source split into ${components.length} component(s) — one OpenAI call per component, results composited:`,
+          components.map((c, i) => ({
+            componentId: i,
+            sourceBBox: c.sourceBBox,
+            paddingOffset: c.paddingOffset,
+            area: c.area,
+            paddedDim: `${c.padded.width}x${c.padded.height}`,
+            // toDataURL stays synchronous — fine for diagnostic previews
+            // on the per-component canvases (typically small).
+            isolatedPreview: c.isolatedSource.toDataURL("image/png"),
+          })),
+        );
+      } else if (geminiSourceBlob) {
+        console.info("source image (image[0]):", {
+          slot: "image[0]",
+          bytes: geminiSourceBlob.size,
+          type: geminiSourceBlob.type || "(no MIME)",
+          preview: URL.createObjectURL(geminiSourceBlob),
+        });
+      }
+      if (geminiMaskBlob) {
         console.info("mask:", {
-          bytes: maskBlob.size,
-          type: maskBlob.type || "(no MIME)",
-          preview: maskUrl,
-          appliesTo: "image[0] only (gpt-image-2 convention)",
+          bytes: geminiMaskBlob.size,
+          type: geminiMaskBlob.type || "(no MIME)",
+          preview: URL.createObjectURL(geminiMaskBlob),
+          appliesTo: "image[0]",
         });
       } else {
-        console.info("mask: (none — provider runs unmasked / footprint-only)");
+        console.info("mask: (none — OpenAI runs unmasked / footprint-only)");
       }
       if (refDetails.length === 0) {
         console.info("references: (none)");
@@ -488,40 +483,66 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       );
       console.groupEnd();
 
-      const result = await submitGenerate({
-        providerId,
-        prompt,
-        refinedPrompt: refinedPromptForSubmit,
-        negativePrompt: negativePrompt.trim() || undefined,
-        modelId: modelId || undefined,
-        sourceImage: sourceBlob,
-        maskImage: maskBlob,
-        referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
-      });
+      let processed: Blob;
 
-      // Postprocess immediately so the RESULT preview shows what `apply`
-      // will actually paint into the atlas — cropped out of the 1024²,
-      // re-positioned at the silhouette's source bbox, alpha-enforced
-      // against the layer's footprint. Showing the raw blob here was a
-      // long-standing footgun: the user could see "good" content
-      // floating in the wrong spot of a 1024² preview, click apply, and
-      // get a blank result because alpha-enforce zeroed the misaligned
-      // pixels. Same blob feeds preview, apply, and history so all
-      // three stay in sync.
-      const aiSource = aiSourceCanvasRef.current;
-      const padding = openAIPaddingRef.current;
-      const processed = aiSource
-        ? await postprocessGeneratedBlob({
-            blob: result,
-            sourceCanvas: aiSource,
-            openAIPadding: padding
-              ? {
-                  paddingOffset: padding.paddingOffset,
-                  sourceBBox: padding.sourceBBox,
-                }
-              : undefined,
-          })
-        : result;
+      if (components) {
+        // Multi-component OpenAI path: fire N submits in parallel,
+        // postprocess each into a source-canvas-sized canvas with only
+        // that component's silhouette painted, then composite them all
+        // into one final blob. Same prompt + same refs hit every call;
+        // per-component prompt routing is A.3 territory.
+        const componentBlobs = await Promise.all(
+          components.map(async (comp, idx) => {
+            const compSourceBlob = await canvasToPngBlob(comp.padded);
+            const rawResult = await submitGenerate({
+              providerId,
+              prompt,
+              refinedPrompt: refinedPromptForSubmit,
+              negativePrompt: negativePrompt.trim() || undefined,
+              modelId: modelId || undefined,
+              sourceImage: compSourceBlob,
+              referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
+            });
+            console.info(
+              `[GeneratePanel] component[${idx}] received ${rawResult.size}B — postprocessing`,
+            );
+            // Alpha-enforce against the component's binary mask (not
+            // the full source) so any over-paint into other components'
+            // bbox area gets zeroed before composite.
+            return await postprocessGeneratedBlob({
+              blob: rawResult,
+              sourceCanvas: comp.componentMaskCanvas,
+              openAIPadding: {
+                paddingOffset: comp.paddingOffset,
+                sourceBBox: comp.sourceBBox,
+              },
+            });
+          }),
+        );
+        processed = await compositeProcessedComponents({
+          componentBlobs,
+          sourceCanvas,
+        });
+      } else {
+        // Gemini path stays single-source / mask-aware.
+        if (!geminiSourceBlob) throw new Error("gemini source not prepared");
+        const rawResult = await submitGenerate({
+          providerId,
+          prompt,
+          refinedPrompt: refinedPromptForSubmit,
+          negativePrompt: negativePrompt.trim() || undefined,
+          modelId: modelId || undefined,
+          sourceImage: geminiSourceBlob,
+          maskImage: geminiMaskBlob,
+          referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
+        });
+        // No tight-crop / sourceBBox for Gemini — it reads native dims.
+        processed = await postprocessGeneratedBlob({
+          blob: rawResult,
+          sourceCanvas,
+        });
+      }
+
       const url = URL.createObjectURL(processed);
       setPhase({ kind: "succeeded", url, blob: processed });
     } catch (e) {
@@ -588,7 +609,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
     // The saved blob is already at the layer's upright dim — no further
     // postprocess is needed at apply time.
-    openAIPaddingRef.current = null;
+    lastComponentCountRef.current = 0;
     const url = URL.createObjectURL(row.resultBlob);
     setPrompt(row.prompt);
     setNegativePrompt(row.negativePrompt ?? "");

@@ -550,6 +550,58 @@ export async function postprocessGeneratedBlob(opts: {
   return await canvasToPngBlob(out);
 }
 
+/**
+ * Composite N already-postprocessed component blobs into a single
+ * source-canvas-sized image and re-enforce alpha against the full
+ * source canvas.
+ *
+ * Each input blob is expected to be at source-canvas dims with only
+ * one component's pixels populated (the rest transparent) — i.e. the
+ * exact output of `postprocessGeneratedBlob` called per-component
+ * with that component's `componentMaskCanvas` as the alpha-enforce
+ * reference. Disjoint components don't fight at composite time, so a
+ * straight source-over draw works.
+ *
+ * The final alpha-enforce against the full source canvas reinstates
+ * any anti-aliased edges that the binary per-component masks
+ * flattened to 0/255 — keeping the result visually consistent with
+ * what the live atlas was already rendering.
+ *
+ * Single-component callers can also use this (length-1 array) so the
+ * pipeline shape doesn't fork.
+ */
+export async function compositeProcessedComponents(opts: {
+  componentBlobs: Blob[];
+  sourceCanvas: HTMLCanvasElement;
+}): Promise<Blob> {
+  const W = opts.sourceCanvas.width;
+  const H = opts.sourceCanvas.height;
+  if (!W || !H) throw new Error("source canvas has zero dimensions");
+
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+
+  for (const blob of opts.componentBlobs) {
+    const img = await blobToImage(blob);
+    ctx.drawImage(img, 0, 0, W, H);
+  }
+
+  const srcCtx = opts.sourceCanvas.getContext("2d");
+  if (srcCtx) {
+    const srcData = srcCtx.getImageData(0, 0, W, H);
+    const outData = ctx.getImageData(0, 0, W, H);
+    for (let i = 0; i < outData.data.length; i += 4) {
+      outData.data[i + 3] = Math.round((outData.data[i + 3] * srcData.data[i + 3]) / 255);
+    }
+    ctx.putImageData(outData, 0, 0);
+  }
+
+  return await canvasToPngBlob(out);
+}
+
 // ----- submit + poll -----
 
 export type SubmitGenerateInput = {
