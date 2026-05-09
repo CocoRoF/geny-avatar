@@ -25,6 +25,7 @@ export type PuppetId = string;
 export type AIJobRowId = string;
 export type VariantRowId = string;
 export type LayerOverrideRowId = string;
+export type ReferenceRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -159,6 +160,31 @@ export type PuppetSessionRow = {
   updatedAt: number;
 };
 
+/**
+ * A user-uploaded reference image attached to a specific puppet. Sprint
+ * 5.1 (Phase 5 — gpt-image-2 era). At generate time these blobs are
+ * sent to OpenAI's `/v1/images/edits` as additional `image[]` entries
+ * after the layer source, so the model can match character / style
+ * across edits without IP-Adapter or LoRA. One row per uploaded
+ * image; the user can have many per puppet (cost / latency scales
+ * with count, surfaced in the panel).
+ *
+ * Indexed `[puppetKey+createdAt]` so the panel's "list this puppet's
+ * references newest-first" query is one go.
+ */
+export type ReferenceRow = {
+  id: ReferenceRowId;
+  puppetKey: string;
+  /** Display label — defaults to the source filename. The user can
+   *  rename via the panel later (TBD; not in 5.1). */
+  name: string;
+  /** Whatever the user uploaded: PNG/JPEG/WebP. We don't normalize
+   *  format — gpt-image-2's multi-image input accepts any of those
+   *  on the non-mask reference slots. */
+  blob: Blob;
+  createdAt: number;
+};
+
 class GenyAvatarDB extends Dexie {
   puppets!: EntityTable<PuppetRow, "id">;
   puppetFiles!: EntityTable<PuppetFileRow, "id">;
@@ -166,6 +192,7 @@ class GenyAvatarDB extends Dexie {
   variants!: EntityTable<VariantRow, "id">;
   layerOverrides!: EntityTable<LayerOverrideRow, "id">;
   puppetSessions!: EntityTable<PuppetSessionRow, "puppetKey">;
+  puppetReferences!: EntityTable<ReferenceRow, "id">;
 
   constructor() {
     super("geny-avatar");
@@ -232,6 +259,19 @@ class GenyAvatarDB extends Dexie {
       variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
       layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
       puppetSessions: "puppetKey, updatedAt",
+    });
+    // v7: + puppetReferences (Sprint 5.1 — gpt-image-2 multi-image
+    // refs). Compound index `[puppetKey+createdAt]` lists a puppet's
+    // refs newest-first; the bare `puppetKey` index covers the bulk
+    // delete path used when a puppet is removed.
+    this.version(7).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+      puppetSessions: "puppetKey, updatedAt",
+      puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
     });
   }
 }
@@ -500,4 +540,50 @@ export async function savePuppetSession(input: {
 
 export async function deletePuppetSession(puppetKey: string): Promise<void> {
   await db().puppetSessions.delete(puppetKey);
+}
+
+// ----- Puppet references (Sprint 5.1) -----
+
+export type SaveReferenceInput = {
+  puppetKey: string;
+  name: string;
+  blob: Blob;
+};
+
+/**
+ * Save one user-uploaded reference image. Returns the new row id so
+ * the panel can highlight the freshly added entry. We don't dedupe
+ * on filename — the user might upload the same name with different
+ * content, and dedupe would silently drop the new one.
+ */
+export async function saveReference(input: SaveReferenceInput): Promise<ReferenceRowId> {
+  const id = newId(ID_PREFIX.reference);
+  await db().puppetReferences.put({
+    id,
+    puppetKey: input.puppetKey,
+    name: input.name,
+    blob: input.blob,
+    createdAt: Date.now(),
+  });
+  return id;
+}
+
+/**
+ * All references attached to a puppet, newest first. Returns `[]` when
+ * the puppet has none — never throws on missing puppet.
+ */
+export async function listReferencesForPuppet(puppetKey: string): Promise<ReferenceRow[]> {
+  return await db()
+    .puppetReferences.where("[puppetKey+createdAt]")
+    .between([puppetKey, Dexie.minKey], [puppetKey, Dexie.maxKey])
+    .reverse()
+    .toArray();
+}
+
+export async function deleteReference(id: ReferenceRowId): Promise<void> {
+  await db().puppetReferences.delete(id);
+}
+
+export async function deleteAllReferencesForPuppet(puppetKey: string): Promise<void> {
+  await db().puppetReferences.where("puppetKey").equals(puppetKey).delete();
 }

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ExportButton } from "@/components/ExportButton";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
+import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { VariantsPanel } from "@/components/VariantsPanel";
@@ -243,8 +244,9 @@ export default function UploadPocPage() {
         )}
       </section>
 
-      <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
+      <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
+        <ReferencesPanel puppetKey={savedId} />
         <VariantsPanel puppetKey={savedId} adapter={adapter} onApplyVariant={applyVariant} />
         <LayersPanel
           adapter={adapter}

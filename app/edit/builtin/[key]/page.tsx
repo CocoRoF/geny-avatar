@@ -3,6 +3,7 @@
 import { use, useState } from "react";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
+import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
@@ -98,8 +99,9 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
         />
       </section>
 
-      <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
+      <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
+        <ReferencesPanel puppetKey={`builtin:${key}`} />
         <VariantsPanel
           puppetKey={`builtin:${key}`}
           adapter={adapter}

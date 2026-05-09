@@ -5,6 +5,7 @@ import { use, useEffect, useState } from "react";
 import { ExportButton } from "@/components/ExportButton";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
+import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
@@ -170,8 +171,9 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
         )}
       </section>
 
-      <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)]">
+      <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)]">
         <ToolsPanel onPlayAnimation={playAnimation} />
+        <ReferencesPanel puppetKey={puppetId} />
         <VariantsPanel puppetKey={puppetId} adapter={adapter} onApplyVariant={applyVariant} />
         <LayersPanel
           adapter={adapter}

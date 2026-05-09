@@ -69,6 +69,7 @@
 | 2026-05-07 | [53 export_staged_chips](2026-05-07_53_export_staged_chips.md) | 4 polish | 완료 — LayerRow의 hide 배지 + name 취소선, LayersPanel 헤더의 hide count chip, ExportButton 옆 staged 요약 chip + tooltip. 사용자 토글이 export에 베이크된다는 신호를 한 눈에 보이게 |
 | 2026-05-07 | [54 baked_hidden_indicator](2026-05-07_54_baked_hidden_indicator.md) | 4 polish | 완료 — Layer.bakedHidden 추가, Live2DAdapter가 pose3.json 파싱해 forced-hidden parts 식별, LayersPanel/ExportButton에 amber `baked` 표시. 이미 export-import 사이클을 거친 puppet에서 토글이 왜 효과 없는지 사용자에게 보여줌. resolveSiblingUrl도 blob URL 처리하도록 fix (cdi3 displayNames도 덜리 동작) |
 | 2026-05-07 | [55 phase5_kickoff](2026-05-07_55_phase5_kickoff.md) | 5.0 | 진행중 — Phase 5 sub-sprint 분할 (gpt-image-2 단독 정공). 5.1 reference store / 5.2 multi-image input / 5.3 ref selection UX / 5.4 prompt templates / 5.5 comparison viewer. ComfyUI/LoRA는 별도 후속 phase로 deferred |
+| 2026-05-07 | [56 sprint_5_1_reference_store](2026-05-07_56_sprint_5_1_reference_store.md) | 5.1 | 완료 — IDB v7 puppetReferences store + useReferences 훅 + ReferencesPanel + 3개 edit 페이지 와이어링. 인프라만 — 5.2가 OpenAI 호출에 흘려넣음 |
 
 ## 운영 규칙
 
