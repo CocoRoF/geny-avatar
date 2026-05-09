@@ -136,6 +136,20 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     failedReason?: string;
   };
   const [regionStates, setRegionStates] = useState<RegionRunState[]>([]);
+  /** Mirror of `regionStates` for synchronous access from async
+   *  callbacks. The previous implementation relied on capturing
+   *  `next.map(...)` inside a `setRegionStates(updater)` callback
+   *  to feed the result into `recompositeResult` — but in React 18
+   *  the updater runs asynchronously, so by the time `await`
+   *  yielded the captured array was still its `[]` initial value.
+   *  Empty array → composite blob with no per-region content →
+   *  apply-to-atlas wrote a blank texture and the user saw no
+   *  change. Reading the latest blobs from this ref dodges the
+   *  race entirely. */
+  const regionStatesRef = useRef<RegionRunState[]>([]);
+  useEffect(() => {
+    regionStatesRef.current = regionStates;
+  }, [regionStates]);
   /** Cache of `prepareOpenAISources*` output. Built once at mount
    *  and reused across both generate-all and per-region regenerate
    *  so we don't pay the isolation / pad cost on every call. */
@@ -744,13 +758,20 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       const baseText = refinedReady ?? prompt;
       try {
         const newBlob = await runRegionGen(idx, prepared, baseText, activeRefBlobs);
-        let updatedBlobs: Blob[] = [];
+        // G.8: build the composite source-of-truth from the
+        // ref-mirror of regionStates rather than capturing the
+        // setter's updater closure. The async updater wasn't
+        // running before `await recompositeResult(...)` did, so
+        // the array was stale ([] on first run) and the resulting
+        // composite blob was blank — apply-to-atlas then quietly
+        // overwrote the layer with empty pixels.
+        const baseStates = regionStatesRef.current;
+        const updatedBlobs = baseStates.map((s, i) => (i === idx ? newBlob : s.resultBlob));
         setRegionStates((prev) => {
           const next = [...prev];
           if (next[idx]) {
             next[idx] = { resultBlob: newBlob, status: "succeeded" as const };
           }
-          updatedBlobs = next.map((s) => s.resultBlob);
           return next;
         });
         await recompositeResult(updatedBlobs);
@@ -1017,9 +1038,16 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           prepared.map((_, idx) => runRegionGen(idx, prepared, baseText, activeRefBlobs)),
         );
 
-        // Collapse settled results into the next regionStates and
-        // collect the blob list for compositing in the same pass.
-        const finalBlobs: Blob[] = [];
+        // G.8: same fix as regenerateOneRegion — read finalBlobs
+        // from the ref-mirror, not the setRegionStates updater
+        // (the updater is async and doesn't fire before the await
+        // below runs). Without this, the composite was an empty
+        // array → blank atlas after apply.
+        const baseStates = regionStatesRef.current;
+        const finalBlobs: Blob[] = baseStates.map((s, idx) => {
+          const r = settled[idx];
+          return r && r.status === "fulfilled" ? r.value : s.resultBlob;
+        });
         setRegionStates((prev) => {
           const next = [...prev];
           settled.forEach((r, idx) => {
@@ -1034,8 +1062,6 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               };
             }
           });
-          // Build composite blob list using the up-to-date next array.
-          for (let i = 0; i < next.length; i++) finalBlobs.push(next[i].resultBlob);
           return next;
         });
 

@@ -90,6 +90,7 @@
 | 2026-05-09 | [74 sprint_f_4_per_region_regen_fix](2026-05-09_74_sprint_f_4_per_region_regen_fix.md) | F.4 | 완료 — F.2 의 ↻ button 이 prompt 가드 빠진 채로 enabled → API 400 → silent failure 버그 수정. `regenDisabled` 에 prompt 체크 추가, `runRegionGen` 이 panel prompt 비면 per-region 을 raw prompt 로 fallback, fail-fast guard, tile 에 inline failure reason + per-region ✕ clear 버튼 |
 | 2026-05-09 | [75 sprint_g_focus_mode_redesign](2026-05-09_75_sprint_g_focus_mode_redesign.md) | G | 완료 — multi-region UX 정공 재설계. modal이 picker view → focus mode 흐름. PICKER: 큰 카드 그리드, click 하면 그 region focus 진입. FOCUS: SOURCE 에 isolated region tight crop, 단일 prompt textarea (region 별 보존), generate 버튼은 그 region 한 개만 호출. "generate all" 제거. single-component layer 는 자동 focus 0 으로 기존 UX 유지 |
 | 2026-05-09 | [76 sprint_g_7_focus_result_preview](2026-05-09_76_sprint_g_7_focus_result_preview.md) | G.7 | 완료 — focus mode RESULT 가 region tight-crop canvas 로 paint. SOURCE 와 같은 bbox dim/framing 으로 1:1 비교 가능. composite blob (3863×3381 등) 을 RESULT 에 그대로 보여주던 silent UX 실패 (region 1 의 1016×639 영역이 panel 에서 거의 안 보임) 해소 |
+| 2026-05-09 | [77 sprint_g_8_apply_race_fix](2026-05-09_77_sprint_g_8_apply_race_fix.md) | G.8 | 완료 — apply-to-atlas 가 빈 텍스처로 덮어쓰던 React race 수정. `setRegionStates(updater)` 안에서 캡처하던 `updatedBlobs` 가 비동기 updater 때문에 `await recompositeResult(...)` 시점에 빈 `[]` → composite 빈 PNG → alpha=0 source-over 가 no-op → 사용자가 "변화 없음" 본 정확한 증상. `regionStatesRef` 도입해 동기로 read |
 
 ## 운영 규칙
 
