@@ -30,7 +30,57 @@ export type ComponentInfo = {
    * canvas (one component's pixels visible, others zeroed out).
    */
   maskCanvas: HTMLCanvasElement;
+  /**
+   * E.3: only set when this component came from a manually-defined
+   * region (DecomposeStudio split mode). Auto-detected components
+   * leave both unset; GeneratePanel falls back to the per-component
+   * color palette + the user-typed component label (E.1) in that
+   * case.
+   */
+  name?: string;
+  color?: string;
 };
+
+/** Compute a tight bbox from a binary mask canvas (alpha > threshold).
+ *  Used by the manual-region path to derive a per-region bbox without
+ *  re-running connected-components. Returns null when the mask is
+ *  fully transparent. */
+export function bboxFromMask(
+  mask: HTMLCanvasElement,
+  alphaThreshold = 1,
+): { x: number; y: number; w: number; h: number; area: number } | null {
+  const W = mask.width;
+  const H = mask.height;
+  if (W <= 0 || H <= 0) return null;
+  const ctx = mask.getContext("2d");
+  if (!ctx) return null;
+  const data = ctx.getImageData(0, 0, W, H).data;
+  let minX = W;
+  let minY = H;
+  let maxX = -1;
+  let maxY = -1;
+  let area = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const a = data[(y * W + x) * 4 + 3];
+      if (a >= alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        area++;
+      }
+    }
+  }
+  if (maxX < 0 || maxY < 0) return null;
+  return {
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1,
+    area,
+  };
+}
 
 export type FindComponentsOptions = {
   /** Pixels with alpha < this threshold are treated as background. */

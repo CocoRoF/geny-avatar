@@ -251,6 +251,45 @@ export type PreparedComponent = {
   isolatedSource: HTMLCanvasElement;
 };
 
+/**
+ * Variant of `prepareOpenAISourcesPerComponent` that takes a list of
+ * pre-built masks instead of running connected-components on the
+ * source. Used by GeneratePanel's E.3 path when DecomposeStudio's
+ * split mode has persisted user-defined regions for this layer.
+ *
+ * Each input mask is treated as a single component:
+ *   - isolate the source by that mask → per-region canvas
+ *   - prepare via the standard tight-crop + 1024² pad pipeline
+ *   - return a PreparedComponent that postprocess can place back
+ *
+ * componentId is the mask's index in the input array, preserving
+ * caller order so the panel's tiles map 1:1 to submit calls.
+ */
+export async function prepareOpenAISourcesFromMasks(
+  source: HTMLCanvasElement,
+  masks: HTMLCanvasElement[],
+): Promise<PreparedComponent[]> {
+  const { isolateWithMask } = await import("@/lib/avatar/connectedComponents");
+  return masks.map((maskCanvas, idx) => {
+    const isolated = isolateWithMask(source, maskCanvas);
+    const prepared = prepareOpenAISource(isolated);
+    // Compute a coarse area estimate from the prepared sourceBBox.
+    // Exact pixel-count area isn't required for the submit path —
+    // diagnostic logging and ordering use it, and bbox area is good
+    // enough for the manual-region case.
+    const area = prepared.sourceBBox.w * prepared.sourceBBox.h;
+    return {
+      componentId: idx,
+      sourceBBox: prepared.sourceBBox,
+      area,
+      padded: prepared.padded,
+      paddingOffset: prepared.paddingOffset,
+      componentMaskCanvas: maskCanvas,
+      isolatedSource: isolated,
+    };
+  });
+}
+
 export async function prepareOpenAISourcesPerComponent(
   source: HTMLCanvasElement,
   opts: { minArea?: number } = {},

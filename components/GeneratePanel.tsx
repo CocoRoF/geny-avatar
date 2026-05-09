@@ -8,12 +8,14 @@ import {
   fetchProviders,
   type ProviderAvailability,
   postprocessGeneratedBlob,
+  prepareOpenAISourcesFromMasks,
   prepareOpenAISourcesPerComponent,
   refinePrompt,
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
 import {
+  bboxFromMask,
   type ComponentInfo,
   componentThumbnail,
   findAlphaComponents,
@@ -22,6 +24,7 @@ import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
 import { useReferences } from "@/lib/avatar/useReferences";
+import { useRegionMasks } from "@/lib/avatar/useRegionMasks";
 import { type AIJobRow, listAIJobsForLayer, saveAIJob } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
 
@@ -102,6 +105,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     () => ["#22c55e", "#f97316", "#ec4899", "#3b82f6", "#eab308", "#a855f7"],
     [],
   );
+
+  // E.3 — manually-defined regions painted in DecomposeStudio's
+  // split mode. When non-empty these take precedence over auto-
+  // detected components; the user has chosen explicit boundaries
+  // and naming, so we honor them. Declared before the mount effect
+  // so the effect can read the hook's value.
+  const { regions: manualRegions } = useRegionMasks(puppetKey, layer.externalId);
+  /** "manual" when manualRegions drove the components state; "auto"
+   *  when findAlphaComponents did. Surfaced in the panel + diagnostic
+   *  log so the user can tell which path is active. */
+  const [regionSource, setRegionSource] = useState<"manual" | "auto">("auto");
 
   /** Persisted history for this layer. Newest first. Repopulated on
    *  every successful save so the list reflects what's in IDB. */
@@ -188,21 +202,64 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       if (cancelled) return;
       previewSourceRef.current = previewExtracted?.canvas ?? aiExtracted.canvas;
 
-      // Detect connected silhouette components on the AI source. The
-      // result feeds three things: the colored bbox overlay on the
-      // SOURCE canvas, the per-region tiles (with thumbnail + sub-
-      // prompt textarea), and submit-time prompt composition. We use
-      // the AI source (not the post-mask preview) because the AI
-      // source is exactly what each component's gen call will see.
-      const detected = findAlphaComponents(aiExtracted.canvas);
+      // E.3: pick region source. If the user painted manual regions
+      // in DecomposeStudio's split mode, those take precedence —
+      // their boundaries / names / colors flow straight into the
+      // panel + the submit pipeline. Otherwise fall back to
+      // findAlphaComponents auto-detection. Both paths produce a
+      // ComponentInfo[] that the rest of the panel consumes
+      // uniformly; manual entries carry `name` + `color` so the UI
+      // can render readonly names + matching swatches.
+      let regionList: ComponentInfo[];
+      let activeSource: "manual" | "auto";
+      if (manualRegions.length > 0) {
+        activeSource = "manual";
+        regionList = [];
+        for (let i = 0; i < manualRegions.length; i++) {
+          const r = manualRegions[i];
+          const c = document.createElement("canvas");
+          c.width = aiExtracted.canvas.width;
+          c.height = aiExtracted.canvas.height;
+          const cctx = c.getContext("2d");
+          if (cctx) {
+            try {
+              const url = URL.createObjectURL(r.maskBlob);
+              const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+                const i2 = new Image();
+                i2.onload = () => resolve(i2);
+                i2.onerror = () => reject(new Error("image load failed"));
+                i2.src = url;
+              });
+              URL.revokeObjectURL(url);
+              cctx.drawImage(img, 0, 0, c.width, c.height);
+            } catch {
+              // skip — region's mask couldn't decode; leave canvas blank
+            }
+          }
+          const bbox = bboxFromMask(c);
+          if (!bbox) continue;
+          regionList.push({
+            id: i,
+            bbox: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+            area: bbox.area,
+            maskCanvas: c,
+            name: r.name,
+            color: r.color,
+          });
+        }
+      } else {
+        activeSource = "auto";
+        regionList = findAlphaComponents(aiExtracted.canvas);
+      }
       if (cancelled) return;
-      const thumbs = detected.map((c) => componentThumbnail(aiExtracted.canvas, c, 96));
-      setComponents(detected);
+      const thumbs = regionList.map((c) => componentThumbnail(aiExtracted.canvas, c, 96));
+      setRegionSource(activeSource);
+      setComponents(regionList);
       setComponentThumbs(thumbs);
       // Initialize per-region prompts to empty strings. Existing
       // prompts (if user re-opens the same layer) are reset because
       // the component identity isn't stable across mounts.
-      setComponentPrompts(detected.map(() => ""));
+      setComponentPrompts(regionList.map(() => ""));
 
       setReady(true);
     })();
@@ -210,7 +267,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [adapter, layer, existingTexture, existingMask]);
+  }, [adapter, layer, existingTexture, existingMask, manualRegions]);
 
   // ----- after-mount: paint preview onto the display canvas -----
   // Split from the extract effect because the display `<canvas>` is only
@@ -370,7 +427,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // accept a binary mask and uses it correctly.
       const useMultiComponent = providerId === "openai";
       const prepared = useMultiComponent
-        ? await prepareOpenAISourcesPerComponent(sourceCanvas)
+        ? regionSource === "manual" && components.length > 0
+          ? await prepareOpenAISourcesFromMasks(
+              sourceCanvas,
+              components.map((c) => c.maskCanvas),
+            )
+          : await prepareOpenAISourcesPerComponent(sourceCanvas)
         : null;
       if (prepared) {
         lastComponentCountRef.current = prepared.length;
@@ -487,11 +549,13 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       console.info("provider:", { id: providerId, model: modelId || "(provider default)" });
       if (prepared) {
         console.info(
-          `source split into ${prepared.length} component(s) — one OpenAI call per component, results composited:`,
+          `source split into ${prepared.length} component(s) (${regionSource}) — one OpenAI call per component, results composited:`,
           prepared.map((c, i) => ({
             componentId: i,
             label: components[i]
-              ? componentLabels[componentSignature(components[i].bbox)] || "(unnamed)"
+              ? (components[i].name ??
+                componentLabels[componentSignature(components[i].bbox)] ??
+                "(unnamed)")
               : "(unmatched)",
             sourceBBox: c.sourceBBox,
             paddingOffset: c.paddingOffset,
@@ -537,7 +601,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           prepared.map((_, i) => ({
             region: i + 1,
             label: components[i]
-              ? componentLabels[componentSignature(components[i].bbox)] || ""
+              ? (components[i].name ??
+                componentLabels[componentSignature(components[i].bbox)] ??
+                "")
               : "",
             text: componentPrompts[i] ?? "",
           })),
@@ -566,13 +632,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         const componentBlobs = await Promise.all(
           prepared.map(async (comp, idx) => {
             const perRegion = (componentPrompts[idx] ?? "").trim();
-            // Pull the matching auto-detected component's signature so
-            // we can label this call with the user's saved name (E.1).
-            // Falls back to the ordinal "region N" when no name has
-            // been set.
+            // Region name resolution:
+            //   - manual region: name lives on the ComponentInfo
+            //     itself (set during the hydrate effect).
+            //   - auto region: name lives in the E.1 label dict
+            //     keyed by bbox signature.
+            //   - fallback: empty → ordinal label is used.
             const detected = components[idx];
             const label = detected
-              ? (componentLabels[componentSignature(detected.bbox)] || "").trim()
+              ? (detected.name ?? componentLabels[componentSignature(detected.bbox)] ?? "").trim()
               : "";
             const regionDescriptor = label
               ? `region '${label}' (${idx + 1} of ${prepared.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`
@@ -806,7 +874,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                     aria-hidden="true"
                   >
                     {components.map((c, idx) => {
-                      const color = COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                      const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
                       const labelSize = Math.max(20, Math.min(c.bbox.w, c.bbox.h) / 4);
                       return (
                         <g key={c.id}>
@@ -958,18 +1026,42 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 exposed midriff" / "region 2: lace frill". */}
             {components.length > 1 && (
               <div className="mb-3">
-                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  regions
-                  <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
-                    · {components.length} OpenAI calls
+                <div className="mb-1 flex items-baseline justify-between">
+                  <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    regions
+                    <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
+                      · {components.length} OpenAI calls
+                    </span>
+                  </div>
+                  {/* E.3: surface which path produced these regions
+                      so the user knows whether DecomposeStudio split
+                      mode is winning over auto-detect. */}
+                  <span
+                    className={`rounded px-1 font-mono text-[10px] ${
+                      regionSource === "manual"
+                        ? "border border-[var(--color-accent)] text-[var(--color-accent)]"
+                        : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                    }`}
+                    title={
+                      regionSource === "manual"
+                        ? "user-defined regions from DecomposeStudio split mode"
+                        : "auto-detected by connected-components — open DecomposeStudio split mode to override"
+                    }
+                  >
+                    {regionSource}
                   </span>
                 </div>
                 <div className="flex flex-col gap-2">
                   {components.map((c, idx) => {
-                    const color = COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                    const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
                     const thumb = componentThumbs[idx];
                     const sig = componentSignature(c.bbox);
-                    const name = componentLabels[sig] ?? "";
+                    // Manual regions carry their own name (read-only
+                    // here — DecomposeStudio owns editing). Auto
+                    // regions pull from the E.1 label dictionary,
+                    // editable inline.
+                    const isManual = c.name !== undefined;
+                    const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
                     return (
                       <div
                         key={c.id}
@@ -998,15 +1090,29 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                             </span>
                           </div>
                           <div className="flex min-w-0 flex-1 flex-col gap-1">
-                            {/* E.1: editable region name. Persists per
-                                (puppet, layer, component bbox) signature. */}
-                            <input
-                              type="text"
-                              value={name}
-                              onChange={(e) => setComponentLabel(sig, e.target.value)}
-                              placeholder={`name (e.g. torso, frill)`}
-                              className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                            />
+                            {isManual ? (
+                              // Manual regions: name is set in
+                              // DecomposeStudio split mode. Show
+                              // read-only here so the source of truth
+                              // stays single.
+                              <div className="truncate text-[11px] font-medium text-[var(--color-fg)]">
+                                {name || (
+                                  <span className="italic text-[var(--color-fg-dim)]">
+                                    (unnamed)
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              // E.1: editable region name. Persists per
+                              // (puppet, layer, component bbox) signature.
+                              <input
+                                type="text"
+                                value={name}
+                                onChange={(e) => setComponentLabel(sig, e.target.value)}
+                                placeholder={`name (e.g. torso, frill)`}
+                                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                              />
+                            )}
                             <div className="text-[10px] text-[var(--color-fg-dim)]">
                               {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
                             </div>
