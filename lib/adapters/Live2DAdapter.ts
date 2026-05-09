@@ -1185,21 +1185,45 @@ function getNativeParts(coreModel: any): any | null {
 }
 
 /**
- * Cubism Core's getPartId / getParameterId returns CubismIdHandle objects
- * (`{ _id, getString() }`). We coerce to a plain string at the boundary so
- * React can render the layer name without throwing.
+ * Cubism Core's `getPartId` / `getParameterId` return `CubismIdHandle`
+ * objects. We coerce to a plain JS string at the boundary so React can
+ * render the layer name without throwing — and so that downstream IDB
+ * keys / pose3.json `Id` fields contain the **actual moc3 part id**
+ * rather than a fallback. Earlier this function fell through to
+ * `fallback = "part_<idx>"` for every layer because:
+ *
+ *   - `CubismId.getString()` returns a `csmString` *object*, not a
+ *     plain JS string. `typeof csmString` is `"object"`, so the
+ *     `typeof s === "string"` guard rejected it.
+ *   - `CubismId._id` is also a `csmString`, so the next guard
+ *     (`typeof v._id === "string"`) also rejected it.
+ *
+ * The fallback then produced names like `"part_0"` / `"part_3"` that
+ * happen to be plausible-looking but **don't match the real part ids
+ * in the moc3 binary**. That broke any feature that needs the engine
+ * to look the id back up — most visibly the `pose3.json` hide patch
+ * we generate during Export Model: the engine called
+ * `getPartIndex("part_0")`, the moc3 had no part with that id, the
+ * lookup returned `-1`, and pose silently did nothing.
+ *
+ * Now we explicitly unwrap `csmString` (its `.s` property holds the
+ * real JS string) at every point where the wrapper might appear.
  */
 function coerceCubismId(value: unknown, fallback: string): string {
   if (typeof value === "string") return value;
-  if (value && typeof value === "object") {
-    // biome-ignore lint/suspicious/noExplicitAny: probing handle shape
-    const v = value as any;
-    if (typeof v.getString === "function") {
-      const s = v.getString();
-      if (typeof s === "string") return s;
-    }
-    if (typeof v._id === "string") return v._id;
-    if (typeof v.id === "string") return v.id;
+  if (value == null || typeof value !== "object") return fallback;
+  // biome-ignore lint/suspicious/noExplicitAny: probing handle shape
+  const v = value as any;
+  if (typeof v.getString === "function") {
+    const s = v.getString();
+    if (typeof s === "string") return s;
+    // `s` is csmString; its `.s` is the actual JS string the moc3 stored.
+    if (s && typeof s === "object" && typeof s.s === "string") return s.s;
   }
+  if (v._id != null) {
+    if (typeof v._id === "string") return v._id;
+    if (typeof v._id === "object" && typeof v._id.s === "string") return v._id.s;
+  }
+  if (typeof v.id === "string") return v.id;
   return fallback;
 }
