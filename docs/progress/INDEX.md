@@ -85,6 +85,8 @@
 | 2026-05-09 | [69 sprint_e_1_component_labels](2026-05-09_69_sprint_e_1_component_labels.md) | E.1 | 완료 — IDB v8 `componentLabels` store + `useComponentLabels` hook + region tile inline name input. 사용자가 region 1/2/3 → "torso", "shoulder frill" 등 명명. 400ms debounced IDB save, bbox signature 키. submit prompt에 "region 'torso' (...)" 형식으로 모델 전달 |
 | 2026-05-09 | [70 sprint_e_2_decompose_split_mode](2026-05-09_70_sprint_e_2_decompose_split_mode.md) | E.2 | 완료 — IDB v9 `regionMasks` store + `useRegionMasks` hook + DecomposeStudio top mode toggle [trim \| split]. split mode에서 사용자가 N개 named region 직접 brush로 정의, region별 binary mask + name + color → IDB 영구 저장. SAM 통합은 follow-up |
 | 2026-05-09 | [71 sprint_e_3_manual_regions_in_panel](2026-05-09_71_sprint_e_3_manual_regions_in_panel.md) | E.3 | 완료 — GeneratePanel이 manual regions 우선 사용. `prepareOpenAISourcesFromMasks` (manual variant) + `bboxFromMask` + `ComponentInfo` extended with optional name/color. mount 시 manual 있으면 그대로 hydrate, 아니면 auto-detect. UI에 [manual]/[auto] chip + 색깔 매치. A+B+E 정공 정밀도 마무리 |
+| 2026-05-09 | [72 f_kickoff](2026-05-09_72_f_kickoff.md) | F.0 | 진행중 — Phase 6 진입 전 GeneratePanel 4가지 nopen-blocker. F.1 sticky actions footer / F.2 per-region 선택 재생성 / F.3 applied texture revert |
+| 2026-05-09 | [73 sprint_f_pre_phase6_polish](2026-05-09_73_sprint_f_pre_phase6_polish.md) | F.1+F.2+F.3 | 완료 — aside 를 scrollable content + sticky actions footer 로 분리 (긴 region list 도 generate/apply 항상 visible, history 자동 가시화). `regionStates` per-region 상태 + `runRegionGen` helper + `regenerateOneRegion` ↻ 버튼 (단일 region 재호출, cached refinement). `onRevertTexture` 빨간 actions 버튼 (confirm + IDB row 삭제 + atlas 원본 복귀) |
 
 ## 운영 규칙
 

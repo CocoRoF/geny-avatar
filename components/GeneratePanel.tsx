@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
   canvasToPngBlob,
@@ -25,7 +25,12 @@ import type { Layer } from "@/lib/avatar/types";
 import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
 import { useReferences } from "@/lib/avatar/useReferences";
 import { useRegionMasks } from "@/lib/avatar/useRegionMasks";
-import { type AIJobRow, listAIJobsForLayer, saveAIJob } from "@/lib/persistence/db";
+import {
+  type AIJobRow,
+  deleteLayerOverride,
+  listAIJobsForLayer,
+  saveAIJob,
+} from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
 
 type Props = {
@@ -96,6 +101,25 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
    *  string to the common prompt and sends one composed prompt per
    *  component call. */
   const [componentPrompts, setComponentPrompts] = useState<string[]>([]);
+
+  /** F.2: per-region run state. Each entry tracks the latest blob
+   *  this region contributes to the composite + its current call
+   *  status. On mount we seed every region with its isolated source
+   *  blob (the unedited original) so the composite the user sees in
+   *  RESULT matches what the atlas would render with no edits. As
+   *  individual regions get regenerated, only those entries flip to
+   *  the postprocessed gen output — letting the user iterate one
+   *  region at a time without disrupting the others. */
+  type RegionRunState = {
+    resultBlob: Blob;
+    status: "idle" | "running" | "succeeded" | "failed";
+    failedReason?: string;
+  };
+  const [regionStates, setRegionStates] = useState<RegionRunState[]>([]);
+  /** Cache of `prepareOpenAISources*` output. Built once at mount
+   *  and reused across both generate-all and per-region regenerate
+   *  so we don't pay the isolation / pad cost on every call. */
+  const preparedRef = useRef<import("@/lib/ai/client").PreparedComponent[] | null>(null);
 
   /** Color palette cycled across components for the source-overlay
    *  outlines and the per-region tile borders. Six saturated hues
@@ -261,6 +285,40 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // the component identity isn't stable across mounts.
       setComponentPrompts(regionList.map(() => ""));
 
+      // F.2: pre-prepare each region's submit-ready package + seed
+      // regionStates with the unedited isolated source. This lets
+      // per-region regenerate skip the isolation/pad work on each
+      // click and lets RESULT show the correct partial-state
+      // composite even before the first generate.
+      preparedRef.current = null;
+      if (regionList.length > 0) {
+        try {
+          const prepared =
+            activeSource === "manual"
+              ? await prepareOpenAISourcesFromMasks(
+                  aiExtracted.canvas,
+                  regionList.map((c) => c.maskCanvas),
+                )
+              : await prepareOpenAISourcesPerComponent(aiExtracted.canvas);
+          if (cancelled) return;
+          preparedRef.current = prepared;
+
+          const initStates: RegionRunState[] = await Promise.all(
+            prepared.map(async (p) => {
+              const blob = await canvasToPngBlob(p.isolatedSource);
+              return { resultBlob: blob, status: "idle" as const };
+            }),
+          );
+          if (cancelled) return;
+          setRegionStates(initStates);
+        } catch (e) {
+          console.warn("[GeneratePanel] prepare regions failed", e);
+          setRegionStates([]);
+        }
+      } else {
+        setRegionStates([]);
+      }
+
       setReady(true);
     })();
 
@@ -406,6 +464,128 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setComparisonIds((prev) => prev.filter((id) => history.some((r) => r.id === id)));
   }, [history]);
 
+  /** F.2: run one region's gen call end-to-end. Used by both
+   *  "generate all" (looped over every prepared component) and the
+   *  per-region ↻ button (called for a single index). The caller
+   *  builds the refined prompt + active refs once and threads them
+   *  through; this helper just composes the per-region prompt,
+   *  fires the API call, and postprocesses the result into a
+   *  source-canvas-sized blob with only this region's silhouette
+   *  populated. */
+  const runRegionGen = useCallback(
+    async (
+      idx: number,
+      prepared: import("@/lib/ai/client").PreparedComponent[],
+      baseText: string,
+      refsBlobs: Blob[],
+    ): Promise<Blob> => {
+      const comp = prepared[idx];
+      const perRegion = (componentPrompts[idx] ?? "").trim();
+      const detected = components[idx];
+      const label = detected
+        ? (detected.name ?? componentLabels[componentSignature(detected.bbox)] ?? "").trim()
+        : "";
+      const regionDescriptor = label
+        ? `region '${label}' (${idx + 1} of ${prepared.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`
+        : `region ${idx + 1} of ${prepared.length} (${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`;
+      const composedPrompt = perRegion
+        ? `${baseText}\n\nFor [image 1] (${regionDescriptor}): ${perRegion}`
+        : label
+          ? `${baseText}\n\n[image 1] is the ${label} region.`
+          : baseText;
+      const compSourceBlob = await canvasToPngBlob(comp.padded);
+      const rawResult = await submitGenerate({
+        providerId,
+        prompt,
+        refinedPrompt: composedPrompt,
+        negativePrompt: negativePrompt.trim() || undefined,
+        modelId: modelId || undefined,
+        sourceImage: compSourceBlob,
+        referenceImages: refsBlobs.length > 0 ? refsBlobs : undefined,
+      });
+      return await postprocessGeneratedBlob({
+        blob: rawResult,
+        sourceCanvas: comp.componentMaskCanvas,
+        openAIPadding: {
+          paddingOffset: comp.paddingOffset,
+          sourceBBox: comp.sourceBBox,
+        },
+      });
+    },
+    [componentPrompts, components, componentLabels, providerId, prompt, negativePrompt, modelId],
+  );
+
+  /** F.2: composite the panel's current set of per-region result blobs
+   *  into a single source-canvas-sized image and update the RESULT
+   *  preview. Called after both generate-all and per-region runs. */
+  const recompositeResult = useCallback(async (blobs: Blob[]): Promise<void> => {
+    const sourceCanvas = aiSourceCanvasRef.current;
+    if (!sourceCanvas) return;
+    const composite = await compositeProcessedComponents({
+      componentBlobs: blobs,
+      sourceCanvas,
+    });
+    setPhase((prev) => {
+      if (prev.kind === "succeeded") URL.revokeObjectURL(prev.url);
+      return {
+        kind: "succeeded" as const,
+        url: URL.createObjectURL(composite),
+        blob: composite,
+      };
+    });
+    // Update the iteration anchor source-of-truth alongside the
+    // displayed result so the next submit picks up "what I just
+    // saw" as a reference.
+    setLastResultBlob(composite);
+  }, []);
+
+  /** F.2: regenerate a single region. Cheap iteration loop for "one
+   *  tile came out wrong" instead of reburning the whole N-region
+   *  budget. Skips refinement entirely when the user's prompt hasn't
+   *  changed since the last refine — re-uses the cached
+   *  `refinement.refined` text. */
+  const regenerateOneRegion = useCallback(
+    async (idx: number) => {
+      const prepared = preparedRef.current;
+      if (!prepared || providerId !== "openai") return;
+      if (!provider) return;
+
+      setRegionStates((prev) => {
+        const next = [...prev];
+        if (next[idx]) next[idx] = { ...next[idx], status: "running" as const };
+        return next;
+      });
+      // Re-use cached refinement when the prompt is unchanged; otherwise
+      // skip refinement on a single-region run to stay fast (user can
+      // run "generate all" if they want fresh refine).
+      const refinedReady = refinement?.rawAtRefine === prompt ? refinement.refined : undefined;
+      const baseText = refinedReady ?? prompt;
+      try {
+        const newBlob = await runRegionGen(idx, prepared, baseText, activeRefBlobs);
+        let updatedBlobs: Blob[] = [];
+        setRegionStates((prev) => {
+          const next = [...prev];
+          if (next[idx]) {
+            next[idx] = { resultBlob: newBlob, status: "succeeded" as const };
+          }
+          updatedBlobs = next.map((s) => s.resultBlob);
+          return next;
+        });
+        await recompositeResult(updatedBlobs);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        setRegionStates((prev) => {
+          const next = [...prev];
+          if (next[idx]) {
+            next[idx] = { ...next[idx], status: "failed" as const, failedReason: reason };
+          }
+          return next;
+        });
+      }
+    },
+    [providerId, provider, refinement, prompt, runRegionGen, activeRefBlobs, recompositeResult],
+  );
+
   async function onSubmit() {
     setPhase({ kind: "submitting" });
     lastComponentCountRef.current = 0;
@@ -426,14 +606,19 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // For Gemini we still pass the raw mask through — Gemini does
       // accept a binary mask and uses it correctly.
       const useMultiComponent = providerId === "openai";
+      // F.2: prefer the mount-time cached prepared bundle so we don't
+      // pay isolation/pad cost on every submit. Falls through to the
+      // recompute path only if the cache hasn't filled yet.
       const prepared = useMultiComponent
-        ? regionSource === "manual" && components.length > 0
-          ? await prepareOpenAISourcesFromMasks(
-              sourceCanvas,
-              components.map((c) => c.maskCanvas),
-            )
-          : await prepareOpenAISourcesPerComponent(sourceCanvas)
+        ? (preparedRef.current ??
+          (regionSource === "manual" && components.length > 0
+            ? await prepareOpenAISourcesFromMasks(
+                sourceCanvas,
+                components.map((c) => c.maskCanvas),
+              )
+            : await prepareOpenAISourcesPerComponent(sourceCanvas)))
         : null;
+      if (useMultiComponent && prepared) preparedRef.current = prepared;
       if (prepared) {
         lastComponentCountRef.current = prepared.length;
         console.info(
@@ -618,66 +803,65 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       let processed: Blob;
 
       if (prepared) {
-        // Multi-component OpenAI path: fire N submits in parallel,
-        // postprocess each into a source-canvas-sized canvas with only
-        // that component's silhouette painted, then composite them all
-        // into one final blob. Each call gets a *composed* prompt:
-        // common context (refined when available) + a per-region
-        // sentence pulled from the matching tile's textarea. The
-        // composed string rides as `refinedPrompt` because the
-        // provider's composePrompt prefers it over `prompt` — the
-        // raw user prompt stays in the `prompt` field for log /
-        // history fidelity.
+        // Multi-component OpenAI path: fire N submits in parallel
+        // through the per-region helper, capture per-region results
+        // into regionStates, then composite. Failed regions keep
+        // their previous blob (initial isolated source on the first
+        // run, last successful gen on subsequent runs) so the
+        // composite degrades gracefully — one bad region doesn't
+        // wipe the rest.
         const baseText = refinedPromptForSubmit ?? prompt;
-        const componentBlobs = await Promise.all(
-          prepared.map(async (comp, idx) => {
-            const perRegion = (componentPrompts[idx] ?? "").trim();
-            // Region name resolution:
-            //   - manual region: name lives on the ComponentInfo
-            //     itself (set during the hydrate effect).
-            //   - auto region: name lives in the E.1 label dict
-            //     keyed by bbox signature.
-            //   - fallback: empty → ordinal label is used.
-            const detected = components[idx];
-            const label = detected
-              ? (detected.name ?? componentLabels[componentSignature(detected.bbox)] ?? "").trim()
-              : "";
-            const regionDescriptor = label
-              ? `region '${label}' (${idx + 1} of ${prepared.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`
-              : `region ${idx + 1} of ${prepared.length} (${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`;
-            const composedPrompt = perRegion
-              ? `${baseText}\n\nFor [image 1] (${regionDescriptor}): ${perRegion}`
-              : label
-                ? `${baseText}\n\n[image 1] is the ${label} region.`
-                : baseText;
-            const compSourceBlob = await canvasToPngBlob(comp.padded);
-            const rawResult = await submitGenerate({
-              providerId,
-              prompt,
-              refinedPrompt: composedPrompt,
-              negativePrompt: negativePrompt.trim() || undefined,
-              modelId: modelId || undefined,
-              sourceImage: compSourceBlob,
-              referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
-            });
-            console.info(
-              `[GeneratePanel] component[${idx}] received ${rawResult.size}B — postprocessing`,
-            );
-            // Alpha-enforce against the component's binary mask (not
-            // the full source) so any over-paint into other components'
-            // bbox area gets zeroed before composite.
-            return await postprocessGeneratedBlob({
-              blob: rawResult,
-              sourceCanvas: comp.componentMaskCanvas,
-              openAIPadding: {
-                paddingOffset: comp.paddingOffset,
-                sourceBBox: comp.sourceBBox,
-              },
-            });
-          }),
+        // Mark every region as running before the parallel fan-out
+        // so the tile UI can show a spinner per region.
+        setRegionStates((prev) =>
+          prev.length === prepared.length
+            ? prev.map((s) => ({ ...s, status: "running" as const }))
+            : prepared.map(() => ({
+                resultBlob: new Blob(),
+                status: "running" as const,
+              })),
         );
+
+        const settled = await Promise.allSettled(
+          prepared.map((_, idx) => runRegionGen(idx, prepared, baseText, activeRefBlobs)),
+        );
+
+        // Collapse settled results into the next regionStates and
+        // collect the blob list for compositing in the same pass.
+        const finalBlobs: Blob[] = [];
+        setRegionStates((prev) => {
+          const next = [...prev];
+          settled.forEach((r, idx) => {
+            const previous = next[idx];
+            if (r.status === "fulfilled") {
+              next[idx] = { resultBlob: r.value, status: "succeeded" as const };
+            } else if (previous) {
+              next[idx] = {
+                ...previous,
+                status: "failed" as const,
+                failedReason: r.reason instanceof Error ? r.reason.message : String(r.reason),
+              };
+            }
+          });
+          // Build composite blob list using the up-to-date next array.
+          for (let i = 0; i < next.length; i++) finalBlobs.push(next[i].resultBlob);
+          return next;
+        });
+
+        // Surface the first failure as a panel-level error if every
+        // region failed — otherwise let per-tile status flags carry
+        // partial-failure info.
+        const allFailed = settled.every((r) => r.status === "rejected");
+        if (allFailed) {
+          const reason = settled
+            .map((r) => (r.status === "rejected" ? String(r.reason) : ""))
+            .filter(Boolean)
+            .join(" / ");
+          throw new Error(reason || "all region calls failed");
+        }
+
         processed = await compositeProcessedComponents({
-          componentBlobs,
+          componentBlobs: finalBlobs,
           sourceCanvas,
         });
       } else {
@@ -778,6 +962,41 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   function onReset() {
     if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
     setPhase({ kind: "idle" });
+  }
+
+  /** F.3: revert the layer's applied texture override back to the
+   *  original atlas content. Different from `onReset`: that only
+   *  dismisses the panel's pending result, this wipes the saved
+   *  edit on the layer so the live atlas re-renders the unedited
+   *  texture. The mask stays — only the AI texture channel is
+   *  cleared. Confirms before acting; the action is destructive
+   *  (no undo within the panel — user can revisit a history row to
+   *  re-apply a previous gen). */
+  async function onRevertTexture() {
+    if (!existingTexture) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Clear the applied AI texture for this layer? The atlas will revert to its original content. (The mask, if any, stays.)",
+      );
+      if (!ok) return;
+    }
+    setLayerTextureOverride(layer.id, null);
+    if (puppetKey) {
+      try {
+        await deleteLayerOverride(puppetKey, layer.externalId, "texture");
+      } catch (e) {
+        console.warn("[GeneratePanel] deleteLayerOverride failed", e);
+      }
+    }
+    // Drop any pending preview so the panel reflects the cleared
+    // state cleanly — the user can still revisit a history row to
+    // re-apply a previous gen.
+    if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
+    setPhase({ kind: "idle" });
+    // Reset per-region states' status flags so the tiles don't
+    // claim "succeeded" against the cleared atlas.
+    setRegionStates((prev) => prev.map((s) => ({ ...s, status: "idle" as const })));
+    setLastResultBlob(null);
   }
 
   const submitDisabled =
@@ -967,56 +1186,63 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
             )}
           </div>
 
-          <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)] p-4 text-xs">
-            <div className="mb-3">
-              <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                provider
-              </div>
-              <select
-                value={providerId}
-                onChange={(e) => setProviderId(e.target.value as ProviderId)}
-                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
-              >
-                {(providers ?? []).map((p) => (
-                  <option key={p.id} value={p.id} disabled={!p.available}>
-                    {p.displayName}
-                    {!p.available ? ` · ${p.reason}` : ""}
-                  </option>
-                ))}
-              </select>
-              {provider && !provider.available && (
-                <div className="mt-1 text-[var(--color-fg-dim)]">{provider.reason}</div>
-              )}
-            </div>
-
-            {provider && provider.capabilities.models.length > 1 && (
+          <aside className="flex min-h-0 flex-col border-l border-[var(--color-border)] text-xs">
+            {/* F.1: scrollable content + sticky actions footer. The
+                content area takes all the space the actions don't
+                claim, and overflow-y-auto keeps the buttons in view
+                even when the user has 6+ regions or a long history.
+                Without this split the buttons used to scroll off the
+                bottom of the modal entirely. */}
+            <div className="flex-1 overflow-y-auto p-4">
               <div className="mb-3">
                 <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  model
+                  provider
                 </div>
                 <select
-                  value={modelId}
-                  onChange={(e) => setModelId(e.target.value)}
-                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                  value={providerId}
+                  onChange={(e) => setProviderId(e.target.value as ProviderId)}
+                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-sm text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
                 >
-                  {provider.capabilities.models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.displayName} · {m.id}
+                  {(providers ?? []).map((p) => (
+                    <option key={p.id} value={p.id} disabled={!p.available}>
+                      {p.displayName}
+                      {!p.available ? ` · ${p.reason}` : ""}
                     </option>
                   ))}
                 </select>
-                {(() => {
-                  const m = provider.capabilities.models.find((x) => x.id === modelId);
-                  return m?.description ? (
-                    <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
-                      {m.description}
-                    </p>
-                  ) : null;
-                })()}
+                {provider && !provider.available && (
+                  <div className="mt-1 text-[var(--color-fg-dim)]">{provider.reason}</div>
+                )}
               </div>
-            )}
 
-            {/* Per-region tiles. Only shown when this layer split into
+              {provider && provider.capabilities.models.length > 1 && (
+                <div className="mb-3">
+                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    model
+                  </div>
+                  <select
+                    value={modelId}
+                    onChange={(e) => setModelId(e.target.value)}
+                    className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                  >
+                    {provider.capabilities.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.displayName} · {m.id}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const m = provider.capabilities.models.find((x) => x.id === modelId);
+                    return m?.description ? (
+                      <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
+                        {m.description}
+                      </p>
+                    ) : null;
+                  })()}
+                </div>
+              )}
+
+              {/* Per-region tiles. Only shown when this layer split into
                 multiple silhouette islands. Each tile shows a thumb
                 (with the matching outline color from the SOURCE
                 overlay) and a textarea for region-specific prompt
@@ -1024,160 +1250,218 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 `<common> + "Region N: <per-region>"`, so the user can
                 say "common: skin tone soft peach" and "region 1:
                 exposed midriff" / "region 2: lace frill". */}
-            {components.length > 1 && (
-              <div className="mb-3">
-                <div className="mb-1 flex items-baseline justify-between">
-                  <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    regions
-                    <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
-                      · {components.length} OpenAI calls
-                    </span>
-                  </div>
-                  {/* E.3: surface which path produced these regions
+              {components.length > 1 && (
+                <div className="mb-3">
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
+                      regions
+                      <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
+                        · {components.length} OpenAI calls
+                      </span>
+                    </div>
+                    {/* E.3: surface which path produced these regions
                       so the user knows whether DecomposeStudio split
                       mode is winning over auto-detect. */}
-                  <span
-                    className={`rounded px-1 font-mono text-[10px] ${
-                      regionSource === "manual"
-                        ? "border border-[var(--color-accent)] text-[var(--color-accent)]"
-                        : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                    }`}
-                    title={
-                      regionSource === "manual"
-                        ? "user-defined regions from DecomposeStudio split mode"
-                        : "auto-detected by connected-components — open DecomposeStudio split mode to override"
-                    }
-                  >
-                    {regionSource}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2">
-                  {components.map((c, idx) => {
-                    const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
-                    const thumb = componentThumbs[idx];
-                    const sig = componentSignature(c.bbox);
-                    // Manual regions carry their own name (read-only
-                    // here — DecomposeStudio owns editing). Auto
-                    // regions pull from the E.1 label dictionary,
-                    // editable inline.
-                    const isManual = c.name !== undefined;
-                    const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
-                    return (
-                      <div
-                        key={c.id}
-                        className="rounded border bg-[var(--color-bg)] p-1.5"
-                        style={{ borderColor: color }}
-                      >
-                        <div className="flex gap-2">
-                          <div
-                            className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded"
-                            style={{ background: "rgba(255,255,255,0.04)" }}
-                          >
-                            {thumb && (
-                              // biome-ignore lint/performance/noImgElement: thumbnail comes from a runtime data URL — next/image can't process it
-                              <img
-                                src={thumb.toDataURL("image/png")}
-                                alt={`region ${idx + 1}`}
-                                className="max-h-full max-w-full"
-                                draggable={false}
-                              />
-                            )}
-                            <span
-                              className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-black"
-                              style={{ background: color }}
+                    <span
+                      className={`rounded px-1 font-mono text-[10px] ${
+                        regionSource === "manual"
+                          ? "border border-[var(--color-accent)] text-[var(--color-accent)]"
+                          : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                      }`}
+                      title={
+                        regionSource === "manual"
+                          ? "user-defined regions from DecomposeStudio split mode"
+                          : "auto-detected by connected-components — open DecomposeStudio split mode to override"
+                      }
+                    >
+                      {regionSource}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {components.map((c, idx) => {
+                      const color = c.color ?? COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                      const thumb = componentThumbs[idx];
+                      const sig = componentSignature(c.bbox);
+                      // Manual regions carry their own name (read-only
+                      // here — DecomposeStudio owns editing). Auto
+                      // regions pull from the E.1 label dictionary,
+                      // editable inline.
+                      const isManual = c.name !== undefined;
+                      const name = isManual ? (c.name ?? "") : (componentLabels[sig] ?? "");
+                      const regionState = regionStates[idx];
+                      const isRegionRunning = regionState?.status === "running";
+                      const isRegionFailed = regionState?.status === "failed";
+                      const regenDisabled =
+                        !provider?.available ||
+                        providerId !== "openai" ||
+                        phase.kind === "submitting" ||
+                        phase.kind === "running" ||
+                        phase.kind === "applying" ||
+                        isRegionRunning ||
+                        refining;
+                      return (
+                        <div
+                          key={c.id}
+                          className="rounded border bg-[var(--color-bg)] p-1.5"
+                          style={{ borderColor: color }}
+                        >
+                          <div className="flex gap-2">
+                            <div
+                              className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded"
+                              style={{ background: "rgba(255,255,255,0.04)" }}
                             >
-                              {idx + 1}
-                            </span>
-                          </div>
-                          <div className="flex min-w-0 flex-1 flex-col gap-1">
-                            {isManual ? (
-                              // Manual regions: name is set in
-                              // DecomposeStudio split mode. Show
-                              // read-only here so the source of truth
-                              // stays single.
-                              <div className="truncate text-[11px] font-medium text-[var(--color-fg)]">
-                                {name || (
-                                  <span className="italic text-[var(--color-fg-dim)]">
-                                    (unnamed)
+                              {thumb && (
+                                // biome-ignore lint/performance/noImgElement: thumbnail comes from a runtime data URL — next/image can't process it
+                                <img
+                                  src={thumb.toDataURL("image/png")}
+                                  alt={`region ${idx + 1}`}
+                                  className="max-h-full max-w-full"
+                                  draggable={false}
+                                />
+                              )}
+                              <span
+                                className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-black"
+                                style={{ background: color }}
+                              >
+                                {idx + 1}
+                              </span>
+                              {/* F.2: per-region status overlay. Spinner
+                                  on running, red dot on failed. Idle
+                                  and succeeded are silent. */}
+                              {isRegionRunning && (
+                                <span className="absolute inset-0 flex items-center justify-center rounded bg-black/50 text-[10px] text-white">
+                                  …
+                                </span>
+                              )}
+                              {isRegionFailed && (
+                                <span
+                                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white"
+                                  title={regionState?.failedReason ?? "failed"}
+                                >
+                                  !
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex min-w-0 flex-1 flex-col gap-1">
+                              <div className="flex items-center gap-1">
+                                {isManual ? (
+                                  // Manual regions: name is set in
+                                  // DecomposeStudio split mode. Show
+                                  // read-only here so the source of truth
+                                  // stays single.
+                                  <div className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--color-fg)]">
+                                    {name || (
+                                      <span className="italic text-[var(--color-fg-dim)]">
+                                        (unnamed)
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  // E.1: editable region name. Persists per
+                                  // (puppet, layer, component bbox) signature.
+                                  <input
+                                    type="text"
+                                    value={name}
+                                    onChange={(e) => setComponentLabel(sig, e.target.value)}
+                                    placeholder={`name (e.g. torso, frill)`}
+                                    className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                                  />
+                                )}
+                                {/* F.2: per-region regenerate. Reburns
+                                    just this island's API call without
+                                    touching the others. Cheap iteration
+                                    when one tile came out wrong. */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void regenerateOneRegion(idx);
+                                  }}
+                                  disabled={regenDisabled}
+                                  title={
+                                    isRegionRunning
+                                      ? "regenerating this region…"
+                                      : "regenerate just this region (1 OpenAI call)"
+                                  }
+                                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  ↻
+                                </button>
+                              </div>
+                              <div className="flex items-center justify-between text-[10px] text-[var(--color-fg-dim)]">
+                                <span>
+                                  {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
+                                </span>
+                                {regionState?.status === "succeeded" && (
+                                  <span className="text-[var(--color-accent)]">✓ generated</span>
+                                )}
+                                {isRegionFailed && (
+                                  <span className="text-red-400" title={regionState?.failedReason}>
+                                    failed
                                   </span>
                                 )}
                               </div>
-                            ) : (
-                              // E.1: editable region name. Persists per
-                              // (puppet, layer, component bbox) signature.
-                              <input
-                                type="text"
-                                value={name}
-                                onChange={(e) => setComponentLabel(sig, e.target.value)}
-                                placeholder={`name (e.g. torso, frill)`}
-                                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                              <textarea
+                                value={componentPrompts[idx] ?? ""}
+                                onChange={(e) =>
+                                  setComponentPrompts((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = e.target.value;
+                                    return next;
+                                  })
+                                }
+                                placeholder={
+                                  name
+                                    ? `${name} — what should fill this region?`
+                                    : `region ${idx + 1} — what should fill this island?`
+                                }
+                                className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
                               />
-                            )}
-                            <div className="text-[10px] text-[var(--color-fg-dim)]">
-                              {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
                             </div>
-                            <textarea
-                              value={componentPrompts[idx] ?? ""}
-                              onChange={(e) =>
-                                setComponentPrompts((prev) => {
-                                  const next = [...prev];
-                                  next[idx] = e.target.value;
-                                  return next;
-                                })
-                              }
-                              placeholder={
-                                name
-                                  ? `${name} — what should fill this region?`
-                                  : `region ${idx + 1} — what should fill this island?`
-                              }
-                              className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-                            />
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div className="mb-3">
-              <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                {components.length > 1 ? "common context" : "prompt"}
-                {components.length > 1 && (
+              <div className="mb-3">
+                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                  {components.length > 1 ? "common context" : "prompt"}
+                  {components.length > 1 && (
+                    <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
+                      · sent to every region
+                    </span>
+                  )}
+                </div>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={
+                    components.length > 1
+                      ? "shared context — style, palette, character identity"
+                      : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
+                  }
+                  className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                />
+              </div>
+
+              <div className="mb-3">
+                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                  negative prompt
                   <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
-                    · sent to every region
+                    (optional)
                   </span>
-                )}
+                </div>
+                <textarea
+                  value={negativePrompt}
+                  onChange={(e) => setNegativePrompt(e.target.value)}
+                  placeholder="things to avoid"
+                  className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                />
               </div>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={
-                  components.length > 1
-                    ? "shared context — style, palette, character identity"
-                    : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
-                }
-                className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-              />
-            </div>
 
-            <div className="mb-3">
-              <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                negative prompt
-                <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
-                  (optional)
-                </span>
-              </div>
-              <textarea
-                value={negativePrompt}
-                onChange={(e) => setNegativePrompt(e.target.value)}
-                placeholder="things to avoid"
-                className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
-              />
-            </div>
-
-            {/* Active references — full control over what rides along
+              {/* Active references — full control over what rides along
                 this submit. Two channels:
                   1. Puppet refs (uploaded via ReferencesPanel) — toggle
                      individually for "skip this one this time" decisions.
@@ -1185,241 +1469,268 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                      blob back as a reference so chained edits refine
                      rather than restart from scratch. The cloud-API
                      equivalent of `previous_response_id` chaining. */}
-            {provider && (references.length > 0 || lastResultBlob) && (
-              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
-                {supportsRefs ? (
-                  <>
-                    <div className="mb-1.5 flex items-center justify-between text-[var(--color-fg)]">
-                      <span>
-                        Active references ({activeRefBlobs.length}/
-                        {references.length + (lastResultBlob ? 1 : 0)})
-                      </span>
-                      <span className="text-[10px] text-[var(--color-fg-dim)]">
-                        sent as <span className="font-mono">image[]</span> after source
-                      </span>
+              {provider && (references.length > 0 || lastResultBlob) && (
+                <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                  {supportsRefs ? (
+                    <>
+                      <div className="mb-1.5 flex items-center justify-between text-[var(--color-fg)]">
+                        <span>
+                          Active references ({activeRefBlobs.length}/
+                          {references.length + (lastResultBlob ? 1 : 0)})
+                        </span>
+                        <span className="text-[10px] text-[var(--color-fg-dim)]">
+                          sent as <span className="font-mono">image[]</span> after source
+                        </span>
+                      </div>
+                      {references.length > 0 && (
+                        <ul className="mb-1 space-y-0.5">
+                          {references.map((r) => {
+                            const enabled = !disabledRefIds.has(r.id);
+                            return (
+                              <li key={r.id} className="flex items-center gap-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={enabled}
+                                  onChange={() => {
+                                    setDisabledRefIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (enabled) next.add(r.id);
+                                      else next.delete(r.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className="h-3 w-3"
+                                  aria-label={`toggle reference ${r.name}`}
+                                />
+                                <span
+                                  className={`flex-1 truncate font-mono ${
+                                    enabled
+                                      ? "text-[var(--color-fg)]"
+                                      : "text-[var(--color-fg-dim)] line-through"
+                                  }`}
+                                  title={r.name}
+                                >
+                                  {r.name}
+                                </span>
+                                <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                                  {(r.blob.size / 1024).toFixed(0)}KB
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      {lastResultBlob && (
+                        <label className="flex items-center gap-1.5 border-t border-[var(--color-border)] pt-1">
+                          <input
+                            type="checkbox"
+                            checked={useLastResult}
+                            onChange={(e) => setUseLastResult(e.target.checked)}
+                            className="h-3 w-3"
+                            aria-label="toggle last-result iterative anchor"
+                          />
+                          <span
+                            className={`flex-1 italic ${
+                              useLastResult
+                                ? "text-[var(--color-accent)]"
+                                : "text-[var(--color-fg-dim)] line-through"
+                            }`}
+                            title="Most recent succeeded result, fed back as a reference so the next generation refines instead of restarting"
+                          >
+                            last result · iteration anchor
+                          </span>
+                          <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                            {(lastResultBlob.size / 1024).toFixed(0)}KB
+                          </span>
+                        </label>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-[var(--color-fg-dim)]">
+                      {references.length} reference image{references.length === 1 ? "" : "s"}{" "}
+                      stored, but {provider.displayName} doesn't accept multi-image input — they'll
+                      be ignored for this generation.
                     </div>
-                    {references.length > 0 && (
-                      <ul className="mb-1 space-y-0.5">
-                        {references.map((r) => {
-                          const enabled = !disabledRefIds.has(r.id);
-                          return (
-                            <li key={r.id} className="flex items-center gap-1.5">
-                              <input
-                                type="checkbox"
-                                checked={enabled}
-                                onChange={() => {
-                                  setDisabledRefIds((prev) => {
-                                    const next = new Set(prev);
-                                    if (enabled) next.add(r.id);
-                                    else next.delete(r.id);
-                                    return next;
-                                  });
-                                }}
-                                className="h-3 w-3"
-                                aria-label={`toggle reference ${r.name}`}
-                              />
-                              <span
-                                className={`flex-1 truncate font-mono ${
-                                  enabled
-                                    ? "text-[var(--color-fg)]"
-                                    : "text-[var(--color-fg-dim)] line-through"
-                                }`}
-                                title={r.name}
-                              >
-                                {r.name}
-                              </span>
-                              <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
-                                {(r.blob.size / 1024).toFixed(0)}KB
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                    {lastResultBlob && (
-                      <label className="flex items-center gap-1.5 border-t border-[var(--color-border)] pt-1">
-                        <input
-                          type="checkbox"
-                          checked={useLastResult}
-                          onChange={(e) => setUseLastResult(e.target.checked)}
-                          className="h-3 w-3"
-                          aria-label="toggle last-result iterative anchor"
-                        />
-                        <span
-                          className={`flex-1 italic ${
-                            useLastResult
-                              ? "text-[var(--color-accent)]"
-                              : "text-[var(--color-fg-dim)] line-through"
-                          }`}
-                          title="Most recent succeeded result, fed back as a reference so the next generation refines instead of restarting"
-                        >
-                          last result · iteration anchor
-                        </span>
-                        <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
-                          {(lastResultBlob.size / 1024).toFixed(0)}KB
-                        </span>
-                      </label>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-[var(--color-fg-dim)]">
-                    {references.length} reference image{references.length === 1 ? "" : "s"} stored,
-                    but {provider.displayName} doesn't accept multi-image input — they'll be ignored
-                    for this generation.
-                  </div>
-                )}
-              </div>
-            )}
+                  )}
+                </div>
+              )}
 
-            {/* Prompt refinement (Sprint 5.4) — chat-model rewrite
+              {/* Prompt refinement (Sprint 5.4) — chat-model rewrite
                 of the user prompt into structured gpt-image-2 edit
                 language. Only meaningful for OpenAI; the toggle stays
                 visible even for other providers but is force-off so
                 the user understands which lever applies where. */}
-            {provider && providerId === "openai" && (
-              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
-                <label className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={usePromptRefine}
-                    onChange={(e) => setUsePromptRefine(e.target.checked)}
-                    className="h-3 w-3"
-                    aria-label="toggle prompt refinement"
-                  />
-                  <span className="flex-1 text-[var(--color-fg)]">
-                    Refine prompt via chat model before submit
-                  </span>
-                  {refining && (
-                    <span className="text-[10px] text-[var(--color-accent)]">refining…</span>
-                  )}
-                </label>
-                <p className="mt-1 text-[var(--color-fg-dim)]">
-                  Rewrites your prompt as structured <span className="font-mono">[image 1]</span>{" "}
-                  edit instructions following gpt-image-2's prompting guide so the model doesn't
-                  conflate the source canvas with the style references.
-                </p>
-                {refinement && refinement.rawAtRefine === prompt && (
-                  <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5">
-                    <summary className="cursor-pointer text-[var(--color-fg-dim)]">
-                      refined prompt ready · model={refinement.model}
-                    </summary>
-                    <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-[var(--color-fg)]">
-                      {refinement.refined}
-                    </pre>
-                  </details>
-                )}
-                {refineError && (
-                  <p className="mt-1 text-[10px] text-red-400">
-                    refine failed — falling back to raw prompt: {refineError}
-                  </p>
-                )}
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={onSubmit}
-              disabled={submitDisabled || refining}
-              className="rounded border border-[var(--color-accent)] px-3 py-1.5 text-sm text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {phase.kind === "running"
-                ? "generating…"
-                : phase.kind === "submitting"
-                  ? "submitting…"
-                  : refining
-                    ? "refining prompt…"
-                    : "generate"}
-            </button>
-            {phase.kind === "succeeded" && (
-              <div className="mt-2 flex flex-col gap-1">
-                <button
-                  type="button"
-                  onClick={onApply}
-                  className="rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-1.5 text-sm text-[var(--color-accent)]"
-                  title="composite the result onto the atlas page"
-                >
-                  apply to atlas
-                </button>
-                <button
-                  type="button"
-                  onClick={onReset}
-                  className="rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                >
-                  reset · keep generating
-                </button>
-              </div>
-            )}
-            {phase.kind === "applying" && (
-              <div className="mt-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
-            )}
-
-            {history.length > 0 && (
-              <div className="mt-4 flex min-h-0 shrink-0 flex-col">
-                <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
-                  <span>history · {history.length}</span>
-                  <span className="normal-case tracking-normal text-[10px]">
-                    click to revisit · ☐ to compare
-                  </span>
-                </div>
-                {comparisonIds.length > 0 && (
-                  <div className="mb-1 flex items-center gap-1.5 text-[10px]">
-                    <span className="text-[var(--color-fg-dim)]">
-                      {comparisonIds.length}/2 selected
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setComparisonOpen(true)}
-                      disabled={comparisonRows.length < 1}
-                      className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      compare
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setComparisonIds([])}
-                      className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                    >
-                      clear
-                    </button>
-                  </div>
-                )}
-                <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
-                  {history.map((row) => (
-                    <HistoryRow
-                      key={row.id}
-                      row={row}
-                      onRevisit={onRevisit}
-                      selected={comparisonIds.includes(row.id)}
-                      onToggleCompare={() => toggleComparison(row.id)}
+              {provider && providerId === "openai" && (
+                <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={usePromptRefine}
+                      onChange={(e) => setUsePromptRefine(e.target.checked)}
+                      className="h-3 w-3"
+                      aria-label="toggle prompt refinement"
                     />
-                  ))}
+                    <span className="flex-1 text-[var(--color-fg)]">
+                      Refine prompt via chat model before submit
+                    </span>
+                    {refining && (
+                      <span className="text-[10px] text-[var(--color-accent)]">refining…</span>
+                    )}
+                  </label>
+                  <p className="mt-1 text-[var(--color-fg-dim)]">
+                    Rewrites your prompt as structured <span className="font-mono">[image 1]</span>{" "}
+                    edit instructions following gpt-image-2's prompting guide so the model doesn't
+                    conflate the source canvas with the style references.
+                  </p>
+                  {refinement && refinement.rawAtRefine === prompt && (
+                    <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5">
+                      <summary className="cursor-pointer text-[var(--color-fg-dim)]">
+                        refined prompt ready · model={refinement.model}
+                      </summary>
+                      <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-[var(--color-fg)]">
+                        {refinement.refined}
+                      </pre>
+                    </details>
+                  )}
+                  {refineError && (
+                    <p className="mt-1 text-[10px] text-red-400">
+                      refine failed — falling back to raw prompt: {refineError}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {phase.kind === "applying" && (
+                <div className="mb-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
+              )}
+
+              {history.length > 0 && (
+                <div className="mt-4 flex min-h-0 shrink-0 flex-col">
+                  <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    <span>history · {history.length}</span>
+                    <span className="normal-case tracking-normal text-[10px]">
+                      click to revisit · ☐ to compare
+                    </span>
+                  </div>
+                  {comparisonIds.length > 0 && (
+                    <div className="mb-1 flex items-center gap-1.5 text-[10px]">
+                      <span className="text-[var(--color-fg-dim)]">
+                        {comparisonIds.length}/2 selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setComparisonOpen(true)}
+                        disabled={comparisonRows.length < 1}
+                        className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        compare
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setComparisonIds([])}
+                        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                      >
+                        clear
+                      </button>
+                    </div>
+                  )}
+                  <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
+                    {history.map((row) => (
+                      <HistoryRow
+                        key={row.id}
+                        row={row}
+                        onRevisit={onRevisit}
+                        selected={comparisonIds.includes(row.id)}
+                        onToggleCompare={() => toggleComparison(row.id)}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {comparisonOpen && comparisonRows.length > 0 && (
+                <ComparisonModal rows={comparisonRows} onClose={() => setComparisonOpen(false)} />
+              )}
+
+              <div className="mt-4 leading-relaxed text-[var(--color-fg-dim)]">
+                <div className="mb-1 uppercase tracking-widest">flow</div>
+                <ul className="list-inside list-disc space-y-1">
+                  <li>
+                    <span className="text-[var(--color-fg)]">decompose</span> refines the mask first
+                    (optional)
+                  </li>
+                  <li>provider inpaints and returns a new texture</li>
+                  <li>
+                    <span className="text-[var(--color-fg)]">apply</span> composites it onto the
+                    atlas page · live render reflects it next frame
+                  </li>
+                  <li>esc dismisses · result stays in the layer's overrides until reset</li>
+                  {!puppetKey && (
+                    <li className="text-yellow-400">
+                      history is disabled until this puppet is saved to the library
+                    </li>
+                  )}
                 </ul>
               </div>
-            )}
+            </div>
 
-            {comparisonOpen && comparisonRows.length > 0 && (
-              <ComparisonModal rows={comparisonRows} onClose={() => setComparisonOpen(false)} />
-            )}
-
-            <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
-              <div className="mb-1 uppercase tracking-widest">flow</div>
-              <ul className="list-inside list-disc space-y-1">
-                <li>
-                  <span className="text-[var(--color-fg)]">decompose</span> refines the mask first
-                  (optional)
-                </li>
-                <li>provider inpaints and returns a new texture</li>
-                <li>
-                  <span className="text-[var(--color-fg)]">apply</span> composites it onto the atlas
-                  page · live render reflects it next frame
-                </li>
-                <li>esc dismisses · result stays in the layer's overrides until reset</li>
-                {!puppetKey && (
-                  <li className="text-yellow-400">
-                    history is disabled until this puppet is saved to the library
-                  </li>
-                )}
-              </ul>
+            {/* F.1: sticky actions footer. Always visible regardless
+                of how long the scrollable content above gets. */}
+            <div className="flex flex-none flex-col gap-1.5 border-t border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+              <button
+                type="button"
+                onClick={onSubmit}
+                disabled={submitDisabled || refining}
+                className="rounded border border-[var(--color-accent)] px-3 py-1.5 text-sm text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {phase.kind === "running"
+                  ? "generating…"
+                  : phase.kind === "submitting"
+                    ? "submitting…"
+                    : refining
+                      ? "refining prompt…"
+                      : components.length > 1
+                        ? `generate ${components.length} regions`
+                        : "generate"}
+              </button>
+              {phase.kind === "succeeded" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={onApply}
+                    className="rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-1.5 text-sm text-[var(--color-accent)]"
+                    title="composite the result onto the atlas page"
+                  >
+                    apply to atlas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onReset}
+                    className="rounded border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                  >
+                    reset · keep generating
+                  </button>
+                </>
+              )}
+              {/* F.3: revert applied texture. Only enabled when an
+                  AI texture is currently on the layer. Destructive
+                  (confirms first) — atlas falls back to its original
+                  content. */}
+              <button
+                type="button"
+                onClick={() => {
+                  void onRevertTexture();
+                }}
+                disabled={!existingTexture}
+                title={
+                  existingTexture
+                    ? "clear the applied AI texture and restore the original atlas content"
+                    : "no AI texture applied to this layer"
+                }
+                className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                revert texture
+              </button>
             </div>
           </aside>
         </div>
