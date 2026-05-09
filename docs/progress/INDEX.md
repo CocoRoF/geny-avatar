@@ -77,6 +77,8 @@
 | 2026-05-09 | [61 phase6_kickoff](2026-05-09_61_phase6_kickoff.md) | 6.0 | 진행중 — Phase 6 sub-sprint 분할 + SAM hosting 결정 (Replicate). 6.1 provider/route → 6.2 DecomposeStudio segment mode → 6.3 boolean compose → 6.4 batch auto-decompose → 6.5 fullscreen mode |
 | 2026-05-09 | [62 sprint_6_1_sam_route](2026-05-09_62_sprint_6_1_sam_route.md) | 6.1 | 완료 — SAM 도메인 타입(`lib/ai/sam/`) + `/api/ai/sam` Replicate route (Prefer: wait + poll fallback) + `/poc/sam-debug` 진단 페이지. UI 통합은 6.2 |
 | 2026-05-09 | [63 openai_alignment_fix](2026-05-09_63_openai_alignment_fix.md) | 5 fix | 완료 — gpt-image-2 결과 위치/크기 mismatch 해소. (1) `prepareOpenAISource` 가 silhouette tight-crop 후 1024²에 pad → 모델 frame이 subject로 꽉 참 → 페인트 위치 정확. (2) submit 직후 `postprocessGeneratedBlob` 즉시 실행 → preview/apply/history 가 같은 후처리 blob 공유. `openAIPadding`에 `sourceBBox` 추가, `postprocess`가 source canvas의 정확한 위치로 re-composite |
+| 2026-05-09 | [64 multi_component_kickoff](2026-05-09_64_multi_component_kickoff.md) | 5 polish | 진행중 — disjoint silhouette을 여럿 가진 layer (예: torso + shoulder frill) 의 generation 깨짐 해소 정공. A+B 결정 (auto component split + region-aware UI). sub-sprint A.1~A.3 분할 |
+| 2026-05-09 | [65 sprint_a_1_connected_components](2026-05-09_65_sprint_a_1_connected_components.md) | A.1 | 완료 — `findAlphaComponents` 8-connected 라벨링 + `isolateWithMask` GPU composite + `prepareOpenAISourcesPerComponent` per-island submit-ready package. 라이브러리만, UI 변경 없음 |
 
 ## 운영 규칙
 

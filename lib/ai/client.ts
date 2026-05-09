@@ -217,6 +217,80 @@ export function prepareOpenAISource(source: HTMLCanvasElement): {
   return { padded, paddingOffset: offset, sourceBBox };
 }
 
+/**
+ * Multi-component preparation: split the source canvas into its
+ * disjoint silhouette islands and prep each one independently. Each
+ * returned entry is a self-contained submit-ready package — feed it
+ * to the gpt-image-2 endpoint, then call `postprocessGeneratedBlob`
+ * with the same `paddingOffset` / `sourceBBox` to composite back.
+ *
+ * Returns a length-1 array (functionally identical to
+ * `prepareOpenAISource`) when the source has only one island, so
+ * callers can use the same pipeline for both single- and multi-
+ * component layers.
+ *
+ * `componentMaskCanvas` is the source-canvas-sized binary mask for
+ * this island — handy for postprocess's alpha enforcement against
+ * just this island, and for thumbnail rendering in region-aware UI.
+ */
+export type PreparedComponent = {
+  /** Index of the component in source order (largest island first). */
+  componentId: number;
+  /** Where this island lives inside the source canvas. */
+  sourceBBox: { x: number; y: number; w: number; h: number };
+  /** How many opaque pixels this island has. */
+  area: number;
+  /** 1024² padded canvas with this island filling its frame. */
+  padded: HTMLCanvasElement;
+  /** Where the (tight-cropped) island sits inside the 1024². */
+  paddingOffset: { x: number; y: number; w: number; h: number };
+  /** Source-canvas-sized binary mask isolating this island. */
+  componentMaskCanvas: HTMLCanvasElement;
+  /** The isolated source canvas (other islands zeroed out). Useful
+   *  for the LLM refiner pass, which wants to see just this island. */
+  isolatedSource: HTMLCanvasElement;
+};
+
+export async function prepareOpenAISourcesPerComponent(
+  source: HTMLCanvasElement,
+  opts: { minArea?: number } = {},
+): Promise<PreparedComponent[]> {
+  // Lazy-import so the connected-components module stays out of the
+  // bundle for callers that never touch the multi-component path.
+  const { findAlphaComponents, isolateWithMask } = await import("@/lib/avatar/connectedComponents");
+  const components = findAlphaComponents(source, { minArea: opts.minArea });
+  if (components.length === 0) {
+    // Source has no opaque pixels at all — fall back to the legacy
+    // single-source path so the pipeline doesn't dead-end.
+    const single = prepareOpenAISource(source);
+    return [
+      {
+        componentId: 0,
+        sourceBBox: single.sourceBBox,
+        area: 0,
+        padded: single.padded,
+        paddingOffset: single.paddingOffset,
+        componentMaskCanvas: source,
+        isolatedSource: source,
+      },
+    ];
+  }
+
+  return components.map((c) => {
+    const isolated = isolateWithMask(source, c.maskCanvas);
+    const prepared = prepareOpenAISource(isolated);
+    return {
+      componentId: c.id,
+      sourceBBox: prepared.sourceBBox,
+      area: c.area,
+      padded: prepared.padded,
+      paddingOffset: prepared.paddingOffset,
+      componentMaskCanvas: c.maskCanvas,
+      isolatedSource: isolated,
+    };
+  });
+}
+
 export function padToOpenAISquare(canvas: HTMLCanvasElement): {
   canvas: HTMLCanvasElement;
   /** offset of the original image within the padded square */
