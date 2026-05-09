@@ -74,6 +74,8 @@
 | 2026-05-07 | [58 sprint_5_3_active_refs_iteration](2026-05-07_58_sprint_5_3_active_refs_iteration.md) | 5.3 | 완료 — Active references 박스 (puppet ref 체크박스 + last-result iterative anchor 토글). 직전 succeeded blob을 자동으로 image[]에 ride along — cloud-API 단독 previous_response_id 등가 |
 | 2026-05-07 | [59 sprint_5_4_prompt_refinement](2026-05-07_59_sprint_5_4_prompt_refinement.md) | 5.4 | 완료 — gpt-image-2 docs 가이드 따라 composePrompt 재설계 ([image 1]/[image 2..N] slot map + role separation + preservation block). LLM refinement endpoint `/api/ai/refine-prompt` (gpt-4o-mini 기본) + 토글 + refined preview |
 | 2026-05-07 | [60 sprint_5_5_comparison_viewer](2026-05-07_60_sprint_5_5_comparison_viewer.md) | 5.5 | 완료 — history 행 multi-select (max 2) + ComparisonModal full-screen overlay (slot A/B side-by-side + provider/model/prompt 메타). Phase 5 V1 마무리, 5.6 ComfyUI/IP-Adapter/LoRA는 deferred |
+| 2026-05-09 | [61 phase6_kickoff](2026-05-09_61_phase6_kickoff.md) | 6.0 | 진행중 — Phase 6 sub-sprint 분할 + SAM hosting 결정 (Replicate). 6.1 provider/route → 6.2 DecomposeStudio segment mode → 6.3 boolean compose → 6.4 batch auto-decompose → 6.5 fullscreen mode |
+| 2026-05-09 | [62 sprint_6_1_sam_route](2026-05-09_62_sprint_6_1_sam_route.md) | 6.1 | 완료 — SAM 도메인 타입(`lib/ai/sam/`) + `/api/ai/sam` Replicate route (Prefer: wait + poll fallback) + `/poc/sam-debug` 진단 페이지. UI 통합은 6.2 |
 
 ## 운영 규칙
 
