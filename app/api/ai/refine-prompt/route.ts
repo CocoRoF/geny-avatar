@@ -40,7 +40,7 @@ import { NextResponse } from "next/server";
 // Override per-deployment via OPENAI_PROMPT_REFINER_MODEL when the
 // account doesn't have gpt-5 access or you want to fall back to a
 // cheaper tier (e.g. `gpt-5-mini`, `gpt-4o-mini`).
-const REFINER_MODEL = process.env.OPENAI_PROMPT_REFINER_MODEL ?? "gpt-5";
+const REFINER_MODEL = process.env.OPENAI_PROMPT_REFINER_MODEL ?? "gpt-5.4";
 const ENDPOINT = "https://api.openai.com/v1/chat/completions";
 
 const SYSTEM_PROMPT = `You are a prompt engineer for OpenAI's gpt-image-2 image-edit API. You rewrite a user's vague edit request into a precise structured instruction that the image model will follow without conflating roles.
