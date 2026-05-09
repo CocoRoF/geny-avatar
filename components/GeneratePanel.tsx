@@ -6,8 +6,8 @@ import {
   canvasToPngBlob,
   fetchProviders,
   type ProviderAvailability,
-  padToOpenAISquare,
   postprocessGeneratedBlob,
+  prepareOpenAISource,
   refinePrompt,
   submitGenerate,
 } from "@/lib/ai/client";
@@ -66,9 +66,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
 
-  /** Tracks the OpenAI 1024² padding offset across submit→success so
-   *  the apply step can crop padding back out. Reset on every submit. */
-  const openAIOffsetRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  /** Tracks the OpenAI submit-time geometry across submit→success so the
+   *  apply step (and, since this fix, the preview) can crop the result
+   *  out of the 1024² square and place it back at the silhouette's
+   *  original position inside the source canvas. `paddingOffset` =
+   *  where the (tight-cropped) input sat inside the 1024². `sourceBBox`
+   *  = where that tight crop came from inside the original source
+   *  canvas. Reset on every submit / revisit / reset. */
+  const openAIPaddingRef = useRef<{
+    paddingOffset: { x: number; y: number; w: number; h: number };
+    sourceBBox: { x: number; y: number; w: number; h: number };
+  } | null>(null);
 
   /** Persisted history for this layer. Newest first. Repopulated on
    *  every successful save so the list reflects what's in IDB. */
@@ -296,7 +304,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   async function onSubmit() {
     setPhase({ kind: "submitting" });
-    openAIOffsetRef.current = null;
+    openAIPaddingRef.current = null;
     try {
       const sourceCanvas = aiSourceCanvasRef.current;
       if (!sourceCanvas) throw new Error("source not ready");
@@ -329,12 +337,26 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         // mask as destination-out at render time. The two effects
         // (gen and erase) compose cleanly — exactly what the user
         // asked for ("edit으로 지우고 gen으로 바꾸는" workflow).
-        const { canvas: padded, offset } = padToOpenAISquare(sourceCanvas);
-        openAIOffsetRef.current = offset;
-        sourceBlob = await canvasToPngBlob(padded);
+        // Tight-crop to the silhouette before padding so the model
+        // sees a frame filled by the subject (instead of a small shape
+        // pinned in one corner of a mostly-white canvas). Without this,
+        // gpt-image-2 frequently paints its edit at a position that
+        // doesn't match where the silhouette actually sits inside the
+        // source canvas — the apply-time alpha enforce then zeros the
+        // misaligned content out, leaving the user with empty / wrong
+        // results. See `prepareOpenAISource` for the details.
+        const prepared = prepareOpenAISource(sourceCanvas);
+        openAIPaddingRef.current = {
+          paddingOffset: prepared.paddingOffset,
+          sourceBBox: prepared.sourceBBox,
+        };
+        sourceBlob = await canvasToPngBlob(prepared.padded);
         // maskBlob deliberately stays undefined.
         console.info(
-          `[GeneratePanel] openai submit: sourceDim=${padded.width}x${padded.height}, offset=${JSON.stringify(offset)}, hasUserMask=${!!existingMask}, maskSentToAI=false`,
+          `[GeneratePanel] openai submit: sourceCanvas=${sourceCanvas.width}x${sourceCanvas.height}, ` +
+            `tightCrop=${prepared.sourceBBox.w}x${prepared.sourceBBox.h}@(${prepared.sourceBBox.x},${prepared.sourceBBox.y}), ` +
+            `padded=${prepared.padded.width}x${prepared.padded.height}, ` +
+            `paddingOffset=${JSON.stringify(prepared.paddingOffset)}, hasUserMask=${!!existingMask}, maskSentToAI=false`,
         );
       } else {
         // Gemini: arbitrary input dims. Pass source + raw mask through.
@@ -431,8 +453,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         bytes: sourceBlob.size,
         type: sourceBlob.type || "(no MIME)",
         preview: sourceUrl,
-        ...(openAIOffsetRef.current
-          ? { padded: "1024x1024", layerOffset: openAIOffsetRef.current }
+        ...(openAIPaddingRef.current
+          ? {
+              padded: "1024x1024",
+              paddingOffset: openAIPaddingRef.current.paddingOffset,
+              sourceBBox: openAIPaddingRef.current.sourceBBox,
+            }
           : {}),
       });
       if (maskBlob) {
@@ -472,8 +498,32 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         maskImage: maskBlob,
         referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
       });
-      const url = URL.createObjectURL(result);
-      setPhase({ kind: "succeeded", url, blob: result });
+
+      // Postprocess immediately so the RESULT preview shows what `apply`
+      // will actually paint into the atlas — cropped out of the 1024²,
+      // re-positioned at the silhouette's source bbox, alpha-enforced
+      // against the layer's footprint. Showing the raw blob here was a
+      // long-standing footgun: the user could see "good" content
+      // floating in the wrong spot of a 1024² preview, click apply, and
+      // get a blank result because alpha-enforce zeroed the misaligned
+      // pixels. Same blob feeds preview, apply, and history so all
+      // three stay in sync.
+      const aiSource = aiSourceCanvasRef.current;
+      const padding = openAIPaddingRef.current;
+      const processed = aiSource
+        ? await postprocessGeneratedBlob({
+            blob: result,
+            sourceCanvas: aiSource,
+            openAIPadding: padding
+              ? {
+                  paddingOffset: padding.paddingOffset,
+                  sourceBBox: padding.sourceBBox,
+                }
+              : undefined,
+          })
+        : result;
+      const url = URL.createObjectURL(processed);
+      setPhase({ kind: "succeeded", url, blob: processed });
     } catch (e) {
       setPhase({ kind: "failed", reason: e instanceof Error ? e.message : String(e) });
     }
@@ -481,19 +531,13 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   async function onApply() {
     if (phase.kind !== "succeeded") return;
-    // Use the AI source (pre-mask) for alpha enforcement so the
-    // postprocess output retains the layer's full footprint silhouette;
-    // the live compositor's mask destination-out then erases the user's
-    // marked area at render time.
-    const sourceCanvas = aiSourceCanvasRef.current;
-    if (!sourceCanvas) return;
     setPhase({ kind: "applying" });
     try {
-      const processed = await postprocessGeneratedBlob({
-        blob: phase.blob,
-        sourceCanvas,
-        openAIPadding: openAIOffsetRef.current ? { offset: openAIOffsetRef.current } : undefined,
-      });
+      // `phase.blob` is the postprocess output (cropped + re-positioned
+      // + alpha-enforced) — produced at submit success or by `onRevisit`
+      // for an IDB-stored job. Either way it's already at the layer's
+      // upright canvas dimensions, so we apply it directly.
+      const processed = phase.blob;
       // Save to store. The LayersPanel effect picks it up and the
       // adapter composites onto the atlas page within one frame.
       setLayerTextureOverride(layer.id, processed);
@@ -537,13 +581,14 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
   /** Reload an old job into the result preview. User can then "apply"
    *  it as if it were freshly generated. The blob came from IDB so it's
-   *  already postprocessed (alpha-enforced + cropped); we wrap it in a
-   *  fresh URL and pretend the submit pipeline produced it. */
+   *  already postprocessed (alpha-enforced + cropped + re-positioned);
+   *  we wrap it in a fresh URL and pretend the submit pipeline produced
+   *  it. */
   function onRevisit(row: AIJobRow) {
     if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
-    // Mark the offset as "no padding" — the saved blob is already at
-    // the layer's upright dim, no further crop needed in postprocess.
-    openAIOffsetRef.current = null;
+    // The saved blob is already at the layer's upright dim — no further
+    // postprocess is needed at apply time.
+    openAIPaddingRef.current = null;
     const url = URL.createObjectURL(row.resultBlob);
     setPrompt(row.prompt);
     setNegativePrompt(row.negativePrompt ?? "");

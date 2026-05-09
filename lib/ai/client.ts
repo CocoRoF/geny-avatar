@@ -120,6 +120,103 @@ export async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> 
  */
 const OPENAI_TARGET = 1024;
 
+/**
+ * Find the tight bounding box of the silhouette (alpha > threshold)
+ * within `canvas` and return both a cropped canvas + the bbox in
+ * original-canvas coords.
+ *
+ * Why this matters for gpt-image-2: a layer's atlas region often has
+ * lots of transparent space around the actual silhouette (the bbox
+ * the runtime packed is generous). If we feed the bbox-shaped source
+ * into `padToOpenAISquare` directly, the model sees a small subject
+ * pinned in one corner of a mostly-empty 1024² frame and frequently
+ * paints its edit *centered* (or anywhere else its prior expects),
+ * not at the silhouette's position. After the offset crop + alpha
+ * enforce, the misaligned content lands outside the silhouette and
+ * gets zeroed out → blank or partial-content results.
+ *
+ * Cropping to the silhouette before padding keeps the model's
+ * "frame" filled by the subject — generated content centers on the
+ * silhouette by default, and the apply step re-positions the
+ * tight-cropped result back to its original bbox inside the layer
+ * canvas.
+ *
+ * Returns `null` when the canvas is fully transparent (no silhouette
+ * to crop to). Callers should fall back to using the canvas verbatim.
+ */
+export function tightSilhouetteCrop(
+  canvas: HTMLCanvasElement,
+  alphaThreshold = 1,
+): { canvas: HTMLCanvasElement; bbox: { x: number; y: number; w: number; h: number } } | null {
+  const W = canvas.width;
+  const H = canvas.height;
+  if (W <= 0 || H <= 0) return null;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  let minX = W;
+  let minY = H;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const a = data[(y * W + x) * 4 + 3];
+      if (a >= alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0 || maxY < 0) return null;
+
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  // Skip the tight-crop pipeline when the silhouette already fills the
+  // whole canvas — there's no win and we'd just allocate an extra
+  // canvas. Caller can treat the original as the tight crop.
+  if (minX === 0 && minY === 0 && w === W && h === H) {
+    return { canvas, bbox: { x: 0, y: 0, w, h } };
+  }
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const outCtx = out.getContext("2d");
+  if (!outCtx) return null;
+  outCtx.drawImage(canvas, minX, minY, w, h, 0, 0, w, h);
+  return { canvas: out, bbox: { x: minX, y: minY, w, h } };
+}
+
+/**
+ * Combined preparation: tight-crop the silhouette, then pad to the
+ * OpenAI 1024² square. Returns everything `postprocessGeneratedBlob`
+ * needs to put the model's output back at the right place inside the
+ * original source canvas:
+ *
+ *   - `padded` — the canvas to send to OpenAI
+ *   - `paddingOffset` — where the tight crop sits inside the 1024²
+ *   - `sourceBBox` — where the tight crop came from inside the original
+ *     source canvas (so the result composites back at the same place)
+ *
+ * Falls back to padding the entire source canvas (no tight crop) if
+ * the silhouette is fully transparent — should never happen in
+ * practice, but the fallback keeps the pipeline alive.
+ */
+export function prepareOpenAISource(source: HTMLCanvasElement): {
+  padded: HTMLCanvasElement;
+  paddingOffset: { x: number; y: number; w: number; h: number };
+  sourceBBox: { x: number; y: number; w: number; h: number };
+} {
+  const tight = tightSilhouetteCrop(source);
+  const cropCanvas = tight?.canvas ?? source;
+  const sourceBBox = tight?.bbox ?? { x: 0, y: 0, w: source.width, h: source.height };
+  const { canvas: padded, offset } = padToOpenAISquare(cropCanvas);
+  return { padded, paddingOffset: offset, sourceBBox };
+}
+
 export function padToOpenAISquare(canvas: HTMLCanvasElement): {
   canvas: HTMLCanvasElement;
   /** offset of the original image within the padded square */
@@ -298,11 +395,15 @@ export async function postprocessGeneratedBlob(opts: {
    *  alpha-enforcement reference. */
   sourceCanvas: HTMLCanvasElement;
   /** Set when the source was padded to an OpenAI square at submit
-   *  time. Carries both the offset where the layer sat and the square
-   *  size we padded to (defaults to `OPENAI_TARGET`). The output may
-   *  not be at `canvasSize` — we scale offsets to whatever it is. */
+   *  time. `paddingOffset` says where the input sat inside the 1024²;
+   *  `sourceBBox` (set when `prepareOpenAISource` ran) says where the
+   *  input came from inside the original source canvas, so we
+   *  composite the result back to that exact rect. */
   openAIPadding?: {
-    offset: { x: number; y: number; w: number; h: number };
+    /** Backwards-compat alias for `paddingOffset`. */
+    offset?: { x: number; y: number; w: number; h: number };
+    paddingOffset?: { x: number; y: number; w: number; h: number };
+    sourceBBox?: { x: number; y: number; w: number; h: number };
     canvasSize?: number;
   };
 }): Promise<Blob> {
@@ -313,8 +414,16 @@ export async function postprocessGeneratedBlob(opts: {
     throw new Error("source canvas has zero dimensions");
   }
 
+  const paddingOffset = opts.openAIPadding?.paddingOffset ?? opts.openAIPadding?.offset;
+  const sourceBBox = opts.openAIPadding?.sourceBBox;
+  const canvasSize = opts.openAIPadding?.canvasSize ?? OPENAI_TARGET;
   console.info(
-    `[postprocess] input=${img.naturalWidth}x${img.naturalHeight} → target=${targetW}x${targetH} padding=${opts.openAIPadding ? `offset=${JSON.stringify(opts.openAIPadding.offset)} canvasSize=${opts.openAIPadding.canvasSize ?? OPENAI_TARGET}` : "none"}`,
+    `[postprocess] input=${img.naturalWidth}x${img.naturalHeight} → target=${targetW}x${targetH} ` +
+      (paddingOffset
+        ? `paddingOffset=${JSON.stringify(paddingOffset)} sourceBBox=${
+            sourceBBox ? JSON.stringify(sourceBBox) : "(whole canvas)"
+          } canvasSize=${canvasSize}`
+        : "padding=none"),
   );
 
   const out = document.createElement("canvas");
@@ -323,21 +432,31 @@ export async function postprocessGeneratedBlob(opts: {
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
 
-  // Step 1: extract the layer region.
-  if (opts.openAIPadding) {
-    const { offset } = opts.openAIPadding;
-    const canvasSize = opts.openAIPadding.canvasSize ?? OPENAI_TARGET;
+  // Step 1: extract the layer region from the raw result and place it
+  // back into the source canvas.
+  if (paddingOffset) {
     // OpenAI picks an output size from the input dims; if the response
     // came back at a different resolution, the saved offset (in input
     // coords) needs to be scaled into output coords.
-    const sx = (offset.x / canvasSize) * img.naturalWidth;
-    const sy = (offset.y / canvasSize) * img.naturalHeight;
-    const sw = (offset.w / canvasSize) * img.naturalWidth;
-    const sh = (offset.h / canvasSize) * img.naturalHeight;
+    const sx = (paddingOffset.x / canvasSize) * img.naturalWidth;
+    const sy = (paddingOffset.y / canvasSize) * img.naturalHeight;
+    const sw = (paddingOffset.w / canvasSize) * img.naturalWidth;
+    const sh = (paddingOffset.h / canvasSize) * img.naturalHeight;
+
+    // Where the result should land inside the source-canvas-sized
+    // output. With `sourceBBox`, the result was tight-cropped at submit
+    // time and must go back to that same rect — anywhere outside it
+    // was originally transparent and stays transparent. Without it
+    // (legacy path), the result fills the whole source canvas.
+    const dx = sourceBBox?.x ?? 0;
+    const dy = sourceBBox?.y ?? 0;
+    const dw = sourceBBox?.w ?? targetW;
+    const dh = sourceBBox?.h ?? targetH;
+
     console.info(
-      `[postprocess] crop src=(${sx.toFixed(0)},${sy.toFixed(0)} ${sw.toFixed(0)}x${sh.toFixed(0)}) → dst=(0,0 ${targetW}x${targetH})`,
+      `[postprocess] crop src=(${sx.toFixed(0)},${sy.toFixed(0)} ${sw.toFixed(0)}x${sh.toFixed(0)}) → dst=(${dx},${dy} ${dw}x${dh})`,
     );
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetW, targetH);
+    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
   } else {
     // Gemini & friends: scale the whole result to target dims.
     ctx.drawImage(img, 0, 0, targetW, targetH);
