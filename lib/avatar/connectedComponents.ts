@@ -220,6 +220,39 @@ export function findAlphaComponents(
 }
 
 /**
+ * Build a tight thumbnail of just this component, scaled to fit
+ * within `targetMax` on its longest edge. Used for the per-region
+ * tiles in GeneratePanel — caller can drop this canvas straight into
+ * a `<canvas>` ref or convert to a data URL.
+ */
+export function componentThumbnail(
+  source: HTMLCanvasElement,
+  component: ComponentInfo,
+  targetMax = 96,
+): HTMLCanvasElement {
+  const { x, y, w, h } = component.bbox;
+  const scale = Math.min(targetMax / w, targetMax / h, 1);
+  const tw = Math.max(1, Math.round(w * scale));
+  const th = Math.max(1, Math.round(h * scale));
+
+  const out = document.createElement("canvas");
+  out.width = tw;
+  out.height = th;
+  const ctx = out.getContext("2d");
+  if (!ctx) return out;
+
+  // Apply component mask first so the thumb only shows this island —
+  // other components in the same bbox area get masked off. drawImage
+  // composites in two passes: source crop, then destination-in with
+  // the component mask scaled to the same crop.
+  ctx.drawImage(source, x, y, w, h, 0, 0, tw, th);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(component.maskCanvas, x, y, w, h, 0, 0, tw, th);
+  ctx.globalCompositeOperation = "source-over";
+  return out;
+}
+
+/**
  * Multiply `source`'s alpha by `mask`'s alpha to produce an isolated
  * canvas. Used to derive a per-component source canvas (this island's
  * pixels visible, other islands transparent) before feeding into the

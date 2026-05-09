@@ -80,6 +80,7 @@
 | 2026-05-09 | [64 multi_component_kickoff](2026-05-09_64_multi_component_kickoff.md) | 5 polish | 진행중 — disjoint silhouette을 여럿 가진 layer (예: torso + shoulder frill) 의 generation 깨짐 해소 정공. A+B 결정 (auto component split + region-aware UI). sub-sprint A.1~A.3 분할 |
 | 2026-05-09 | [65 sprint_a_1_connected_components](2026-05-09_65_sprint_a_1_connected_components.md) | A.1 | 완료 — `findAlphaComponents` 8-connected 라벨링 + `isolateWithMask` GPU composite + `prepareOpenAISourcesPerComponent` per-island submit-ready package. 라이브러리만, UI 변경 없음 |
 | 2026-05-09 | [66 sprint_a_2_parallel_submit](2026-05-09_66_sprint_a_2_parallel_submit.md) | A.2 | 완료 — GeneratePanel OpenAI 경로 multi-component 전환. N개 island 자동 분리 → 병렬 N submit → per-component postprocess (sourceBBox + binary mask alpha-enforce) → `compositeProcessedComponents` 로 합성. 단일 component layer 동일 동작. UI 변경 없음 (A.3에서 region-aware UI) |
+| 2026-05-09 | [67 sprint_a_3_region_aware_ui](2026-05-09_67_sprint_a_3_region_aware_ui.md) | A.3 | 완료 — multi-component layer일 때 SOURCE 위 SVG overlay (색별 outline + 번호) + aside REGIONS 섹션 (썸네일 + per-region textarea) + COMMON CONTEXT 라벨 전환. submit 시 region별 prompt 조합 (`<base>\n\nFor [image 1] (region N of M, WxH px): <perRegion>`) → `refinedPrompt` 로 전달. 단일 component layer 기존 UI 유지 |
 
 ## 운영 규칙
 

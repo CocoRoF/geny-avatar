@@ -13,6 +13,11 @@ import {
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
+import {
+  type ComponentInfo,
+  componentThumbnail,
+  findAlphaComponents,
+} from "@/lib/avatar/connectedComponents";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { useReferences } from "@/lib/avatar/useReferences";
@@ -73,6 +78,29 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
    *  shoulder frill in one slot) split into N parallel OpenAI calls
    *  and N postprocesses are composited back into a single texture. */
   const lastComponentCountRef = useRef<number>(0);
+
+  /** Per-region info computed at mount time from the AI source canvas.
+   *  When > 1 the panel switches into multi-region mode: each component
+   *  gets its own thumbnail + sub-prompt textarea, and the source
+   *  preview overlays color-coded outlines so the user can see which
+   *  bbox is which. Empty / single-component layers stay in the
+   *  classic single-prompt UI. */
+  const [components, setComponents] = useState<ComponentInfo[]>([]);
+  const [componentThumbs, setComponentThumbs] = useState<HTMLCanvasElement[]>([]);
+  /** Per-region prompt strings, indexed by component id. Edited
+   *  independently of `prompt`. The submit pipeline appends each
+   *  string to the common prompt and sends one composed prompt per
+   *  component call. */
+  const [componentPrompts, setComponentPrompts] = useState<string[]>([]);
+
+  /** Color palette cycled across components for the source-overlay
+   *  outlines and the per-region tile borders. Six saturated hues
+   *  that read cleanly on the dark panel background and remain
+   *  distinguishable for typical multi-island counts (2–4). */
+  const COMPONENT_COLORS = useMemo(
+    () => ["#22c55e", "#f97316", "#ec4899", "#3b82f6", "#eab308", "#a855f7"],
+    [],
+  );
 
   /** Persisted history for this layer. Newest first. Repopulated on
    *  every successful save so the list reflects what's in IDB. */
@@ -158,6 +186,22 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       });
       if (cancelled) return;
       previewSourceRef.current = previewExtracted?.canvas ?? aiExtracted.canvas;
+
+      // Detect connected silhouette components on the AI source. The
+      // result feeds three things: the colored bbox overlay on the
+      // SOURCE canvas, the per-region tiles (with thumbnail + sub-
+      // prompt textarea), and submit-time prompt composition. We use
+      // the AI source (not the post-mask preview) because the AI
+      // source is exactly what each component's gen call will see.
+      const detected = findAlphaComponents(aiExtracted.canvas);
+      if (cancelled) return;
+      const thumbs = detected.map((c) => componentThumbnail(aiExtracted.canvas, c, 96));
+      setComponents(detected);
+      setComponentThumbs(thumbs);
+      // Initialize per-region prompts to empty strings. Existing
+      // prompts (if user re-opens the same layer) are reset because
+      // the component identity isn't stable across mounts.
+      setComponentPrompts(detected.map(() => ""));
 
       setReady(true);
     })();
@@ -477,6 +521,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       } else if (usePromptRefine && providerId === "openai") {
         console.info("prompt refinement: skipped (refine off / empty / errored)");
       }
+      if (components?.some((_, i) => (componentPrompts[i] ?? "").trim())) {
+        console.info(
+          "per-region prompts (combined with common at submit):",
+          components.map((_, i) => ({
+            region: i + 1,
+            text: componentPrompts[i] ?? "",
+          })),
+        );
+      }
       if (negativePrompt.trim()) console.info("negative prompt:", negativePrompt);
       console.info(
         "note: provider wraps the (refined) prompt in slot-mapping + preservation scaffolding. Check the [openai] server log for the full composed text actually sent to /v1/images/edits.",
@@ -489,15 +542,25 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         // Multi-component OpenAI path: fire N submits in parallel,
         // postprocess each into a source-canvas-sized canvas with only
         // that component's silhouette painted, then composite them all
-        // into one final blob. Same prompt + same refs hit every call;
-        // per-component prompt routing is A.3 territory.
+        // into one final blob. Each call gets a *composed* prompt:
+        // common context (refined when available) + a per-region
+        // sentence pulled from the matching tile's textarea. The
+        // composed string rides as `refinedPrompt` because the
+        // provider's composePrompt prefers it over `prompt` — the
+        // raw user prompt stays in the `prompt` field for log /
+        // history fidelity.
+        const baseText = refinedPromptForSubmit ?? prompt;
         const componentBlobs = await Promise.all(
           components.map(async (comp, idx) => {
+            const perRegion = (componentPrompts[idx] ?? "").trim();
+            const composedPrompt = perRegion
+              ? `${baseText}\n\nFor [image 1] (region ${idx + 1} of ${components.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px): ${perRegion}`
+              : baseText;
             const compSourceBlob = await canvasToPngBlob(comp.padded);
             const rawResult = await submitGenerate({
               providerId,
               prompt,
-              refinedPrompt: refinedPromptForSubmit,
+              refinedPrompt: composedPrompt,
               negativePrompt: negativePrompt.trim() || undefined,
               modelId: modelId || undefined,
               sourceImage: compSourceBlob,
@@ -688,16 +751,72 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           >
             <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
               source
+              {components.length > 1 && (
+                <span className="ml-2 text-[var(--color-accent)]">
+                  · {components.length} regions
+                </span>
+              )}
             </div>
             {error ? (
               <div className="text-sm text-red-400">{error}</div>
             ) : !ready ? (
               <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
             ) : (
-              <canvas
-                ref={sourceRef}
-                className="max-h-full max-w-full border border-[var(--color-border)]"
-              />
+              <div className="relative inline-flex max-h-full max-w-full">
+                <canvas
+                  ref={sourceRef}
+                  className="max-h-full max-w-full border border-[var(--color-border)]"
+                />
+                {/* Color-coded bbox overlay for multi-component layers.
+                    Renders only when ≥ 2 components are detected; the
+                    SVG sits on top of the canvas in the same flex
+                    cell so its viewBox can match the canvas's source
+                    pixel dims. */}
+                {components.length > 1 && previewSourceRef.current && (
+                  <svg
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                    viewBox={`0 0 ${previewSourceRef.current.width} ${previewSourceRef.current.height}`}
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    {components.map((c, idx) => {
+                      const color = COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                      const labelSize = Math.max(20, Math.min(c.bbox.w, c.bbox.h) / 4);
+                      return (
+                        <g key={c.id}>
+                          <rect
+                            x={c.bbox.x}
+                            y={c.bbox.y}
+                            width={c.bbox.w}
+                            height={c.bbox.h}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth={Math.max(2, Math.min(c.bbox.w, c.bbox.h) / 40)}
+                            strokeDasharray={`${labelSize / 3} ${labelSize / 6}`}
+                          />
+                          <circle
+                            cx={c.bbox.x + labelSize}
+                            cy={c.bbox.y + labelSize}
+                            r={labelSize}
+                            fill={color}
+                          />
+                          <text
+                            x={c.bbox.x + labelSize}
+                            y={c.bbox.y + labelSize}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fontSize={labelSize * 1.2}
+                            fontWeight="700"
+                            fill="#000"
+                          >
+                            {idx + 1}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                )}
+              </div>
             )}
           </div>
 
@@ -803,14 +922,95 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               </div>
             )}
 
+            {/* Per-region tiles. Only shown when this layer split into
+                multiple silhouette islands. Each tile shows a thumb
+                (with the matching outline color from the SOURCE
+                overlay) and a textarea for region-specific prompt
+                language. Submit composes one prompt per component as
+                `<common> + "Region N: <per-region>"`, so the user can
+                say "common: skin tone soft peach" and "region 1:
+                exposed midriff" / "region 2: lace frill". */}
+            {components.length > 1 && (
+              <div className="mb-3">
+                <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
+                  regions
+                  <span className="ml-1 normal-case tracking-normal text-[var(--color-accent)]">
+                    · {components.length} OpenAI calls
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {components.map((c, idx) => {
+                    const color = COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
+                    const thumb = componentThumbs[idx];
+                    return (
+                      <div
+                        key={c.id}
+                        className="rounded border bg-[var(--color-bg)] p-1.5"
+                        style={{ borderColor: color }}
+                      >
+                        <div className="flex gap-2">
+                          <div
+                            className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded"
+                            style={{ background: "rgba(255,255,255,0.04)" }}
+                          >
+                            {thumb && (
+                              // biome-ignore lint/performance/noImgElement: thumbnail comes from a runtime data URL — next/image can't process it
+                              <img
+                                src={thumb.toDataURL("image/png")}
+                                alt={`region ${idx + 1}`}
+                                className="max-h-full max-w-full"
+                                draggable={false}
+                              />
+                            )}
+                            <span
+                              className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-black"
+                              style={{ background: color }}
+                            >
+                              {idx + 1}
+                            </span>
+                          </div>
+                          <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            <div className="text-[10px] text-[var(--color-fg-dim)]">
+                              {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
+                            </div>
+                            <textarea
+                              value={componentPrompts[idx] ?? ""}
+                              onChange={(e) =>
+                                setComponentPrompts((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = e.target.value;
+                                  return next;
+                                })
+                              }
+                              placeholder={`region ${idx + 1} — what should fill this island?`}
+                              className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="mb-3">
               <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                prompt
+                {components.length > 1 ? "common context" : "prompt"}
+                {components.length > 1 && (
+                  <span className="ml-1 normal-case tracking-normal text-[var(--color-fg-dim)]">
+                    · sent to every region
+                  </span>
+                )}
               </div>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
+                placeholder={
+                  components.length > 1
+                    ? "shared context — style, palette, character identity"
+                    : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
+                }
                 className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
               />
             </div>
