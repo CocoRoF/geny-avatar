@@ -100,19 +100,27 @@ V1까지의 단계. 각 Phase는 끝났을 때 "지금 시연 가능한 것"이 
 
 **예상 기간**: 2주.
 
-## Phase 5 — AI Quality Push
+## Phase 5 — AI Quality Push (gpt-image-2 era)
 
-**목표**: 캐릭터 일관성 + 품질 향상.
+**목표**: 캐릭터 일관성 + 품질 향상. **gpt-image-2 cloud API 단독**으로 정공 진행 → 안정화 후 ComfyUI / LoRA / IP-Adapter는 별도 후속 phase.
+
+**핵심 메커니즘**: gpt-image-2의 `/v1/images/edits`가 `image[]` 배열 다중 이미지 입력을 지원함. 첫 번째 이미지에 mask 적용, 나머지는 character/style reference로 작용. 이게 IP-Adapter 없이 cloud API만으로 캐릭터 일관성을 잡는 길.
 
 **스코프**:
-- IP-Adapter 통합 (캐릭터 ref 이미지)
-- 사용자 LoRA 업로드 + 적용
-- 자체 ComfyUI 워크플로 deploy (Replicate에 Cog 또는 자가호스팅)
-- 결과 품질 회귀 테스트 셋: 10개 샘플 puppet × 5 프롬프트로 매트릭스 평가
+- 5.1 Per-puppet reference image store (IDB v7 + ReferencesPanel)
+- 5.2 OpenAI provider multi-image input (`image[]`) + ref 프롬프트 힌트
+- 5.3 GeneratePanel reference selection UX (active 체크 + history → ref 승격)
+- 5.4 Prompt template library (recolor, swap, style transfer 등 1-click chip)
+- 5.5 Generation comparison viewer (history 두 row side-by-side)
 
-**완료 조건**: 같은 캐릭터로 여러 layer를 재생성해도 톤이 어긋나지 않는다.
+**out of 스코프 (deferred)**:
+- IP-Adapter / LoRA / 자체 ComfyUI — Phase 5.5 또는 6에 별도 sub-phase로 추가
+- previous_response_id iterative refinement — 시간 남으면 5.X
+- 자동 품질 회귀 테스트 매트릭스 — 별도 sprint로 분리
 
-**예상 기간**: 3주.
+**완료 조건**: 같은 캐릭터로 여러 layer를 재생성해도 톤이 어긋나지 않는다 (사용자 직접 검증 + 비교 뷰어로 확인).
+
+**예상 기간**: 2~3주 (5.1~5.5 atomic PR 5개).
 
 ## Phase 6 — Decompose Studio Pro
 
