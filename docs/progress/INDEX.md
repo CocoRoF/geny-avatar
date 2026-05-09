@@ -93,6 +93,7 @@
 | 2026-05-09 | [77 sprint_g_8_apply_race_fix](2026-05-09_77_sprint_g_8_apply_race_fix.md) | G.8 | 완료 — apply-to-atlas 가 빈 텍스처로 덮어쓰던 React race 수정. `setRegionStates(updater)` 안에서 캡처하던 `updatedBlobs` 가 비동기 updater 때문에 `await recompositeResult(...)` 시점에 빈 `[]` → composite 빈 PNG → alpha=0 source-over 가 no-op → 사용자가 "변화 없음" 본 정확한 증상. `regionStatesRef` 도입해 동기로 read |
 | 2026-05-09 | [78 sprint_g_9_per_region_refine](2026-05-09_78_sprint_g_9_per_region_refine.md) | G.9 | 완료 — focus mode에서 Refine prompt 토글이 dead 였던 버그 수정. `regenerateOneRegion`이 cached refinement 만 재사용하고 `refinePrompt` 호출 자체를 안 하던 문제. per-region prompt + isolated region source 로 refine 호출 추가, cache hit 시 재사용, 실패 시 raw fallback |
 | 2026-05-09 | [79 sprint_6_2_sam_in_decompose](2026-05-09_79_sprint_6_2_sam_in_decompose.md) | 6.2 | 완료 — DecomposeStudio split mode에 SAM auto 서브모드 추가. brush 도구가 paint/erase/auto 3-way. auto 모드: 좌클릭 fg / 우클릭 bg 점 누적 → "compute mask" → /api/ai/sam 호출 → candidate thumbnails → 클릭하면 선택된 region에 union 적용. SVG overlay로 점 시각화, error inline, sub-mode 전환 시 자동 cleanup |
+| 2026-05-09 | [80 phase6_complete](2026-05-09_80_phase6_complete.md) | 6.3+6.4+6.5 | 완료 — Phase 6 마지막 세 sprint 묶음. **6.3** SAM apply에 union/intersect/subtract boolean op (`samComposeOp` state + 3-way grid toggle). **6.4** "auto-detect" 버튼이 `findAlphaComponents` 로 region을 component별로 시드 (replace/append confirm). **6.5** fullscreen 토글 (헤더 버튼) — modal이 h-screen w-screen 으로 전환. Phase 6 (DecomposeStudio Pro) 완료 |
 
 ## 운영 규칙
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { submitSam } from "@/lib/ai/sam/client";
 import type { SamCandidate, SamPoint } from "@/lib/ai/sam/types";
+import { findAlphaComponents } from "@/lib/avatar/connectedComponents";
 import { ID_PREFIX, newId } from "@/lib/avatar/id";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -103,6 +104,22 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const [samCandidates, setSamCandidates] = useState<SamCandidate[] | null>(null);
   const [samRunning, setSamRunning] = useState(false);
   const [samError, setSamError] = useState<string | null>(null);
+  /** Sprint 6.3: how a SAM candidate (or any compose-time mask op)
+   *  combines with the existing region canvas at apply time:
+   *    - add       — source-over (union; default)
+   *    - intersect — destination-in (keep only the overlap)
+   *    - subtract  — destination-out (remove the candidate area)
+   *  Brush paint/erase already cover add/subtract on per-stroke
+   *  basis; this affordance is for SAM-driven composition where
+   *  the user gets a whole-region candidate at once. */
+  const [samComposeOp, setSamComposeOp] = useState<"add" | "intersect" | "subtract">("add");
+  /** Sprint 6.5: fullscreen toggle. The default modal cap of
+   *  90vh × min(90vw, 1100px) is fine for small layers but
+   *  cramped when the source canvas is 4k+ — split-mode regions
+   *  list also eats into the canvas area. Fullscreen mode
+   *  switches the modal box to the full viewport so the canvas
+   *  gets every pixel CSS can give it. */
+  const [fullscreen, setFullscreen] = useState(false);
 
   // ----- load source + initial mask -----
   // Source = base layer + texture override (if any). The mask layer is
@@ -447,6 +464,69 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setSplitDirty(true);
   }, []);
 
+  /** Sprint 6.4: bootstrap regions from the layer's connected
+   *  silhouette components. Runs `findAlphaComponents` on the
+   *  upright source canvas — same detector GeneratePanel uses for
+   *  multi-region auto-detect — and seeds one region entry per
+   *  island. The user can then refine each with paint/erase/SAM.
+   *
+   *  When regions already exist we ask before clobbering: replace
+   *  wipes the existing list (and their painted progress); add
+   *  appends the components as new regions next to the existing
+   *  ones. Cancel does nothing. */
+  const autoDetectRegions = useCallback(() => {
+    const source = sourceCanvasRef.current;
+    if (!source) return;
+    const detected = findAlphaComponents(source);
+    if (detected.length === 0) {
+      setSamError(null);
+      // Soft signal — there's no SAM error here. Re-use the dirty
+      // flag-free toast pattern with window.alert which is rare in
+      // this codebase but acceptable for "nothing to do".
+      if (typeof window !== "undefined") {
+        window.alert("no silhouette components detected on this layer");
+      }
+      return;
+    }
+    let action: "replace" | "add" = "replace";
+    if (regionEntries.length > 0 && typeof window !== "undefined") {
+      const ok = window.confirm(
+        `Replace the ${regionEntries.length} existing region${
+          regionEntries.length === 1 ? "" : "s"
+        } with ${detected.length} auto-detected component${
+          detected.length === 1 ? "" : "s"
+        }? (Cancel = append instead.)`,
+      );
+      action = ok ? "replace" : "add";
+    }
+    if (action === "replace") {
+      regionCanvasMap.current.clear();
+    }
+    const startIdx = action === "replace" ? 0 : regionEntries.length;
+    const newEntries: { id: string; name: string; color: string }[] = [];
+    detected.forEach((comp, i) => {
+      const id = newId(ID_PREFIX.regionMask);
+      const color = REGION_COLORS[(startIdx + i) % REGION_COLORS.length];
+      // Seed each region's canvas with the component's binary mask
+      // (white inside the component, transparent outside) at full
+      // source dim — same shape as a paint stroke would build.
+      const c = document.createElement("canvas");
+      c.width = source.width;
+      c.height = source.height;
+      const cctx = c.getContext("2d");
+      if (cctx) cctx.drawImage(comp.maskCanvas, 0, 0);
+      regionCanvasMap.current.set(id, c);
+      newEntries.push({
+        id,
+        name: detected.length === 1 ? "" : `region ${startIdx + i + 1}`,
+        color,
+      });
+    });
+    setRegionEntries((prev) => (action === "replace" ? newEntries : [...prev, ...newEntries]));
+    setSelectedRegionId(newEntries[0]?.id ?? null);
+    setSplitDirty(true);
+  }, [regionEntries.length]);
+
   // ----- Sprint 6.2: SAM auto-mask actions -----
 
   /** Submit the current fg/bg point set to /api/ai/sam and stash the
@@ -482,19 +562,21 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   }, [samPoints]);
 
   /** Apply one candidate mask to the currently-selected region's
-   *  canvas via union (source-over). The candidate is a binary PNG
-   *  at source dims; drawing it as-is over the region canvas adds
-   *  any opaque pixels to the existing mask. After apply, clear the
-   *  point set + candidates so the user can do another round of
-   *  clicks for a separate area without leaving the auto sub-mode. */
+   *  canvas using the active boolean op (Sprint 6.3). The candidate
+   *  is a binary PNG at source dims:
+   *    - add       → source-over (the candidate's opaque pixels
+   *                  become part of the region)
+   *    - intersect → destination-in (region keeps only pixels also
+   *                  present in the candidate)
+   *    - subtract  → destination-out (candidate's opaque pixels are
+   *                  removed from the region)
+   *  After apply, clear the point set + candidates so the user can
+   *  start another cycle without leaving auto sub-mode. */
   const applySamCandidate = useCallback(
     async (candidate: SamCandidate) => {
       if (!selectedRegionId) return;
       const target = regionCanvasMap.current.get(selectedRegionId);
       if (!target) return;
-      // Decode the candidate blob into an image and draw it onto the
-      // region canvas. SAM masks come back at source dims, so direct
-      // drawImage at (0,0) is correct.
       const url = URL.createObjectURL(candidate.maskBlob);
       try {
         const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -507,7 +589,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         if (!tctx) return;
         tctx.save();
         if (clipPathRef.current) tctx.clip(clipPathRef.current);
-        tctx.globalCompositeOperation = "source-over";
+        const operation: GlobalCompositeOperation =
+          samComposeOp === "intersect"
+            ? "destination-in"
+            : samComposeOp === "subtract"
+              ? "destination-out"
+              : "source-over";
+        tctx.globalCompositeOperation = operation;
         tctx.drawImage(img, 0, 0, target.width, target.height);
         tctx.restore();
         setSplitDirty(true);
@@ -520,7 +608,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       setSamPoints([]);
       setSamCandidates(null);
     },
-    [selectedRegionId, redraw],
+    [selectedRegionId, redraw, samComposeOp],
   );
 
   /** Drop accumulated points + candidates without applying. Useful
@@ -628,7 +716,11 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         onClick={() => close(null)}
         className="absolute inset-0 cursor-default"
       />
-      <div className="relative z-10 m-auto flex h-[90vh] w-[min(90vw,1100px)] flex-col rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
+      <div
+        className={`relative z-10 m-auto flex flex-col border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl ${
+          fullscreen ? "h-screen w-screen rounded-none" : "h-[90vh] w-[min(90vw,1100px)] rounded"
+        }`}
+      >
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
           <span className="font-mono text-[var(--color-accent)]">decompose · v1</span>
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
@@ -678,6 +770,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
             className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
           >
             save & close
+          </button>
+          {/* Sprint 6.5: fullscreen toggle for big-canvas work. */}
+          <button
+            type="button"
+            onClick={() => setFullscreen((v) => !v)}
+            className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title={fullscreen ? "shrink to modal" : "expand to fullscreen"}
+          >
+            {fullscreen ? "shrink" : "fullscreen"}
           </button>
           <button
             type="button"
@@ -823,24 +924,41 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                 {/* Split-mode sidebar (E.2). Region list with name
                     inputs + color swatch + delete; brush controls
                     below. The selected region receives strokes. */}
-                <div className="mb-3 flex items-center justify-between">
+                <div className="mb-3 flex items-center justify-between gap-1">
                   <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
                     regions ({regionEntries.length})
                   </div>
-                  <button
-                    type="button"
-                    onClick={addRegion}
-                    className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)]"
-                    title="add a new region"
-                  >
-                    + add
-                  </button>
+                  <div className="flex gap-1">
+                    {/* Sprint 6.4: seed regions from connected
+                        silhouette components. Useful first step on
+                        any multi-island layer — lets the user start
+                        from auto-detect and refine instead of
+                        painting from scratch. */}
+                    <button
+                      type="button"
+                      onClick={autoDetectRegions}
+                      className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      title="auto-detect regions from connected silhouettes"
+                    >
+                      auto-detect
+                    </button>
+                    <button
+                      type="button"
+                      onClick={addRegion}
+                      className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)]"
+                      title="add a new region"
+                    >
+                      + add
+                    </button>
+                  </div>
                 </div>
 
                 {regionEntries.length === 0 ? (
                   <div className="mb-3 rounded border border-dashed border-[var(--color-border)] px-2 py-3 text-center text-[var(--color-fg-dim)]">
-                    no regions yet — click "+ add" to create one, then paint where it lives on the
-                    canvas.
+                    no regions yet — click{" "}
+                    <span className="text-[var(--color-fg)]">auto-detect</span> to seed from
+                    silhouette components, or <span className="text-[var(--color-fg)]">+ add</span>{" "}
+                    to start from blank.
                   </div>
                 ) : (
                   <ul className="mb-3 flex flex-col gap-1.5">
@@ -963,6 +1081,32 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     <div className="mb-2 text-[10px] text-[var(--color-fg-dim)]">
                       points: {samPoints.length} (fg {samPoints.filter((p) => p.label === 1).length}{" "}
                       / bg {samPoints.filter((p) => p.label === 0).length})
+                    </div>
+                    {/* Sprint 6.3: composition mode for candidate
+                        apply. add = union (default), intersect =
+                        keep only overlap, subtract = remove. */}
+                    <div className="mb-2 grid grid-cols-3 gap-1 text-[10px]">
+                      {(["add", "intersect", "subtract"] as const).map((op) => (
+                        <button
+                          type="button"
+                          key={op}
+                          onClick={() => setSamComposeOp(op)}
+                          title={
+                            op === "add"
+                              ? "candidate's opaque pixels join the region"
+                              : op === "intersect"
+                                ? "region keeps only pixels also in the candidate"
+                                : "candidate's pixels are removed from the region"
+                          }
+                          className={`rounded border px-1.5 py-0.5 ${
+                            samComposeOp === op
+                              ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                              : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                          }`}
+                        >
+                          {op}
+                        </button>
+                      ))}
                     </div>
                     <div className="mb-2 flex gap-1">
                       <button
