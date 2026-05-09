@@ -62,6 +62,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
 
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
+  /** G.7: separate canvas for the focused-region RESULT preview.
+   *  In multi-region focus mode the composite blob is at the full
+   *  layer-source dims (≈4k px) — when scaled to the RESULT panel's
+   *  ~500×500 box, this region's edited area becomes a few pixels
+   *  and the silent UX failure mode is "I generated, ✓ generated
+   *  shows, but RESULT looks blank." Painting just the focused
+   *  region's bbox (same crop the SOURCE preview uses) into a
+   *  dedicated canvas fixes the visibility. */
+  const resultRef = useRef<HTMLCanvasElement | null>(null);
   /** Source we send to the AI: post-gen, *pre-mask*. Keeping the
    *  pixels populated under the layer's mask region matters — gpt-
    *  image-2 falls back to free generation when its input is mostly
@@ -131,6 +140,34 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
    *  and reused across both generate-all and per-region regenerate
    *  so we don't pay the isolation / pad cost on every call. */
   const preparedRef = useRef<import("@/lib/ai/client").PreparedComponent[] | null>(null);
+
+  /** G: focus-mode binding helpers. When the panel is focused on a
+   *  specific region of a multi-region layer, the textarea reads /
+   *  writes that region's componentPrompts entry; the legacy panel
+   *  `prompt` state stays the source of truth for everything else
+   *  (Gemini single-source, single-component OpenAI). The Generate
+   *  button likewise dispatches to `regenerateOneRegion(focused)`
+   *  in multi-region focus or `onSubmit` otherwise. Declared up
+   *  here so the SOURCE / RESULT preview effects can read them. */
+  const isFocusedMulti =
+    components.length > 1 && focusedRegionIdx !== null && focusedRegionIdx >= 0;
+  const focusedPromptValue = isFocusedMulti
+    ? (componentPrompts[focusedRegionIdx ?? 0] ?? "")
+    : prompt;
+  const setFocusedPromptValue = (val: string) => {
+    if (isFocusedMulti && focusedRegionIdx !== null) {
+      const idx = focusedRegionIdx;
+      setComponentPrompts((prev) => {
+        const next = [...prev];
+        next[idx] = val;
+        return next;
+      });
+    } else {
+      setPrompt(val);
+    }
+  };
+  const focusedRegionState =
+    isFocusedMulti && focusedRegionIdx !== null ? regionStates[focusedRegionIdx] : null;
 
   /** Color palette cycled across components for the source-overlay
    *  outlines and the per-region tile borders. Six saturated hues
@@ -396,6 +433,52 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     display.height = preview.height;
     display.getContext("2d")?.drawImage(preview, 0, 0);
   }, [ready, focusedRegionIdx, components]);
+
+  // ----- G.7: focus-mode RESULT preview -----
+  // Paints the focused region's `regionStates[idx].resultBlob`
+  // tight-cropped into the RESULT canvas. Same bbox as the SOURCE
+  // preview, so the user can compare 1:1. In picker view (not
+  // focused) this canvas isn't rendered; in single-component /
+  // Gemini paths the legacy `<img src={phase.url}>` still drives
+  // RESULT.
+  useEffect(() => {
+    if (!ready) return;
+    if (!isFocusedMulti || focusedRegionIdx === null) return;
+    const display = resultRef.current;
+    if (!display) return;
+    const c = components[focusedRegionIdx];
+    const state = regionStates[focusedRegionIdx];
+    if (!c || !state) return;
+
+    let cancelled = false;
+    const url = URL.createObjectURL(state.resultBlob);
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      display.width = c.bbox.w;
+      display.height = c.bbox.h;
+      const ctx = display.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, display.width, display.height);
+        // The result blob is at full source-canvas dims with content
+        // only at this region's silhouette. Crop the bbox area in,
+        // matching the SOURCE preview's framing exactly.
+        ctx.drawImage(img, c.bbox.x, c.bbox.y, c.bbox.w, c.bbox.h, 0, 0, c.bbox.w, c.bbox.h);
+      }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, isFocusedMulti, focusedRegionIdx, components, regionStates]);
 
   // ----- mount: load AI job history for this layer -----
   useEffect(() => {
@@ -1107,33 +1190,6 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setLastResultBlob(null);
   }
 
-  /** G: focus-mode binding helpers. When the panel is focused on a
-   *  specific region of a multi-region layer, the textarea reads /
-   *  writes that region's componentPrompts entry; the legacy panel
-   *  `prompt` state stays the source of truth for everything else
-   *  (Gemini single-source, single-component OpenAI). The Generate
-   *  button likewise dispatches to `regenerateOneRegion(focused)`
-   *  in multi-region focus or `onSubmit` otherwise. */
-  const isFocusedMulti =
-    components.length > 1 && focusedRegionIdx !== null && focusedRegionIdx >= 0;
-  const focusedPromptValue = isFocusedMulti
-    ? (componentPrompts[focusedRegionIdx ?? 0] ?? "")
-    : prompt;
-  const setFocusedPromptValue = (val: string) => {
-    if (isFocusedMulti && focusedRegionIdx !== null) {
-      const idx = focusedRegionIdx;
-      setComponentPrompts((prev) => {
-        const next = [...prev];
-        next[idx] = val;
-        return next;
-      });
-    } else {
-      setPrompt(val);
-    }
-  };
-  const focusedRegionState =
-    isFocusedMulti && focusedRegionIdx !== null ? regionStates[focusedRegionIdx] : null;
-
   const submitDisabled =
     !ready ||
     !provider?.available ||
@@ -1368,49 +1424,93 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
             >
               <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
                 result
+                {isFocusedMulti && focusedRegionIdx !== null && components[focusedRegionIdx] && (
+                  <span className="ml-2 text-[var(--color-accent)]">
+                    · region {focusedRegionIdx + 1} of {components.length}
+                  </span>
+                )}
               </div>
-              {phase.kind === "idle" && (
-                <div className="text-sm text-[var(--color-fg-dim)]">generate to see output</div>
-              )}
-              {phase.kind === "submitting" && (
-                <div className="text-sm text-[var(--color-fg-dim)]">submitting…</div>
-              )}
-              {phase.kind === "running" && (
-                <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
-                  <span>generating · provider call in flight</span>
-                  <span className="text-xs">Gemini ~5–15s · OpenAI ~10–30s · don't dismiss</span>
-                </div>
-              )}
-              {phase.kind === "failed" && (
-                <div className="max-w-md text-sm text-red-400">
-                  <div className="mb-2 font-medium">failed</div>
-                  <div className="text-xs">{phase.reason}</div>
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={onRetry}
-                      className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
-                      title="re-run with the same prompt and provider"
-                    >
-                      retry
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onReset}
-                      className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-                    >
-                      dismiss
-                    </button>
-                  </div>
-                </div>
-              )}
-              {phase.kind === "succeeded" && (
-                // biome-ignore lint/performance/noImgElement: blob URL output
-                <img
-                  src={phase.url}
-                  alt="generated"
-                  className="max-h-full max-w-full border border-[var(--color-border)]"
-                />
+              {/* G.7: focus-mode RESULT — show this region's result
+                  tight-cropped on a canvas (matches SOURCE preview).
+                  The state messages overlay during running/failed/etc;
+                  the canvas itself stays mounted so the user keeps
+                  seeing the previous successful blob while a new run
+                  is in flight (instead of a "generating…" placeholder
+                  that wipes context). */}
+              {isFocusedMulti ? (
+                <>
+                  {focusedRegionState?.status === "idle" && (
+                    <div className="text-sm text-[var(--color-fg-dim)]">
+                      type a prompt and generate to see output
+                    </div>
+                  )}
+                  {focusedRegionState?.status === "running" && (
+                    <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
+                      <span>generating this region · provider call in flight</span>
+                      <span className="text-xs">OpenAI ~10–30s · don't dismiss</span>
+                    </div>
+                  )}
+                  {focusedRegionState?.status === "failed" && (
+                    <div className="max-w-md text-sm text-red-400">
+                      <div className="mb-2 font-medium">failed</div>
+                      <div className="text-xs">{focusedRegionState.failedReason}</div>
+                    </div>
+                  )}
+                  {focusedRegionState?.status === "succeeded" && (
+                    <canvas
+                      ref={resultRef}
+                      className="max-h-full max-w-full border border-[var(--color-border)]"
+                    />
+                  )}
+                </>
+              ) : (
+                <>
+                  {phase.kind === "idle" && (
+                    <div className="text-sm text-[var(--color-fg-dim)]">generate to see output</div>
+                  )}
+                  {phase.kind === "submitting" && (
+                    <div className="text-sm text-[var(--color-fg-dim)]">submitting…</div>
+                  )}
+                  {phase.kind === "running" && (
+                    <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
+                      <span>generating · provider call in flight</span>
+                      <span className="text-xs">
+                        Gemini ~5–15s · OpenAI ~10–30s · don't dismiss
+                      </span>
+                    </div>
+                  )}
+                  {phase.kind === "failed" && (
+                    <div className="max-w-md text-sm text-red-400">
+                      <div className="mb-2 font-medium">failed</div>
+                      <div className="text-xs">{phase.reason}</div>
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={onRetry}
+                          className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
+                          title="re-run with the same prompt and provider"
+                        >
+                          retry
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onReset}
+                          className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                        >
+                          dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {phase.kind === "succeeded" && (
+                    // biome-ignore lint/performance/noImgElement: blob URL output
+                    <img
+                      src={phase.url}
+                      alt="generated"
+                      className="max-h-full max-w-full border border-[var(--color-border)]"
+                    />
+                  )}
+                </>
               )}
             </div>
 
