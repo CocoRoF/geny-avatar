@@ -45,9 +45,18 @@ export async function fetchProviders(): Promise<ProviderAvailability[]> {
 export type RefinePromptInput = {
   userPrompt: string;
   layerName?: string;
-  refCount: number;
   hasMask: boolean;
   negativePrompt?: string;
+  /** PNG of the layer's source canvas (unpadded — the LLM doesn't need
+   *  the white border that gpt-image-2 padding adds). The vision pass
+   *  reads this so the refined prompt can be tied to what's actually
+   *  in [image 1]. */
+  sourceImage: Blob;
+  /** PNG/JPEG/WebP design references the user attached. The vision
+   *  pass reads each so the refined prompt can name concrete design
+   *  elements seen in them (palette, pattern, fabric, trim) instead
+   *  of using vague style words. */
+  referenceImages: Blob[];
 };
 
 export type RefinePromptResult = {
@@ -56,17 +65,28 @@ export type RefinePromptResult = {
 };
 
 /**
- * Optional pre-pass that asks an OpenAI chat model to rewrite the
- * user's prompt as a precise gpt-image-2 edit instruction. Returns
- * the refined text (and which model produced it). Errors when the
- * server can't reach the chat endpoint or the OPENAI_API_KEY env
- * isn't set — caller falls back to the raw prompt.
+ * Optional pre-pass that sends the source image + every reference
+ * image into a vision-capable OpenAI chat model and asks it to
+ * rewrite the user's prompt as a precise gpt-image-2 edit
+ * instruction with concrete design descriptions extracted from the
+ * references. Errors when the server can't reach the chat endpoint
+ * or the OPENAI_API_KEY env isn't set — caller falls back to the
+ * raw prompt.
  */
 export async function refinePrompt(input: RefinePromptInput): Promise<RefinePromptResult> {
+  const form = new FormData();
+  form.set("userPrompt", input.userPrompt);
+  if (input.layerName) form.set("layerName", input.layerName);
+  form.set("hasMask", input.hasMask ? "true" : "false");
+  if (input.negativePrompt) form.set("negativePrompt", input.negativePrompt);
+  form.set("sourceImage", input.sourceImage, "source.png");
+  input.referenceImages.forEach((b, idx) => {
+    form.append("referenceImage", b, `ref-${idx}.png`);
+  });
+
   const r = await fetch("/api/ai/refine-prompt", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
+    body: form,
   });
   if (!r.ok) {
     const body = await safeJson(r);

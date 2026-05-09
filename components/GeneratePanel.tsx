@@ -331,12 +331,20 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         setRefining(true);
         setRefineError(null);
         try {
+          // Hand the LLM the *unpadded* source so it focuses on the
+          // actual layer texture, not the white border that
+          // padToOpenAISquare adds. Active refs are already what
+          // we'll send to the image model — same blobs go to the
+          // refiner so its description targets the exact bytes the
+          // image edit step will see.
+          const refineSourceBlob = await canvasToPngBlob(sourceCanvas);
           const result = await refinePrompt({
             userPrompt: prompt,
             layerName: layer.name,
-            refCount: activeRefBlobs.length,
             hasMask: !!maskBlob,
             negativePrompt: negativePrompt.trim() || undefined,
+            sourceImage: refineSourceBlob,
+            referenceImages: activeRefBlobs,
           });
           refinedPromptForSubmit = result.refinedPrompt;
           setRefinement({

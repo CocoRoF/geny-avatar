@@ -215,7 +215,14 @@ export class OpenAIProvider implements AIProvider {
     const refs = input.referenceImages ?? [];
     const hasRefs = refs.length > 0;
     const hasMask = !!input.maskImage;
-    const userIntent = (input.refinedPrompt ?? input.prompt).trim();
+    // Refined prompts are instructed not to prepend "Edit [image 1]:"
+    // since this method adds it. If the LLM ignored that instruction
+    // (it sometimes does — model habit overrides system prompt), strip
+    // the leading verb so we don't end up with
+    //   Edit [image 1]: Edit [image 1] so the layer matches...
+    let userIntent = (input.refinedPrompt ?? input.prompt).trim();
+    userIntent = userIntent.replace(/^edit\s*\[?\s*image\s*1\s*\]?\s*[:\-—]\s*/i, "");
+    userIntent = userIntent.replace(/^edit\s*\[?\s*image\s*1\s*\]?\s+(?=so\b|to\b|by\b)/i, "");
 
     const sections: string[] = [];
 

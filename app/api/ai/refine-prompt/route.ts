@@ -1,62 +1,89 @@
 /**
  * POST /api/ai/refine-prompt
  *
- * Optional pre-stage for `/api/ai/generate`. Takes the user's raw
- * prompt + the request shape and asks an OpenAI chat model to rewrite
- * it as a precise gpt-image-2 edit instruction following the official
- * prompting guide:
- *   - explicit `[image 1]` / `[image 2..N]` slot labels
- *   - role separation (canvas to edit vs style-only references)
- *   - preservation block (silhouette / geometry / composition)
- *   - "do not copy reference content" guard
+ * Vision-enabled prompt refiner. Takes the user's raw prompt + the
+ * actual source canvas + the actual reference images, sends them to a
+ * vision-capable OpenAI chat model, and returns a precise gpt-image-2
+ * edit instruction that *describes the design seen in the references*
+ * concretely instead of using vague "style only" language.
  *
- * The user can disable refinement in the panel and submit the raw
- * prompt as-is. We log both raw and refined into the diagnostic so
- * the operator can verify what actually went to the image model.
+ * Earlier (text-only) versions of this endpoint had a fundamental
+ * blindspot: the LLM never saw the images, so when the user said
+ * "make it look like the reference", the refined prompt could only
+ * say "use the reference as a style anchor" — without naming the
+ * actual design (e.g. "navy pleated skirt with white lace hem and
+ * metal stud accents"). gpt-image-2 then had nothing concrete to
+ * apply, and the result borrowed mood / palette but missed the
+ * specific design the user wanted.
  *
- * Body (application/json):
- *   userPrompt    string   what the user typed in the panel
- *   layerName?    string   layer's display name (helps the LLM
- *                          understand the subject — e.g. "skirt")
- *   refCount      number   how many reference images are about to ride
- *                          along (drives the slot map in the rewrite)
- *   hasMask       boolean  whether a DecomposeStudio mask is attached
- *   negativePrompt? string optional things-to-avoid (passed through)
+ * Now the endpoint forwards every image to the chat model with
+ * `detail: "high"`, and the system prompt instructs the LLM to LOOK
+ * at the references and write specific design descriptions into the
+ * refined prompt. This is the cloud-API stand-in for IP-Adapter
+ * with proper visual grounding.
  *
- * Response: { refinedPrompt: string, model: string }  on success
- *           { error: string }                          on failure
+ * Body (multipart/form-data):
+ *   userPrompt        string  what the user typed
+ *   layerName?        string  layer's display name (helps describe subject)
+ *   hasMask           string  "true" | "false"
+ *   negativePrompt?   string  optional things-to-avoid
+ *   sourceImage       File    PNG/JPEG/WebP of the layer being edited
+ *   referenceImage    File*   zero or more design references (repeated key)
  *
- * The endpoint requires `OPENAI_API_KEY` (same key the image edits
- * endpoint uses). When the key is missing we 503 — the caller will
- * fall back to sending the raw prompt.
+ * Response: { refinedPrompt, model } on success
+ *
+ * The endpoint requires `OPENAI_API_KEY`. Caller falls back to the
+ * raw prompt if anything goes wrong here.
  */
 
 import { NextResponse } from "next/server";
 
-// Default to OpenAI's flagship `gpt-5` so the refinement pass has the
-// best language-quality lever available — vague phrasing like "make it
-// look like the reference" needs real reasoning to be rewritten as the
-// strict slot-mapping / preservation language gpt-image-2 wants.
+// Default to OpenAI's flagship `gpt-5.4` so the refinement pass has the
+// best language- and vision-quality lever available — looking at a
+// reference image and naming its specific design ("navy pleated skirt
+// with white lace hem") needs real multimodal reasoning.
 // Override per-deployment via OPENAI_PROMPT_REFINER_MODEL when the
-// account doesn't have gpt-5 access or you want to fall back to a
-// cheaper tier (e.g. `gpt-5-mini`, `gpt-4o-mini`).
+// account doesn't have gpt-5.4 access or you want to fall back to a
+// cheaper tier (e.g. `gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`). The
+// model **must support vision** — text-only models will reject the
+// image_url parts in the request body.
 const REFINER_MODEL = process.env.OPENAI_PROMPT_REFINER_MODEL ?? "gpt-5.4";
 const ENDPOINT = "https://api.openai.com/v1/chat/completions";
 
-const SYSTEM_PROMPT = `You are a prompt engineer for OpenAI's gpt-image-2 image-edit API. You rewrite a user's vague edit request into a precise structured instruction that the image model will follow without conflating roles.
+const SYSTEM_PROMPT = `You are a prompt engineer for OpenAI's gpt-image-2 image-edit API. You see the actual images attached below and rewrite the user's edit request into a precise structured instruction.
+
+How to read the attached images:
+- The FIRST attached image is [image 1] — the canvas the image model will edit. This is the layer texture as it currently sits in the puppet's atlas.
+- Subsequent attached images are [image 2], [image 3]... — design / style references the user wants reflected on [image 1].
 
 Hard rules — never violate:
-1. The user's intent must dominate. Do not change WHAT they asked for; only sharpen HOW it's expressed.
-2. Use the gpt-image-2 documented slot convention: [image 1] is the canvas to edit; [image 2], [image 3]... are style and character references.
-3. Reference images are STYLE ONLY — palette, lighting, line quality, material rendering, identity cues. They must NEVER paste their content (objects, faces, accessories, scene elements) into the result.
-4. State explicit preservation: silhouette, geometry, composition, and (when the request doesn't say to mask) any pixels not affected by the requested edit.
-5. Single paragraph or short multi-paragraph block. No markdown, no bullet points, no quotes around the whole output, no preamble like "Here is the refined prompt".
-6. If the user prompt is already structured and precise, return it nearly verbatim with at most light cleanup.
-7. Output ONLY the refined prompt itself.
+
+1. The user's intent dominates. Sharpen HOW it's expressed without changing WHAT they asked for.
+
+2. References supply DESIGN, not IDENTITY. Look at each reference image and embed CONCRETE descriptions of its visible design elements directly into the refined prompt:
+     - palette ("muted navy with white accents", "dusty rose with cream highlights")
+     - pattern ("vertical pleats", "horizontal stripes", "tartan plaid", "houndstooth")
+     - material ("matte cotton fabric", "glossy satin trim", "sheer lace overlay", "brushed metal")
+     - surface decorations ("white lace hem", "metal studs along the seams", "ribbon bow at the waist", "embroidered floral cuffs")
+     - lighting / shading style ("soft anime cel-shading", "PBR realistic with subsurface scattering")
+   Refer to these concretely so the image model has actionable targets, NOT abstract style words. "Match the reference's vibe" is forbidden; "apply navy pleated cotton with white lace hem like the reference's skirt" is required.
+
+3. NEVER introduce IDENTITY content from references. Forbidden to copy: faces, character heads, body parts, hair, environment, scene background, props, or accessories that belong to a person/character in the reference but aren't the design element being transferred. Only the design of the relevant region of the reference transfers; the identity (whose body it's on, what shape it is, where it sits in the puppet) stays with [image 1].
+
+4. State explicit preservation: silhouette, geometry, composition, and (when no mask is supplied) any pixels in [image 1] not affected by the requested edit. The source's shape stays unchanged; only its surface design / palette / decorations change per the references.
+
+5. Single paragraph or short multi-paragraph block. No markdown, no bullets, no quotes around the whole output, no preamble like "Here is the refined prompt".
+
+6. Do NOT prepend "Edit [image 1]:" yourself — the gpt-image-2 wrapper adds that verb. Start your output directly with the descriptive instruction (e.g. "Repaint [image 1] as a navy pleated mini-skirt..." or "Apply to [image 1] the pattern, palette, and trim shown in [image 2]: ...").
+
+7. If the user's prompt is already structured and precise, return it nearly verbatim with at most light cleanup.
+
+8. Output ONLY the refined prompt itself.
 
 Common failure patterns to fix:
-- User says "make it look like the reference" → make explicit that the reference is style-only and the source's silhouette stays.
-- User says "change the color" without specifying region → bind the change to [image 1] and add the no-content-copy clause when refs exist.
+- User says "make it look like the reference" → look at [image 2..N], identify the relevant design region and embed concrete descriptions (e.g. "navy pleated skirt with white lace trim and metal stud accents") into the refined prompt while binding the change to [image 1]'s silhouette.
+- User says "change the color" → look at the reference if attached and name the specific color seen there.
+- User asks for a feature visible in the reference (lace, pleats, ribbon) → call it out by name and place it relative to [image 1]'s geometry.
 - User uses informal language → tighten to imperative voice without losing meaning.`;
 
 export async function POST(request: Request) {
@@ -65,36 +92,52 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "OPENAI_API_KEY not set" }, { status: 503 });
   }
 
-  let body: unknown;
+  let form: FormData;
   try {
-    body = await request.json();
+    form = await request.formData();
   } catch (e) {
     return NextResponse.json(
-      { error: `failed to parse JSON body: ${(e as Error).message}` },
+      { error: `failed to parse multipart: ${(e as Error).message}` },
       { status: 400 },
     );
   }
 
-  const { userPrompt, layerName, refCount, hasMask, negativePrompt } =
-    (body as {
-      userPrompt?: unknown;
-      layerName?: unknown;
-      refCount?: unknown;
-      hasMask?: unknown;
-      negativePrompt?: unknown;
-    }) ?? {};
+  const userPrompt = form.get("userPrompt");
+  const layerName = form.get("layerName");
+  const hasMaskStr = form.get("hasMask");
+  const negativePrompt = form.get("negativePrompt");
+  const sourceImage = form.get("sourceImage");
+  const refImages = form.getAll("referenceImage").filter((v): v is File => v instanceof File);
 
   if (typeof userPrompt !== "string" || userPrompt.trim().length === 0) {
     return NextResponse.json({ error: "userPrompt required" }, { status: 400 });
   }
-  if (typeof refCount !== "number" || refCount < 0) {
-    return NextResponse.json({ error: "refCount required (number ≥ 0)" }, { status: 400 });
+  if (!(sourceImage instanceof Blob)) {
+    return NextResponse.json({ error: "sourceImage required" }, { status: 400 });
   }
 
-  // Build the instruction the LLM will rewrite.
-  const userMessage = [
+  const refCount = refImages.length;
+  const hasMask = hasMaskStr === "true";
+
+  // Encode every image as a data: URL so it can ride along in the
+  // chat completion's `image_url` parts. detail="high" so the model
+  // can read texture / pattern details — refining "navy pleated
+  // skirt with lace trim" out of a small thumb is exactly what the
+  // high-detail tile pipeline is for.
+  const sourceMime = sourceImage.type || "image/png";
+  const sourceBuf = Buffer.from(await sourceImage.arrayBuffer());
+  const sourceDataUrl = `data:${sourceMime};base64,${sourceBuf.toString("base64")}`;
+  const refDataUrls = await Promise.all(
+    refImages.map(async (f) => {
+      const mime = f.type || "image/png";
+      const buf = Buffer.from(await f.arrayBuffer());
+      return `data:${mime};base64,${buf.toString("base64")}`;
+    }),
+  );
+
+  const userMessageText = [
     `Subject layer: ${typeof layerName === "string" && layerName ? layerName : "(no display name)"}`,
-    `Reference images attached: ${refCount}${refCount === 0 ? " (no slot map needed)" : ""}`,
+    `Reference images attached: ${refCount}`,
     `Mask present (alpha-defined edit zone on [image 1]): ${hasMask ? "yes" : "no"}`,
     typeof negativePrompt === "string" && negativePrompt.trim()
       ? `User's "avoid" hints: ${negativePrompt.trim()}`
@@ -102,14 +145,31 @@ export async function POST(request: Request) {
     "",
     `User's raw prompt: """${userPrompt.trim()}"""`,
     "",
-    "Produce the refined prompt now. Do not narrate. Output the prompt text only.",
+    `Below this message: the FIRST image is [image 1] (the source canvas to edit). The next ${refCount} image${refCount === 1 ? "" : "s"} ${refCount === 1 ? "is" : "are"} the design reference${refCount === 1 ? "" : "s"} ${refCount === 1 ? "[image 2]" : `[image 2]..[image ${refCount + 1}]`}.`,
+    "",
+    "Look at every attached image. Identify the specific design elements visible in the reference(s) that should land on [image 1]'s silhouette. Embed concrete descriptions of those elements (palette, pattern, material, decorations, trim, lighting) directly in the refined prompt. Do not narrate. Output the refined prompt text only — and do not start with the verb 'Edit [image 1]:' since the wrapper adds that.",
   ]
     .filter((x): x is string => typeof x === "string")
     .join("\n");
 
+  // Vision message format: alternating text and image_url parts.
+  type ChatContentPart =
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+  const userContent: ChatContentPart[] = [
+    { type: "text", text: userMessageText },
+    { type: "image_url", image_url: { url: sourceDataUrl, detail: "high" } },
+    ...refDataUrls.map(
+      (url): ChatContentPart => ({
+        type: "image_url",
+        image_url: { url, detail: "high" },
+      }),
+    ),
+  ];
+
   const startedAt = Date.now();
   console.info(
-    `[refine-prompt] POST ${ENDPOINT} model=${REFINER_MODEL} refCount=${refCount} hasMask=${hasMask} userPromptLen=${userPrompt.length}`,
+    `[refine-prompt] POST ${ENDPOINT} model=${REFINER_MODEL} refCount=${refCount} hasMask=${hasMask} sourceBytes=${sourceImage.size} refBytes=${refImages.map((r) => r.size).join(",")} userPromptLen=${userPrompt.length}`,
   );
 
   let response: Response;
@@ -124,11 +184,13 @@ export async function POST(request: Request) {
         model: REFINER_MODEL,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
+          { role: "user", content: userContent },
         ],
         // Low-ish temperature so the rewrite stays close to user intent
-        // while still cleaning up phrasing. 0 would be too conservative
-        // for the "tighten loose phrasing" pass.
+        // while still naming what's in the reference. 0 would make the
+        // model parrot the user prompt verbatim and skip the design
+        // description; >0.5 starts inventing details that aren't in the
+        // reference.
         temperature: 0.3,
       }),
     });
@@ -161,7 +223,7 @@ export async function POST(request: Request) {
   }
 
   console.info(
-    `[refine-prompt] raw="${userPrompt.slice(0, 100)}…" refined="${refined.slice(0, 200)}…"`,
+    `[refine-prompt] raw="${userPrompt.slice(0, 100)}…" refined="${refined.slice(0, 400)}${refined.length > 400 ? "…" : ""}"`,
   );
 
   return NextResponse.json({
