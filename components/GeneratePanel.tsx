@@ -73,6 +73,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   /** Persisted history for this layer. Newest first. Repopulated on
    *  every successful save so the list reflects what's in IDB. */
   const [history, setHistory] = useState<AIJobRow[]>([]);
+  /** History rows selected for the side-by-side comparison viewer.
+   *  Capped at 2 — user picks A and B, opens compare modal, sees them
+   *  next to each other with metadata. Selection is independent of
+   *  the "click to revisit" action that the row body still owns. */
+  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
 
   /** Puppet reference rows the user explicitly toggled OFF for this
    *  session. Default-state is ON for everything; persistence isn't
@@ -266,6 +272,27 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         ...(useLastResult && lastResultBlob ? [lastResultBlob] : []),
       ]
     : [];
+
+  /** Toggle a row in/out of the comparison set. Capped at 2 — third
+   *  click drops the oldest selection. Easier UX than disabling the
+   *  third checkbox. */
+  function toggleComparison(rowId: string) {
+    setComparisonIds((prev) => {
+      if (prev.includes(rowId)) return prev.filter((id) => id !== rowId);
+      const next = [...prev, rowId];
+      return next.length > 2 ? next.slice(next.length - 2) : next;
+    });
+  }
+  const comparisonRows = useMemo(
+    () =>
+      comparisonIds.map((id) => history.find((r) => r.id === id)).filter((r): r is AIJobRow => !!r),
+    [comparisonIds, history],
+  );
+  // Drop selections that no longer exist (e.g. history was reloaded
+  // and a row got pruned). Run after every history fetch.
+  useEffect(() => {
+    setComparisonIds((prev) => prev.filter((id) => history.some((r) => r.id === id)));
+  }, [history]);
 
   async function onSubmit() {
     setPhase({ kind: "submitting" });
@@ -917,14 +944,48 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               <div className="mt-4 flex min-h-0 shrink-0 flex-col">
                 <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
                   <span>history · {history.length}</span>
-                  <span className="normal-case tracking-normal text-[10px]">click to revisit</span>
+                  <span className="normal-case tracking-normal text-[10px]">
+                    click to revisit · ☐ to compare
+                  </span>
                 </div>
+                {comparisonIds.length > 0 && (
+                  <div className="mb-1 flex items-center gap-1.5 text-[10px]">
+                    <span className="text-[var(--color-fg-dim)]">
+                      {comparisonIds.length}/2 selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setComparisonOpen(true)}
+                      disabled={comparisonRows.length < 1}
+                      className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      compare
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setComparisonIds([])}
+                      className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                    >
+                      clear
+                    </button>
+                  </div>
+                )}
                 <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
                   {history.map((row) => (
-                    <HistoryRow key={row.id} row={row} onRevisit={onRevisit} />
+                    <HistoryRow
+                      key={row.id}
+                      row={row}
+                      onRevisit={onRevisit}
+                      selected={comparisonIds.includes(row.id)}
+                      onToggleCompare={() => toggleComparison(row.id)}
+                    />
                   ))}
                 </ul>
               </div>
+            )}
+
+            {comparisonOpen && comparisonRows.length > 0 && (
+              <ComparisonModal rows={comparisonRows} onClose={() => setComparisonOpen(false)} />
             )}
 
             <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
@@ -957,8 +1018,24 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 /**
  * Compact history entry. Owns its blob URL lifecycle so the parent
  * doesn't have to track a list of URLs alongside the row list.
+ *
+ * Two affordances:
+ *   - body click → revisit (fills the form with the row's prompt /
+ *     provider / model and re-shows its result as if it just landed)
+ *   - leading checkbox → toggle inclusion in the comparison set
+ *     (capped at 2 by the parent)
  */
-function HistoryRow({ row, onRevisit }: { row: AIJobRow; onRevisit: (row: AIJobRow) => void }) {
+function HistoryRow({
+  row,
+  onRevisit,
+  selected,
+  onToggleCompare,
+}: {
+  row: AIJobRow;
+  onRevisit: (row: AIJobRow) => void;
+  selected: boolean;
+  onToggleCompare: () => void;
+}) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   useEffect(() => {
     const url = URL.createObjectURL(row.resultBlob);
@@ -967,11 +1044,26 @@ function HistoryRow({ row, onRevisit }: { row: AIJobRow; onRevisit: (row: AIJobR
   }, [row.resultBlob]);
 
   return (
-    <li>
+    <li
+      className={`flex items-stretch gap-1 rounded border p-1 ${
+        selected
+          ? "border-[var(--color-accent)] bg-[var(--color-accent)]/5"
+          : "border-[var(--color-border)] hover:border-[var(--color-accent)]"
+      }`}
+    >
+      <label className="flex shrink-0 cursor-pointer items-center px-1">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleCompare}
+          className="h-3 w-3"
+          aria-label={`include ${row.prompt} in comparison`}
+        />
+      </label>
       <button
         type="button"
         onClick={() => onRevisit(row)}
-        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] p-1 text-left text-xs hover:border-[var(--color-accent)]"
+        className="flex flex-1 items-center gap-2 text-left text-xs"
       >
         {thumbUrl ? (
           // biome-ignore lint/performance/noImgElement: blob URL output
@@ -995,6 +1087,99 @@ function HistoryRow({ row, onRevisit }: { row: AIJobRow; onRevisit: (row: AIJobR
         </div>
       </button>
     </li>
+  );
+}
+
+/**
+ * Side-by-side comparison of up to two `AIJobRow`s. Fills the same
+ * full-screen overlay shell as the GeneratePanel itself but with two
+ * result columns + their metadata (provider / model / prompt /
+ * timestamp). Useful for "did the new ref / refined prompt actually
+ * improve the result?" — Sprint 5.5's whole point.
+ */
+function ComparisonModal({ rows, onClose }: { rows: AIJobRow[]; onClose: () => void }) {
+  const [urls, setUrls] = useState<(string | null)[]>([]);
+  useEffect(() => {
+    const made = rows.map((r) => URL.createObjectURL(r.resultBlob));
+    setUrls(made);
+    return () => {
+      for (const u of made) URL.revokeObjectURL(u);
+    };
+  }, [rows]);
+
+  // Esc to dismiss.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/80 p-4">
+      <div className="flex h-full w-full max-w-6xl flex-col rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-4">
+        <header className="mb-3 flex items-center justify-between text-sm">
+          <span className="font-mono text-[var(--color-accent)]">compare · {rows.length} of 2</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+          >
+            close (esc)
+          </button>
+        </header>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-hidden">
+          {rows.map((row, i) => (
+            <div
+              key={row.id}
+              className="flex min-h-0 flex-col rounded border border-[var(--color-border)] p-2"
+            >
+              <div className="mb-2 flex items-baseline justify-between text-[10px] text-[var(--color-fg-dim)]">
+                <span className="font-mono">slot {String.fromCharCode(65 + i)}</span>
+                <span>{formatRelative(row.createdAt)}</span>
+              </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[var(--color-panel)]">
+                {urls[i] ? (
+                  // biome-ignore lint/performance/noImgElement: blob URL preview
+                  <img
+                    src={urls[i] ?? undefined}
+                    alt={`comparison slot ${i + 1}`}
+                    className="max-h-full max-w-full object-contain"
+                  />
+                ) : (
+                  <span className="text-xs text-[var(--color-fg-dim)]">…</span>
+                )}
+              </div>
+              <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-1 text-[11px]">
+                <dt className="text-[var(--color-fg-dim)]">provider</dt>
+                <dd className="font-mono text-[var(--color-fg)]">
+                  {row.providerId}
+                  {row.modelId ? ` · ${row.modelId.split("/").pop()}` : ""}
+                </dd>
+                <dt className="text-[var(--color-fg-dim)]">prompt</dt>
+                <dd className="break-words text-[var(--color-fg)]">{row.prompt}</dd>
+                {row.negativePrompt && (
+                  <>
+                    <dt className="text-[var(--color-fg-dim)]">avoid</dt>
+                    <dd className="break-words text-[var(--color-fg)]">{row.negativePrompt}</dd>
+                  </>
+                )}
+                <dt className="text-[var(--color-fg-dim)]">size</dt>
+                <dd className="font-mono text-[var(--color-fg-dim)]">
+                  {(row.resultBlob.size / 1024).toFixed(0)} KB
+                </dd>
+              </dl>
+            </div>
+          ))}
+          {rows.length === 1 && (
+            <div className="flex min-h-0 items-center justify-center rounded border border-dashed border-[var(--color-border)] p-2 text-xs text-[var(--color-fg-dim)]">
+              pick a second history row to fill slot B
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
