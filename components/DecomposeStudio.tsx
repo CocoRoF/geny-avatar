@@ -120,6 +120,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  switches the modal box to the full viewport so the canvas
    *  gets every pixel CSS can give it. */
   const [fullscreen, setFullscreen] = useState(false);
+  /** Source canvas aspect ratio (W/H), captured once the source
+   *  bitmap is ready. The canvas wrapper uses this as a CSS
+   *  `aspect-ratio` so the modal layout cannot stretch the
+   *  rendered texture along one axis when both `max-w-full` and
+   *  `max-h-full` would otherwise activate together. Without an
+   *  explicit ratio the browser splits each dim independently and
+   *  the drawn bitmap squashes — the symptom the user reported
+   *  in fullscreen / wide modal: a circle becomes an ellipse. */
+  const [sourceAspect, setSourceAspect] = useState<number | undefined>(undefined);
   /** Flag: the user has explicitly entered split mode at least once
    *  this session. We use it to fire `autoDetectRegions` exactly
    *  once per panel mount when there are no persisted regions —
@@ -158,6 +167,12 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       }
       sourceCanvasRef.current = extracted.canvas;
       clipPathRef.current = extracted.clip;
+      // Lock the canvas wrapper to the layer's actual aspect ratio
+      // so the modal layout can never stretch the texture (see
+      // sourceAspect doc).
+      if (extracted.canvas.width > 0 && extracted.canvas.height > 0) {
+        setSourceAspect(extracted.canvas.width / extracted.canvas.height);
+      }
 
       // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked
       const mask = document.createElement("canvas");
@@ -921,7 +936,29 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
             ) : !ready ? (
               <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
             ) : (
-              <div className="relative inline-flex max-h-full max-w-full">
+              // The wrapper locks the rendered texture's aspect via
+              // CSS aspect-ratio (set from source dim). Without
+              // this both `max-w-full` and `max-h-full` could
+              // activate together when the modal grew wider —
+              // browser then sized W and H independently and the
+              // canvas content stretched. With aspect-ratio set,
+              // the browser scales uniformly to fit either max
+              // dimension.
+              <div
+                className="relative max-h-full max-w-full"
+                style={
+                  sourceAspect
+                    ? {
+                        aspectRatio: `${sourceAspect}`,
+                        // height: '100%' lets the browser pick the
+                        // height that fills the parent (subject to
+                        // max-h), then aspect-ratio computes width.
+                        height: "100%",
+                        width: "auto",
+                      }
+                    : undefined
+                }
+              >
                 <canvas
                   ref={previewRef}
                   onPointerDown={onPointerDown}
@@ -934,7 +971,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                   onContextMenu={(e) => {
                     if (studioMode === "split" && mode === "auto") e.preventDefault();
                   }}
-                  className="max-h-full max-w-full cursor-crosshair touch-none border border-[var(--color-border)]"
+                  className="block h-full w-full cursor-crosshair touch-none border border-[var(--color-border)]"
                 />
                 {/* Sprint 6.2: SAM point overlay. Visible only in
                     split/auto mode while points are being collected.
