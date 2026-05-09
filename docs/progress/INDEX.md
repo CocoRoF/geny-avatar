@@ -81,6 +81,8 @@
 | 2026-05-09 | [65 sprint_a_1_connected_components](2026-05-09_65_sprint_a_1_connected_components.md) | A.1 | 완료 — `findAlphaComponents` 8-connected 라벨링 + `isolateWithMask` GPU composite + `prepareOpenAISourcesPerComponent` per-island submit-ready package. 라이브러리만, UI 변경 없음 |
 | 2026-05-09 | [66 sprint_a_2_parallel_submit](2026-05-09_66_sprint_a_2_parallel_submit.md) | A.2 | 완료 — GeneratePanel OpenAI 경로 multi-component 전환. N개 island 자동 분리 → 병렬 N submit → per-component postprocess (sourceBBox + binary mask alpha-enforce) → `compositeProcessedComponents` 로 합성. 단일 component layer 동일 동작. UI 변경 없음 (A.3에서 region-aware UI) |
 | 2026-05-09 | [67 sprint_a_3_region_aware_ui](2026-05-09_67_sprint_a_3_region_aware_ui.md) | A.3 | 완료 — multi-component layer일 때 SOURCE 위 SVG overlay (색별 outline + 번호) + aside REGIONS 섹션 (썸네일 + per-region textarea) + COMMON CONTEXT 라벨 전환. submit 시 region별 prompt 조합 (`<base>\n\nFor [image 1] (region N of M, WxH px): <perRegion>`) → `refinedPrompt` 로 전달. 단일 component layer 기존 UI 유지 |
+| 2026-05-09 | [68 e_kickoff](2026-05-09_68_e_kickoff.md) | E.0 | 진행중 — 사용자 자율 region 정의. E.1 명명+영구저장 / E.2 DecomposeStudio split mode (SAM+brush) / E.3 GeneratePanel manual region 우선 사용. A+B+E 합쳐서 multi-region generation 정밀도 끝까지 |
+| 2026-05-09 | [69 sprint_e_1_component_labels](2026-05-09_69_sprint_e_1_component_labels.md) | E.1 | 완료 — IDB v8 `componentLabels` store + `useComponentLabels` hook + region tile inline name input. 사용자가 region 1/2/3 → "torso", "shoulder frill" 등 명명. 400ms debounced IDB save, bbox signature 키. submit prompt에 "region 'torso' (...)" 형식으로 모델 전달 |
 
 ## 운영 규칙
 

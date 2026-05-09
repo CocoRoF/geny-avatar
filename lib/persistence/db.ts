@@ -26,6 +26,7 @@ export type AIJobRowId = string;
 export type VariantRowId = string;
 export type LayerOverrideRowId = string;
 export type ReferenceRowId = string;
+export type ComponentLabelsRowId = string;
 
 export type PuppetRow = {
   id: PuppetId;
@@ -185,6 +186,27 @@ export type ReferenceRow = {
   createdAt: number;
 };
 
+/**
+ * Sprint E.1 — per-component naming for multi-region layers.
+ *
+ * One row per (puppetKey, layerExternalId). The `labels` map keys
+ * are component bbox signatures (`${x}_${y}_${w}_${h}`) so a name
+ * survives across panel mounts as long as the layer's source canvas
+ * produces the same bbox for that component (typical for a static
+ * rigged-puppet layer that the user is iterating on).
+ *
+ * Labels are *only* attached to auto-detected components for now;
+ * Sprint E.2/E.3 introduce manually-defined regions which carry
+ * their own names inside the region row itself.
+ */
+export type ComponentLabelsRow = {
+  id: ComponentLabelsRowId;
+  puppetKey: string;
+  layerExternalId: string;
+  labels: Record<string, string>;
+  updatedAt: number;
+};
+
 class GenyAvatarDB extends Dexie {
   puppets!: EntityTable<PuppetRow, "id">;
   puppetFiles!: EntityTable<PuppetFileRow, "id">;
@@ -193,6 +215,7 @@ class GenyAvatarDB extends Dexie {
   layerOverrides!: EntityTable<LayerOverrideRow, "id">;
   puppetSessions!: EntityTable<PuppetSessionRow, "puppetKey">;
   puppetReferences!: EntityTable<ReferenceRow, "id">;
+  componentLabels!: EntityTable<ComponentLabelsRow, "id">;
 
   constructor() {
     super("geny-avatar");
@@ -272,6 +295,22 @@ class GenyAvatarDB extends Dexie {
       layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
       puppetSessions: "puppetKey, updatedAt",
       puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
+    });
+    // v8: + componentLabels (Sprint E.1 — per-component naming for
+    // multi-region layers). Compound index
+    // `[puppetKey+layerExternalId]` is the only access pattern: load
+    // the row for "this layer in this puppet" and read / write the
+    // labels map. Bare `puppetKey` indexed for cascade delete on
+    // puppet removal.
+    this.version(8).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+      puppetSessions: "puppetKey, updatedAt",
+      puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
+      componentLabels: "id, puppetKey, [puppetKey+layerExternalId]",
     });
   }
 }
@@ -586,4 +625,57 @@ export async function deleteReference(id: ReferenceRowId): Promise<void> {
 
 export async function deleteAllReferencesForPuppet(puppetKey: string): Promise<void> {
   await db().puppetReferences.where("puppetKey").equals(puppetKey).delete();
+}
+
+// ----- componentLabels (Sprint E.1) -----
+
+/**
+ * Look up the saved label map for a single layer. Returns the row's
+ * `labels` dictionary keyed by component bbox signature, or `{}` if
+ * no row exists yet for this layer.
+ */
+export async function loadComponentLabels(
+  puppetKey: string,
+  layerExternalId: string,
+): Promise<Record<string, string>> {
+  const row = await db()
+    .componentLabels.where("[puppetKey+layerExternalId]")
+    .equals([puppetKey, layerExternalId])
+    .first();
+  return row?.labels ?? {};
+}
+
+/**
+ * Upsert the entire label map for a layer in one go. The submit
+ * pipeline doesn't need partial updates — the panel rebuilds the
+ * full map on every edit and replaces the row.
+ */
+export async function saveComponentLabels(input: {
+  puppetKey: string;
+  layerExternalId: string;
+  labels: Record<string, string>;
+}): Promise<void> {
+  const existing = await db()
+    .componentLabels.where("[puppetKey+layerExternalId]")
+    .equals([input.puppetKey, input.layerExternalId])
+    .first();
+  const now = Date.now();
+  if (existing) {
+    await db().componentLabels.update(existing.id, {
+      labels: input.labels,
+      updatedAt: now,
+    });
+  } else {
+    await db().componentLabels.put({
+      id: newId(ID_PREFIX.componentLabel),
+      puppetKey: input.puppetKey,
+      layerExternalId: input.layerExternalId,
+      labels: input.labels,
+      updatedAt: now,
+    });
+  }
+}
+
+export async function deleteAllComponentLabelsForPuppet(puppetKey: string): Promise<void> {
+  await db().componentLabels.where("puppetKey").equals(puppetKey).delete();
 }

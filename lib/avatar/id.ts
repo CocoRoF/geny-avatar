@@ -35,6 +35,7 @@ export const ID_PREFIX = {
   job: "jb",
   override: "ov",
   reference: "rf",
+  componentLabel: "cl",
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIX)[keyof typeof ID_PREFIX];

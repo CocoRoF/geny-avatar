@@ -20,6 +20,7 @@ import {
 } from "@/lib/avatar/connectedComponents";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
+import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
 import { useReferences } from "@/lib/avatar/useReferences";
 import { type AIJobRow, listAIJobsForLayer, saveAIJob } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
@@ -308,6 +309,12 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   // providers whose capabilities advertise multi-image input
   // (gpt-image-2). Other providers see them dropped at the route.
   const { references } = useReferences(puppetKey);
+
+  // E.1 — persisted per-component labels keyed by component bbox.
+  const { labels: componentLabels, setLabel: setComponentLabel } = useComponentLabels(
+    puppetKey,
+    layer.externalId,
+  );
   const supportsRefs = provider?.capabilities.supportsReferenceImages === true;
   /** Composition order matters — model treats earlier image[] entries
    *  as the dominant anchor. We put user-uploaded refs first (the
@@ -362,15 +369,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // For Gemini we still pass the raw mask through — Gemini does
       // accept a binary mask and uses it correctly.
       const useMultiComponent = providerId === "openai";
-      const components = useMultiComponent
+      const prepared = useMultiComponent
         ? await prepareOpenAISourcesPerComponent(sourceCanvas)
         : null;
-      if (components) {
-        lastComponentCountRef.current = components.length;
+      if (prepared) {
+        lastComponentCountRef.current = prepared.length;
         console.info(
           `[GeneratePanel] openai submit: sourceCanvas=${sourceCanvas.width}x${sourceCanvas.height}, ` +
-            `components=${components.length}` +
-            components
+            `components=${prepared.length}` +
+            prepared
               .map(
                 (c, i) =>
                   `\n  [${i}] sourceBBox=${c.sourceBBox.w}x${c.sourceBBox.h}@(${c.sourceBBox.x},${c.sourceBBox.y}) ` +
@@ -468,7 +475,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       console.groupCollapsed(
         `[ai/submit] layer="${layer.name}" provider=${providerId} model=${modelId || "(default)"} ` +
           `refs=${activeRefBlobs.length}` +
-          (components ? ` components=${components.length}` : ""),
+          (prepared ? ` components=${prepared.length}` : ""),
       );
       console.info("layer:", {
         id: layer.id,
@@ -478,11 +485,14 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         rect: layer.texture?.rect,
       });
       console.info("provider:", { id: providerId, model: modelId || "(provider default)" });
-      if (components) {
+      if (prepared) {
         console.info(
-          `source split into ${components.length} component(s) — one OpenAI call per component, results composited:`,
-          components.map((c, i) => ({
+          `source split into ${prepared.length} component(s) — one OpenAI call per component, results composited:`,
+          prepared.map((c, i) => ({
             componentId: i,
+            label: components[i]
+              ? componentLabels[componentSignature(components[i].bbox)] || "(unnamed)"
+              : "(unmatched)",
             sourceBBox: c.sourceBBox,
             paddingOffset: c.paddingOffset,
             area: c.area,
@@ -521,11 +531,14 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       } else if (usePromptRefine && providerId === "openai") {
         console.info("prompt refinement: skipped (refine off / empty / errored)");
       }
-      if (components?.some((_, i) => (componentPrompts[i] ?? "").trim())) {
+      if (prepared?.some((_, i) => (componentPrompts[i] ?? "").trim())) {
         console.info(
           "per-region prompts (combined with common at submit):",
-          components.map((_, i) => ({
+          prepared.map((_, i) => ({
             region: i + 1,
+            label: components[i]
+              ? componentLabels[componentSignature(components[i].bbox)] || ""
+              : "",
             text: componentPrompts[i] ?? "",
           })),
         );
@@ -538,7 +551,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
 
       let processed: Blob;
 
-      if (components) {
+      if (prepared) {
         // Multi-component OpenAI path: fire N submits in parallel,
         // postprocess each into a source-canvas-sized canvas with only
         // that component's silhouette painted, then composite them all
@@ -551,11 +564,24 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         // history fidelity.
         const baseText = refinedPromptForSubmit ?? prompt;
         const componentBlobs = await Promise.all(
-          components.map(async (comp, idx) => {
+          prepared.map(async (comp, idx) => {
             const perRegion = (componentPrompts[idx] ?? "").trim();
+            // Pull the matching auto-detected component's signature so
+            // we can label this call with the user's saved name (E.1).
+            // Falls back to the ordinal "region N" when no name has
+            // been set.
+            const detected = components[idx];
+            const label = detected
+              ? (componentLabels[componentSignature(detected.bbox)] || "").trim()
+              : "";
+            const regionDescriptor = label
+              ? `region '${label}' (${idx + 1} of ${prepared.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`
+              : `region ${idx + 1} of ${prepared.length} (${comp.sourceBBox.w}×${comp.sourceBBox.h} px)`;
             const composedPrompt = perRegion
-              ? `${baseText}\n\nFor [image 1] (region ${idx + 1} of ${components.length}, ${comp.sourceBBox.w}×${comp.sourceBBox.h} px): ${perRegion}`
-              : baseText;
+              ? `${baseText}\n\nFor [image 1] (${regionDescriptor}): ${perRegion}`
+              : label
+                ? `${baseText}\n\n[image 1] is the ${label} region.`
+                : baseText;
             const compSourceBlob = await canvasToPngBlob(comp.padded);
             const rawResult = await submitGenerate({
               providerId,
@@ -942,6 +968,8 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                   {components.map((c, idx) => {
                     const color = COMPONENT_COLORS[idx % COMPONENT_COLORS.length];
                     const thumb = componentThumbs[idx];
+                    const sig = componentSignature(c.bbox);
+                    const name = componentLabels[sig] ?? "";
                     return (
                       <div
                         key={c.id}
@@ -970,6 +998,15 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                             </span>
                           </div>
                           <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            {/* E.1: editable region name. Persists per
+                                (puppet, layer, component bbox) signature. */}
+                            <input
+                              type="text"
+                              value={name}
+                              onChange={(e) => setComponentLabel(sig, e.target.value)}
+                              placeholder={`name (e.g. torso, frill)`}
+                              className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
+                            />
                             <div className="text-[10px] text-[var(--color-fg-dim)]">
                               {c.bbox.w}×{c.bbox.h} · {c.area.toLocaleString()} px
                             </div>
@@ -982,7 +1019,11 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                                   return next;
                                 })
                               }
-                              placeholder={`region ${idx + 1} — what should fill this island?`}
+                              placeholder={
+                                name
+                                  ? `${name} — what should fill this region?`
+                                  : `region ${idx + 1} — what should fill this island?`
+                              }
                               className="h-12 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
                             />
                           </div>
