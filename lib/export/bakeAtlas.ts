@@ -26,7 +26,7 @@
  * call without disturbing the live preview.
  */
 
-import type { AvatarAdapter } from "../adapters/AvatarAdapter";
+import type { AvatarAdapter, LayerTriangles } from "../adapters/AvatarAdapter";
 import type { Avatar, Layer, LayerId, Rect, TextureId } from "../avatar/types";
 
 export type BakeAtlasInput = {
@@ -53,6 +53,30 @@ export async function bakeAtlasPages(input: BakeAtlasInput): Promise<BakedAtlasP
   // the decode cost twice when several layers share a page.
   const textureImages = await loadBlobMap(textures);
   const maskImages = await loadBlobMap(masks);
+
+  // Compute the hidden footprints once for the whole avatar — the
+  // adapter expands runtime cascades (Cubism parent → descendant) so
+  // every drawable that wouldn't render gets its atlas pixels wiped,
+  // even if the user only toggled the parent layer in our panel.
+  // Visibility erase rule: only layers the user explicitly turned off
+  // *from a default-visible state*. Default-hidden parts stay intact
+  // so any motion that legitimately raises them later still has
+  // pixels to draw.
+  const hiddenLayerIds: LayerId[] = [];
+  for (const layer of avatar.layers) {
+    const current = visibility[layer.id];
+    if (current !== false) continue;
+    if (layer.defaults.visible !== true) continue;
+    hiddenLayerIds.push(layer.id);
+  }
+  const hiddenFootprints =
+    hiddenLayerIds.length > 0 ? adapter.listHiddenAtlasFootprints(hiddenLayerIds) : [];
+  const hiddenByTexture = new Map<TextureId, LayerTriangles[]>();
+  for (const fp of hiddenFootprints) {
+    const arr = hiddenByTexture.get(fp.textureId);
+    if (arr) arr.push(fp);
+    else hiddenByTexture.set(fp.textureId, [fp]);
+  }
 
   for (const tex of avatar.textures) {
     const src = adapter.getTextureSource(tex.id);
@@ -82,21 +106,21 @@ export async function bakeAtlasPages(input: BakeAtlasInput): Promise<BakedAtlasP
       compositeErase(ctx, img, layer.texture.rect, layer.texture.rotated ?? false);
     }
 
-    // 3. Visibility erase — only layers the user explicitly turned off
-    //    from a default-visible state. Layers that were already hidden
-    //    by default keep their atlas pixels intact so any motion that
-    //    legitimately raises them later still has something to draw.
-    for (const layer of avatar.layers) {
-      if (!layer.texture || layer.texture.textureId !== tex.id) continue;
-      const current = visibility[layer.id];
-      if (current !== false) continue;
-      if (layer.defaults.visible !== true) continue;
-      const path = trianglesPathForLayer(adapter, layer, src.width, src.height);
-      if (!path) continue;
+    // 3. Visibility erase — runtime-cascade-aware. The adapter already
+    //    walked Cubism's part hierarchy so an explicitly-hidden parent
+    //    contributes triangles for every descendant drawable, not just
+    //    its own. Each entry in `hiddenByTexture[tex.id]` is one
+    //    drawable's triangle soup; we fill them all as `destination-out`
+    //    on this page.
+    const fps = hiddenByTexture.get(tex.id);
+    if (fps && fps.length > 0) {
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
       ctx.fillStyle = "#000";
-      ctx.fill(path);
+      for (const fp of fps) {
+        const path = trianglesUVsToPath2D(fp.uvs, src.width, src.height);
+        if (path) ctx.fill(path);
+      }
       ctx.restore();
     }
 
@@ -162,11 +186,16 @@ function trianglesPathForLayer(
   const tris = adapter.getLayerTriangles(layer.id);
   if (!tris || tris.uvs.length < 6) return null;
   if (layer.texture && tris.textureId !== layer.texture.textureId) return null;
+  return trianglesUVsToPath2D(tris.uvs, pageW, pageH);
+}
+
+function trianglesUVsToPath2D(uvs: Float32Array, pageW: number, pageH: number): Path2D | null {
+  if (uvs.length < 6) return null;
   const path = new Path2D();
-  for (let i = 0; i + 5 < tris.uvs.length; i += 6) {
+  for (let i = 0; i + 5 < uvs.length; i += 6) {
     for (let v = 0; v < 3; v++) {
-      const u = tris.uvs[i + v * 2];
-      const vv = tris.uvs[i + v * 2 + 1];
+      const u = uvs[i + v * 2];
+      const vv = uvs[i + v * 2 + 1];
       const px = u * pageW;
       const py = vv * pageH;
       if (v === 0) path.moveTo(px, py);

@@ -108,6 +108,11 @@ export class Live2DAdapter implements AvatarAdapter {
   /** Reverse of `textureIdByPageIndex` — used by `getLayerTriangles` to
    *  filter drawables to those that live on the layer's dominant page. */
   private pageIndexByTextureId = new Map<TextureId, number>();
+  /** atlas pageIndex → textureId. Inverse of `pageIndexByTextureId`,
+   *  populated alongside it at load. Used by `listHiddenAtlasFootprints`
+   *  to translate a drawable's `getDrawableTextureIndex` (a page index)
+   *  back into the textureId that the export baker keys footprints by. */
+  private textureIdByPageIndex = new Map<number, TextureId>();
 
   /**
    * Cubism part groups pulled out of cdi3.json `Groups` (Target="Part").
@@ -293,6 +298,7 @@ export class Live2DAdapter implements AvatarAdapter {
       const id = newId(ID_PREFIX.texture);
       textureIdByPageIndex.set(idx, id);
       this.pageIndexByTextureId.set(id, idx);
+      this.textureIdByPageIndex.set(idx, id);
       this.textureSourcesById.set(id, info);
       // Pixi Texture handle for live mutation. Some engine builds expose
       // `tex.texture` (wrapper) — we duck-type to find the actual Pixi
@@ -717,6 +723,58 @@ export class Live2DAdapter implements AvatarAdapter {
     return {};
   }
 
+  /**
+   * Cubism part visibility cascades to descendants at runtime through
+   * the `partToDescendantDrawables` map (a hidden parent multiplies
+   * every descendant drawable's opacity by 0). Atlas erase has to
+   * mirror that — otherwise a hidden parent leaves its child
+   * drawables (UI text, accessory pieces, info plates) intact in the
+   * exported atlas, which the user observed bleeding through behind
+   * the body. This method walks the same cascade.
+   *
+   * Multi-page split layers all map back to the same `partIdx`; we
+   * dedupe at part-index level so descendants aren't traversed twice.
+   * One returned `LayerTriangles` entry per (drawable, atlas page),
+   * keyed by `textureId` so the baker can group them per page.
+   */
+  listHiddenAtlasFootprints(hiddenLayerIds: ReadonlyArray<LayerId>): LayerTriangles[] {
+    const cm = this.coreModel;
+    if (!cm) return [];
+
+    const hiddenPartIndices = new Set<number>();
+    for (const layerId of hiddenLayerIds) {
+      const partIdx = this.partIndexByLayerId.get(layerId);
+      if (partIdx == null) continue;
+      hiddenPartIndices.add(partIdx);
+    }
+    if (hiddenPartIndices.size === 0) return [];
+
+    const out: LayerTriangles[] = [];
+    for (const partIdx of hiddenPartIndices) {
+      const drawables = this.partToDescendantDrawables.get(partIdx) ?? [];
+      for (const d of drawables) {
+        const pageIdx: number | undefined = cm.getDrawableTextureIndex?.(d);
+        if (typeof pageIdx !== "number" || pageIdx < 0) continue;
+        const textureId = this.textureIdByPageIndex.get(pageIdx);
+        if (!textureId) continue;
+        const uvs = cm.getDrawableVertexUvs?.(d) as Float32Array | undefined;
+        const indices = cm.getDrawableVertexIndices?.(d) as Uint16Array | Uint32Array | undefined;
+        if (!uvs || !indices || indices.length < 3) continue;
+        // Cubism UVs are bottom-up; flip v to match the top-down
+        // convention `getLayerTriangles` exposes (and that the baker
+        // multiplies by pageHeight directly).
+        const tris = new Float32Array(indices.length * 2);
+        for (let i = 0; i < indices.length; i++) {
+          const v = indices[i];
+          tris[i * 2] = uvs[v * 2];
+          tris[i * 2 + 1] = 1 - uvs[v * 2 + 1];
+        }
+        out.push({ textureId, uvs: tris });
+      }
+    }
+    return out;
+  }
+
   getTextureSource(textureId: TextureId): TextureSourceInfo | null {
     return this.textureSourcesById.get(textureId) ?? null;
   }
@@ -819,6 +877,7 @@ export class Live2DAdapter implements AvatarAdapter {
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
     this.pageIndexByTextureId.clear();
+    this.textureIdByPageIndex.clear();
     this.model?.destroy?.();
     this.model = null;
     this.coreModel = null;

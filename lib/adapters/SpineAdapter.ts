@@ -301,6 +301,20 @@ export class SpineAdapter implements AvatarAdapter {
     return name ? { spineSkin: name } : {};
   }
 
+  /**
+   * Spine slots have no parent/child cascade — hiding one slot only
+   * affects its own attachment. Just collect each hidden layer's
+   * direct triangles.
+   */
+  listHiddenAtlasFootprints(hiddenLayerIds: ReadonlyArray<LayerId>): LayerTriangles[] {
+    const out: LayerTriangles[] = [];
+    for (const id of hiddenLayerIds) {
+      const tris = this.getLayerTriangles(id);
+      if (tris) out.push(tris);
+    }
+    return out;
+  }
+
   setParameter(_paramId: string, _value: number): void {
     // Spine has no parameter graph; capability flag should have prevented this.
   }

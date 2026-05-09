@@ -190,6 +190,29 @@ export interface AvatarAdapter {
    */
   getActiveVariantData(): VariantApplyData;
 
+  /**
+   * Return every atlas footprint that needs to be erased from a baked
+   * model export so the rendered output matches what the editor's
+   * preview shows for the given hidden layers. Used by Export Model
+   * to write `destination-out` shapes onto each atlas page.
+   *
+   * Crucially, this **expands runtime hide cascades**: hiding a Cubism
+   * parent part should erase every descendant drawable's atlas region
+   * because at render time the parent's opacity-zero multiplies down
+   * the tree. Returning only the parent's own direct triangles would
+   * leave child textures (UI text, accessory PNGs, etc.) visible in
+   * the exported atlas — which the user observed as ghost imagery
+   * over the body.
+   *
+   * Spine has no such hierarchy: each layer's own attachment region
+   * is sufficient. The default-style implementation works there.
+   *
+   * Returned entries may span multiple atlas pages — one entry per
+   * (drawable, page) tuple. Triangles are in the same top-down UV
+   * space as `getLayerTriangles`.
+   */
+  listHiddenAtlasFootprints(hiddenLayerIds: ReadonlyArray<LayerId>): LayerTriangles[];
+
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;
 }
