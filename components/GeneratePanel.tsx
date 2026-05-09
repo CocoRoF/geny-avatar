@@ -73,6 +73,21 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
    *  every successful save so the list reflects what's in IDB. */
   const [history, setHistory] = useState<AIJobRow[]>([]);
 
+  /** Puppet reference rows the user explicitly toggled OFF for this
+   *  session. Default-state is ON for everything; persistence isn't
+   *  warranted since the disable is usually a "skip this once"
+   *  decision while iterating. */
+  const [disabledRefIds, setDisabledRefIds] = useState<Set<string>>(new Set());
+  /** Iterative refinement: when ON, the most recent succeeded result
+   *  rides along on the next submit as an additional reference. This
+   *  is the cloud-API stand-in for previous_response_id-style chaining
+   *  — the model sees "what I just made" alongside "what the user
+   *  wants now" and refines instead of starting from scratch. */
+  const [useLastResult, setUseLastResult] = useState(true);
+  /** Most recent succeeded blob in this panel session. Replaced after
+   *  every success; not persisted, so closing the panel resets it. */
+  const [lastResultBlob, setLastResultBlob] = useState<Blob | null>(null);
+
   const [phase, setPhase] = useState<
     | { kind: "idle" }
     | { kind: "submitting" }
@@ -204,6 +219,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     };
   }, [phase]);
 
+  // Capture the most recent succeeded blob into `lastResultBlob` so
+  // the iterative-anchor toggle can pick it up on the next submit.
+  // We don't reset to null on a subsequent failure — the user might
+  // tweak the prompt and retry, and that retry should still chain
+  // off whatever last worked.
+  useEffect(() => {
+    if (phase.kind === "succeeded") {
+      setLastResultBlob(phase.blob);
+    }
+  }, [phase]);
+
   const provider = providers?.find((p) => p.id === providerId);
 
   // Per-puppet character / style refs. Forwarded as `image[]` to
@@ -211,7 +237,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   // (gpt-image-2). Other providers see them dropped at the route.
   const { references } = useReferences(puppetKey);
   const supportsRefs = provider?.capabilities.supportsReferenceImages === true;
-  const activeRefBlobs = supportsRefs ? references.map((r) => r.blob) : [];
+  /** Composition order matters — model treats earlier image[] entries
+   *  as the dominant anchor. We put user-uploaded refs first (the
+   *  user's deliberate "this is the character" signal), then the
+   *  iterative anchor (this run's predecessor) so it nudges rather
+   *  than overrides. */
+  const activeRefBlobs: Blob[] = supportsRefs
+    ? [
+        ...references.filter((r) => !disabledRefIds.has(r.id)).map((r) => r.blob),
+        ...(useLastResult && lastResultBlob ? [lastResultBlob] : []),
+      ]
+    : [];
 
   async function onSubmit() {
     setPhase({ kind: "submitting" });
@@ -274,9 +310,11 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       const maskUrl = maskBlob ? URL.createObjectURL(maskBlob) : null;
       const refDetails = activeRefBlobs.map((b, i) => {
         const matched = references.find((r) => r.blob === b);
+        const isLastResult = !matched && b === lastResultBlob;
         return {
           slot: `image[${i + 1}]`,
-          name: matched?.name ?? `ref-${i}`,
+          source: matched ? "puppet ref" : isLastResult ? "iteration anchor (last result)" : "?",
+          name: matched?.name ?? (isLastResult ? "last-result" : `ref-${i}`),
           type: b.type || "(no MIME)",
           bytes: b.size,
           preview: URL.createObjectURL(b),
@@ -625,25 +663,89 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               />
             </div>
 
-            {/* Reference image summary — surfaces what's about to ride
-                along with the source so the user can correlate result
-                quality with the refs they uploaded. Only meaningful for
-                providers that support multi-image input; for others we
-                show a one-liner explaining why their refs aren't being
-                forwarded. */}
-            {provider && references.length > 0 && (
+            {/* Active references — full control over what rides along
+                this submit. Two channels:
+                  1. Puppet refs (uploaded via ReferencesPanel) — toggle
+                     individually for "skip this one this time" decisions.
+                  2. Last result anchor — feeds the most recent succeeded
+                     blob back as a reference so chained edits refine
+                     rather than restart from scratch. The cloud-API
+                     equivalent of `previous_response_id` chaining. */}
+            {provider && (references.length > 0 || lastResultBlob) && (
               <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[11px]">
                 {supportsRefs ? (
                   <>
-                    <div className="mb-1 text-[var(--color-fg)]">
-                      {references.length} reference image{references.length === 1 ? "" : "s"} will
-                      ride along
+                    <div className="mb-1.5 flex items-center justify-between text-[var(--color-fg)]">
+                      <span>
+                        Active references ({activeRefBlobs.length}/
+                        {references.length + (lastResultBlob ? 1 : 0)})
+                      </span>
+                      <span className="text-[10px] text-[var(--color-fg-dim)]">
+                        sent as <span className="font-mono">image[]</span> after source
+                      </span>
                     </div>
-                    <div className="text-[var(--color-fg-dim)]">
-                      Sent as <span className="font-mono">image[]</span> after the layer source —
-                      gpt-image-2 uses them as character / style anchors. Manage in the References
-                      panel.
-                    </div>
+                    {references.length > 0 && (
+                      <ul className="mb-1 space-y-0.5">
+                        {references.map((r) => {
+                          const enabled = !disabledRefIds.has(r.id);
+                          return (
+                            <li key={r.id} className="flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={() => {
+                                  setDisabledRefIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (enabled) next.add(r.id);
+                                    else next.delete(r.id);
+                                    return next;
+                                  });
+                                }}
+                                className="h-3 w-3"
+                                aria-label={`toggle reference ${r.name}`}
+                              />
+                              <span
+                                className={`flex-1 truncate font-mono ${
+                                  enabled
+                                    ? "text-[var(--color-fg)]"
+                                    : "text-[var(--color-fg-dim)] line-through"
+                                }`}
+                                title={r.name}
+                              >
+                                {r.name}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                                {(r.blob.size / 1024).toFixed(0)}KB
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    {lastResultBlob && (
+                      <label className="flex items-center gap-1.5 border-t border-[var(--color-border)] pt-1">
+                        <input
+                          type="checkbox"
+                          checked={useLastResult}
+                          onChange={(e) => setUseLastResult(e.target.checked)}
+                          className="h-3 w-3"
+                          aria-label="toggle last-result iterative anchor"
+                        />
+                        <span
+                          className={`flex-1 italic ${
+                            useLastResult
+                              ? "text-[var(--color-accent)]"
+                              : "text-[var(--color-fg-dim)] line-through"
+                          }`}
+                          title="Most recent succeeded result, fed back as a reference so the next generation refines instead of restarting"
+                        >
+                          last result · iteration anchor
+                        </span>
+                        <span className="shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                          {(lastResultBlob.size / 1024).toFixed(0)}KB
+                        </span>
+                      </label>
+                    )}
                   </>
                 ) : (
                   <div className="text-[var(--color-fg-dim)]">
