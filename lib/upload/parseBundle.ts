@@ -178,25 +178,36 @@ function mimeForPath(path: string): string {
 
 /**
  * fflate decodes ZIP file names as latin-ish (CP437) when the ZIP doesn't
- * set the UTF-8 general-purpose flag. Many real-world tools (Windows
- * Explorer pre-2018, some Chinese/Korean/Japanese OSes) write UTF-8 bytes
- * without setting that flag, so we get mojibake like
- *   "免费模型艾莲" → "Ãå · ÑÅéÐ¦ ¬Ä~"
+ * set the UTF-8 general-purpose flag (EFS bit). Many real-world tools
+ * (Windows Explorer pre-2018, some Chinese/Korean/Japanese OSes) write
+ * UTF-8 bytes without setting that flag, so we get mojibake like
+ *   "免费모델" → "Ãå · ÑÅéÐ¦ ¬Ä~"
  *
  * Recover by re-extracting the original bytes (each char is 0-255) and
  * trying common decodings in order: UTF-8 (most likely), GBK (Simplified
- * Chinese), Shift_JIS (Japanese). UTF-8 in fatal mode rejects invalid
- * sequences; if it succeeds, the recovered name is identical to the
- * original.
+ * Chinese), Shift_JIS (Japanese), EUC-KR (Korean). UTF-8 in fatal mode
+ * rejects invalid sequences; if it succeeds the recovered name is
+ * identical to the original.
+ *
+ * **EFS-set ZIPs must skip recoding.** When the producing tool (fflate
+ * does this for us, plus modern Windows / 7zip / macOS Archive
+ * Utility) sets the EFS bit, fflate's unzipSync already returns the
+ * proper Unicode string. The codepoints there are >= U+0100, and
+ * `charCodeAt(i) & 0xff` would silently drop the high byte and
+ * produce a different shorter byte sequence — one of the fallback
+ * encodings is then liable to "succeed" without replacement chars and
+ * silently mangle the path. Concrete failure: our own export-model
+ * zip + a CJK puppet name → `免费模型艾莲` → `M9!救ｲ`. Detect this
+ * case via the >=U+0100 codepoint signal and skip the recoder.
  */
 function recodeZipName(name: string): string {
-  // ASCII names need no recoding
   let allAscii = true;
   for (let i = 0; i < name.length; i++) {
-    if (name.charCodeAt(i) > 127) {
-      allAscii = false;
-      break;
-    }
+    const c = name.charCodeAt(i);
+    if (c > 127) allAscii = false;
+    // Codepoint > 0xff means fflate already decoded the EFS-flagged
+    // path as proper Unicode. Re-decoding would lose the high byte.
+    if (c > 0xff) return name;
   }
   if (allAscii) return name;
 
