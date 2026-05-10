@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AttributionFooter } from "@/components/AttributionFooter";
 import type { AssetOriginNote } from "@/lib/avatar/types";
 import { deletePuppet, listPuppets, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
 
@@ -12,6 +13,19 @@ const ORIGIN_OPTIONS: { value: AssetOriginNote["source"]; label: string }[] = [
   { value: "community", label: "커뮤니티 (서드파티)" },
   { value: "self-made", label: "자체 제작" },
 ];
+
+const ORIGIN_LICENSE_NOTES: Record<AssetOriginNote["source"], string> = {
+  unknown: "출처를 알 수 없는 자산. 외부 공유나 상업적 이용 전에 원 저작자/배포처 확인 필요.",
+  "live2d-official":
+    "Live2D 공식 샘플은 Live2D Free Material License 적용. 학습/개인 용도는 허용, 상업 이용은 별도 라이선스 계약 필요.",
+  "spine-official":
+    "Esoteric Software 공식 샘플 (예: spineboy)은 Spine Examples License 적용. Spine Runtimes를 쓰려면 별도의 Spine SDK 라이선스 보유 필요.",
+  "inochi2d-official":
+    "Inochi2D 공식 자산은 BSD 2-Clause / CC-BY 등 자유 라이선스. 자산별 라이선스를 동봉된 LICENSE 파일에서 확인.",
+  community:
+    "커뮤니티/서드파티 자산. 원 저작자가 명시한 라이선스 (BOOTH 페이지, README 등)를 따라야 함.",
+  "self-made": "본인 제작 자산. 원하는 라이선스로 자유롭게 배포 가능.",
+};
 
 export default function LibraryPage() {
   const [puppets, setPuppets] = useState<PuppetRow[] | null>(null);
@@ -113,35 +127,62 @@ export default function LibraryPage() {
                     {formatRelative(p.updatedAt)}
                   </div>
                 </a>
-                <div className="flex shrink-0 items-center gap-2 border-t border-[var(--color-border)] px-3 py-1.5 text-xs">
-                  <span className="text-[var(--color-fg-dim)]">origin:</span>
-                  <select
-                    value={p.origin?.source ?? "unknown"}
-                    onChange={(e) =>
-                      onOriginChange(p.id, e.target.value as AssetOriginNote["source"])
-                    }
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
-                  >
-                    {ORIGIN_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => onDelete(p.id)}
-                    className="rounded border border-transparent px-2 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-border)] hover:text-red-400"
-                  >
-                    delete
-                  </button>
+                <div className="flex shrink-0 flex-col gap-1 border-t border-[var(--color-border)] px-3 py-1.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[var(--color-fg-dim)]">origin:</span>
+                    <select
+                      value={p.origin?.source ?? "unknown"}
+                      onChange={(e) =>
+                        onOriginChange(p.id, e.target.value as AssetOriginNote["source"])
+                      }
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-xs text-[var(--color-fg)] focus:border-[var(--color-accent)] focus:outline-none"
+                    >
+                      {ORIGIN_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <details className="text-[10px]">
+                      <summary
+                        className="cursor-pointer list-none rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[var(--color-fg-dim)] hover:border-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                        title="라이선스 안내 보기"
+                      >
+                        i
+                      </summary>
+                      <div className="mt-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[10px] leading-relaxed text-[var(--color-fg-dim)]">
+                        {ORIGIN_LICENSE_NOTES[p.origin?.source ?? "unknown"]}
+                        {p.origin?.url && (
+                          <>
+                            {" · "}
+                            <a
+                              href={p.origin.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[var(--color-accent)] underline"
+                            >
+                              source URL
+                            </a>
+                          </>
+                        )}
+                      </div>
+                    </details>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(p.id)}
+                      className="rounded border border-transparent px-2 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-border)] hover:text-red-400"
+                    >
+                      delete
+                    </button>
+                  </div>
                 </div>
               </li>
             ))}
           </ul>
         )}
       </div>
+      <AttributionFooter />
     </main>
   );
 }

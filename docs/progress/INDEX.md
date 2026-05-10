@@ -102,6 +102,7 @@
 | 2026-05-10 | [86 sprint_7_1_help_modal](2026-05-10_86_sprint_7_1_help_modal.md) | 7.1 | 완료 — discoverability 1차 진입점. 신규 `HelpModal` 컴포넌트 (workflow / shortcuts / panels / modals / tips 5 section). editor 두 page (`/edit/[id]` + `/edit/builtin/[key]`) 헤더에 `?` 버튼 + `?` 키 토글 wiring |
 | 2026-05-10 | [87 sprint_7_2_onboarding](2026-05-10_87_sprint_7_2_onboarding.md) | 7.2 | 완료 — 첫 editor 진입 시 캔버스 위 onboarding 배너 (3 step 한 줄 안내 + "전체 안내 (?)" + "got it"). localStorage versioned key 로 영구 dismiss. HelpModal 에 "show onboarding again" 버튼으로 reset 가능 |
 | 2026-05-10 | [88 sprint_7_3_korean_messages](2026-05-10_88_sprint_7_3_korean_messages.md) | 7.3 | 완료 — user-facing alert / confirm / status / placeholder 한국어화. GeneratePanel · DecomposeStudio · ReferencesPanel. 버튼 라벨 + dev 로그는 영어 유지. i18n framework 안 깔음 (인라인 번역) |
+| 2026-05-10 | [89 sprint_7_4_attribution](2026-05-10_89_sprint_7_4_attribution.md) | 7.4 | 완료 — 외부 SDK / 모델 라이선스 surface. 신규 `AttributionFooter` (Spine / Cubism / Pixi.js / OpenAI 4행) → landing + library 하단. `/poc/library` 카드 origin select 옆 `<details>` "i" → 6 source 별 한국어 라이선스 안내. README "## 라이선스" 섹션 표 4행으로 확장 |
 
 ## 운영 규칙
 

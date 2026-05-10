@@ -1,3 +1,4 @@
+import { AttributionFooter } from "@/components/AttributionFooter";
 import { BUILTIN_SAMPLES } from "@/lib/builtin/samples";
 
 type Phase = {
@@ -81,162 +82,167 @@ function statusDot(status: Phase["status"]): string {
 
 export default function Home() {
   return (
-    <main className="mx-auto max-w-4xl px-8 py-16">
-      <header className="mb-16">
-        <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">v0.0.1 · phase 0</div>
-        <h1 className="mb-3 text-4xl font-semibold tracking-tight">geny-avatar</h1>
-        <p className="text-lg text-[var(--color-fg-dim)]">
-          Web-based 2D Live Avatar editor with AI-driven texture generation.
-        </p>
-        <p className="mt-1 text-sm text-[var(--color-fg-dim)]">
-          Cubism · Spine · Next.js · Pixi v8 · SDXL inpaint
-        </p>
-      </header>
+    <>
+      <main className="mx-auto max-w-4xl px-8 py-16">
+        <header className="mb-16">
+          <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">v0.0.1 · phase 0</div>
+          <h1 className="mb-3 text-4xl font-semibold tracking-tight">geny-avatar</h1>
+          <p className="text-lg text-[var(--color-fg-dim)]">
+            Web-based 2D Live Avatar editor with AI-driven texture generation.
+          </p>
+          <p className="mt-1 text-sm text-[var(--color-fg-dim)]">
+            Cubism · Spine · Next.js · Pixi v8 · SDXL inpaint
+          </p>
+        </header>
 
-      <section className="mb-16">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
-          Built-in samples
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {BUILTIN_SAMPLES.map((s) => (
-            <a
-              key={s.key}
-              href={`/edit/builtin/${s.key}`}
-              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4 hover:border-[var(--color-accent)]"
-            >
-              <div className="mb-1 flex items-baseline gap-2">
-                <span className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-xs text-[var(--color-accent)]">
-                  {s.runtime}
-                </span>
-                {s.version && (
-                  <span className="font-mono text-xs text-[var(--color-fg-dim)]">{s.version}</span>
-                )}
-              </div>
-              <div className="mb-1 text-base font-medium">{s.name}</div>
-              <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{s.blurb}</p>
-            </a>
-          ))}
-        </div>
-        <p className="mt-3 text-xs text-[var(--color-fg-dim)]">
-          본인 puppet은{" "}
-          <a href="/poc/upload" className="text-[var(--color-accent)] underline">
-            /poc/upload
-          </a>
-          에 드롭하면 라이브러리에 저장 후 같은 에디터로 진입.
-        </p>
-      </section>
-
-      <section className="mb-16">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
-          Operating Philosophies
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {philosophies.map((p) => (
-            <div
-              key={p.id}
-              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4"
-            >
-              <div className="mb-1 flex items-baseline gap-2">
-                <span className="font-mono text-xs text-[var(--color-accent)]">{p.id}</span>
-                <span className="font-medium">{p.title}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{p.blurb}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
-          Roadmap
-        </h2>
-        <ol className="space-y-2">
-          {phases.map((phase) => (
-            <li
-              key={phase.id}
-              className="flex items-start gap-4 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4"
-            >
-              <span
-                role="img"
-                aria-label={phase.status}
-                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusDot(phase.status)}`}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-xs text-[var(--color-fg-dim)]">{phase.id}</span>
-                  <span className="font-medium">{phase.title}</span>
+        <section className="mb-16">
+          <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+            Built-in samples
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {BUILTIN_SAMPLES.map((s) => (
+              <a
+                key={s.key}
+                href={`/edit/builtin/${s.key}`}
+                className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4 hover:border-[var(--color-accent)]"
+              >
+                <div className="mb-1 flex items-baseline gap-2">
+                  <span className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-xs text-[var(--color-accent)]">
+                    {s.runtime}
+                  </span>
+                  {s.version && (
+                    <span className="font-mono text-xs text-[var(--color-fg-dim)]">
+                      {s.version}
+                    </span>
+                  )}
                 </div>
-                <p className="mt-0.5 text-sm text-[var(--color-fg-dim)]">{phase.blurb}</p>
+                <div className="mb-1 text-base font-medium">{s.name}</div>
+                <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{s.blurb}</p>
+              </a>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-[var(--color-fg-dim)]">
+            본인 puppet은{" "}
+            <a href="/poc/upload" className="text-[var(--color-accent)] underline">
+              /poc/upload
+            </a>
+            에 드롭하면 라이브러리에 저장 후 같은 에디터로 진입.
+          </p>
+        </section>
+
+        <section className="mb-16">
+          <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+            Operating Philosophies
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {philosophies.map((p) => (
+              <div
+                key={p.id}
+                className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4"
+              >
+                <div className="mb-1 flex items-baseline gap-2">
+                  <span className="font-mono text-xs text-[var(--color-accent)]">{p.id}</span>
+                  <span className="font-medium">{p.title}</span>
+                </div>
+                <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{p.blurb}</p>
               </div>
-            </li>
-          ))}
-        </ol>
-      </section>
+            ))}
+          </div>
+        </section>
 
-      <section className="mt-16">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
-          Phase 0 PoC
-        </h2>
-        <div className="grid gap-2 sm:grid-cols-3">
-          <a
-            href="/poc/spine"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/spine</div>
-            <div className="mt-1 text-sm">spineboy + slot toggle</div>
-          </a>
-          <a
-            href="/poc/cubism"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/cubism</div>
-            <div className="mt-1 text-sm">Hiyori + part toggle</div>
-          </a>
-          <a
-            href="/poc/dual"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
-            <div className="mt-1 text-sm">T-rt1 — 두 런타임 동시 마운트</div>
-          </a>
-          <a
-            href="/poc/upload-debug"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload-debug</div>
-            <div className="mt-1 text-sm">parseBundle 결과 뷰어 (sprint 1.3a)</div>
-          </a>
-          <a
-            href="/poc/upload"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
-            <div className="mt-1 text-sm">드롭→로드→미리보기 + 자동 저장 (1.3b/1.3c)</div>
-          </a>
-          <a
-            href="/poc/library"
-            className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-          >
-            <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
-            <div className="mt-1 text-sm">
-              저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로
-            </div>
-          </a>
-        </div>
-        <p className="mt-4 text-xs text-[var(--color-fg-dim)]">
-          본 에디터는{" "}
-          <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">
-            /edit/[avatarId]
-          </code>{" "}
-          (sprint 1.4a). 라이브러리 카드 클릭으로 진입.
+        <section>
+          <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+            Roadmap
+          </h2>
+          <ol className="space-y-2">
+            {phases.map((phase) => (
+              <li
+                key={phase.id}
+                className="flex items-start gap-4 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4"
+              >
+                <span
+                  role="img"
+                  aria-label={phase.status}
+                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusDot(phase.status)}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-xs text-[var(--color-fg-dim)]">{phase.id}</span>
+                    <span className="font-medium">{phase.title}</span>
+                  </div>
+                  <p className="mt-0.5 text-sm text-[var(--color-fg-dim)]">{phase.blurb}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <section className="mt-16">
+          <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
+            Phase 0 PoC
+          </h2>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <a
+              href="/poc/spine"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/spine</div>
+              <div className="mt-1 text-sm">spineboy + slot toggle</div>
+            </a>
+            <a
+              href="/poc/cubism"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/cubism</div>
+              <div className="mt-1 text-sm">Hiyori + part toggle</div>
+            </a>
+            <a
+              href="/poc/dual"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
+              <div className="mt-1 text-sm">T-rt1 — 두 런타임 동시 마운트</div>
+            </a>
+            <a
+              href="/poc/upload-debug"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload-debug</div>
+              <div className="mt-1 text-sm">parseBundle 결과 뷰어 (sprint 1.3a)</div>
+            </a>
+            <a
+              href="/poc/upload"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
+              <div className="mt-1 text-sm">드롭→로드→미리보기 + 자동 저장 (1.3b/1.3c)</div>
+            </a>
+            <a
+              href="/poc/library"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
+              <div className="mt-1 text-sm">
+                저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로
+              </div>
+            </a>
+          </div>
+          <p className="mt-4 text-xs text-[var(--color-fg-dim)]">
+            본 에디터는{" "}
+            <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">
+              /edit/[avatarId]
+            </code>{" "}
+            (sprint 1.4a). 라이브러리 카드 클릭으로 진입.
+          </p>
+        </section>
+
+        <p className="mt-16 border-t border-[var(--color-border)] pt-6 text-xs text-[var(--color-fg-dim)]">
+          설계 문서는{" "}
+          <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">docs/</code> —
+          analysis, plan, progress
         </p>
-      </section>
-
-      <footer className="mt-16 border-t border-[var(--color-border)] pt-6 text-xs text-[var(--color-fg-dim)]">
-        설계 문서는{" "}
-        <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">docs/</code> —
-        analysis, plan, progress
-      </footer>
-    </main>
+      </main>
+      <AttributionFooter />
+    </>
   );
 }

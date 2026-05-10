@@ -53,4 +53,19 @@ geny-avatar/
 
 ## 라이선스
 
-비공개 hobby 프로젝트 — 별도 라이선스 미부여.
+자체 코드: 비공개 1인 hobby 프로젝트 — 별도 라이선스 미부여 (private).
+
+### 제3자 자산 / Third-party
+
+이 도구는 다음 외부 SDK / 모델을 사용한다. 상업적 배포 시에는 각 권리자의 라이선스를 별도로 확보해야 한다.
+
+| 자산 | 권리자 | 라이선스 |
+|---|---|---|
+| [Spine Runtime v4](https://esotericsoftware.com/spine-runtimes-license) | Esoteric Software | Spine Runtimes License (Spine SDK 라이선스 별도 보유 필요) |
+| [Live2D Cubism Core](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html) | Live2D Inc. | Live2D Proprietary Software License (EULA) — `vendor/` 격리 |
+| [Pixi.js v8](https://github.com/pixijs/pixijs/blob/main/LICENSE) | PixiJS contributors | MIT |
+| [OpenAI gpt-image-2](https://openai.com/policies/terms-of-use) | OpenAI | OpenAI API Terms of Use — 사용자 본인 API key 필요 |
+
+내장 샘플 puppet (Hiyori, spineboy)은 각 SDK 공식 샘플로 학습/개발용으로 동봉. 상업적 사용 시에는 원 배포처의 라이선스 조건을 따른다.
+
+내보낸 `*.geny-avatar.zip` 의 `LICENSE.md` 에는 export 시점의 origin / AI provenance 가 자동 기록된다 — 외부 공유 시 함께 보존하자.
