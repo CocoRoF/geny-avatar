@@ -1,6 +1,6 @@
 {
   "name": "geny-avatar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Web-based 2D Live Avatar editor with AI-driven texture generation. Solo hobby project.",
   "scripts": {

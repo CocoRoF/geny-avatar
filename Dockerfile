@@ -25,11 +25,21 @@ RUN pnpm install --frozen-lockfile
 # ── Stage 2: builder ─────────────────────────────────────────────────
 # Run prebuild (vendor sync) + next build. Produces .next/standalone +
 # .next/static which the runner stage copies out.
+#
+# NEXT_PUBLIC_BASE_PATH and NEXT_PUBLIC_GENY_HOST are inlined into the
+# JS bundle by `next build`, so they MUST be present as ENV before the
+# build runs — setting them only on the runner stage is too late. Pass
+# via `docker build --build-arg` (or compose's `build.args`) when an
+# integration deployment needs a non-default value.
 FROM node:20-alpine AS builder
 WORKDIR /app
 RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ARG NEXT_PUBLIC_BASE_PATH=""
+ARG NEXT_PUBLIC_GENY_HOST=""
+ENV NEXT_PUBLIC_BASE_PATH=${NEXT_PUBLIC_BASE_PATH}
+ENV NEXT_PUBLIC_GENY_HOST=${NEXT_PUBLIC_GENY_HOST}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 

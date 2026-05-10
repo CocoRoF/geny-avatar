@@ -111,6 +111,7 @@
 | 2026-05-10 | [95 phaseA_3_send_to_geny](2026-05-10_95_phaseA_3_send_to_geny.md) | A.3 | 완료 — ExportButton 에 4번째 버튼 "send to Geny" (`NEXT_PUBLIC_GENY_HOST==="true"` 일 때만). `buildModelZip()` 결과를 multipart 로 신규 `/api/send-to-geny` 로 POST → route 가 `GENY_BAKED_EXPORTS_DIR` (디폴트 `/exports`) 에 timestamped 파일명으로 fs.writeFile. filename sanitize + 503 fallback. 단독 사용 무손상 (버튼 hidden, route 도 503 안내) |
 | 2026-05-10 | [96 phaseA_4_readme](2026-05-10_96_phaseA_4_readme.md) | A.4 | 완료 — README 에 "Geny 통합 (선택)" 섹션 추가 + "현재 상태" 갱신. 3개 환경 변수 표 (`NEXT_PUBLIC_BASE_PATH` / `NEXT_PUBLIC_GENY_HOST` / `GENY_BAKED_EXPORTS_DIR`) + 빌드 모드 3종 (단독/Geny/Docker) + Geny plan 문서로 외부 링크. 단독 hobby 사용은 무손상 강조 |
 | 2026-05-10 | [97 phaseA_5_v020_tag](2026-05-10_97_phaseA_5_v020_tag.md) | A.5 | 완료 — Phase A 종결 tag. package.json `0.0.1`→`0.2.0`, landing chip `v0.2.0 · Geny-integratable`, annotated git tag `v0.2.0` push. Geny submodule 의 pin target. Phase A (Dockerfile · basePath · send-to-Geny · README · tag) 5 sprint 종합 — 단독 hobby 무손상 + Geny 통합 준비 완료 |
+| 2026-05-10 | [98 phaseA_6_dockerfile_buildargs](2026-05-10_98_phaseA_6_dockerfile_buildargs.md) | A.6 hotfix | 완료 — A.1 Dockerfile 이 `NEXT_PUBLIC_BASE_PATH`/`NEXT_PUBLIC_GENY_HOST` 를 build-time 에 받아주지 않던 누락 수정. builder stage 에 `ARG`+`ENV` 두 줄 추가 (디폴트 빈 문자열, 단독 사용 동작 무변경). v0.2.1 bump + tag. Geny B.4 prod compose 의 `build.args` 가 이제 효력 |
 
 ## 운영 규칙
 
