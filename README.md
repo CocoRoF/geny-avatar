@@ -54,12 +54,41 @@ geny-avatar/
 
 ## 현재 상태
 
-**Phase 7 — Polish & V1 Release** 진행 중. Phase 0~6 완료 (dual runtime / upload / decompose / AI generation / variant export / SAM 통합 / per-region revert·history). 7.1 Help modal + 7.2 onboarding + 7.3 한국어화 + 7.4 attribution 완료. 다음:
+**Phase 7 — Polish & V1 Release** 완료 (Help modal · onboarding · 한국어화 · attribution · README · perf 6 sub-sprint 모두). 그 위로 root UX 통합 (`/` 한 페이지에 upload + 라이브러리 + 내장 샘플) 까지 끝났음. V1 시연 가능.
 
-- 7.5 README + landing copy 정비 (이 PR)
-- 7.6 첫 페인트 1.5s 목표 성능 최적화
+다음 작업: **Geny 통합** (아래 섹션). geny-avatar 가 Geny docker compose 의 한 service 로 끼어들어 baked puppet 을 Geny 의 VTuber 라이브러리로 보내는 흐름. 본 레포는 그대로 단독 hobby 사용도 지원.
 
 자세한 시간순 기록은 [`docs/progress/INDEX.md`](docs/progress/INDEX.md).
+
+## Geny 통합 (선택)
+
+[Geny](https://github.com/CocoRoF/Geny) 는 본 레포를 git submodule 로 끌어다가 자체 docker compose 의 `avatar-editor` service 로 띄운다. nginx 가 `/avatar-editor/` prefix 로 리버스 프록시, baked model 은 공유 docker volume 을 통해 Geny backend 로 전달된다.
+
+이 흐름이 동작하도록 본 레포가 인식하는 환경 변수:
+
+| 환경 변수 | 의미 | 단독 사용 시 |
+|---|---|---|
+| `NEXT_PUBLIC_BASE_PATH` | reverse-proxy prefix (예: `/avatar-editor`). build time 에 inline 되어 모든 라우트 + 자산 + `apiUrl()` 경로에 prepend. | 미설정 → root mount (현재 사용과 동일) |
+| `NEXT_PUBLIC_GENY_HOST` | `"true"` 면 ExportButton 에 "send to Geny" 버튼 활성. | 미설정 → 버튼 안 보임. 직접 `/api/send-to-geny` 호출 시 503 |
+| `GENY_BAKED_EXPORTS_DIR` | "send to Geny" 가 baked zip 을 쓸 디렉터리. | 디폴트 `/exports` (Geny compose 가 mount). 단독 사용 시 무관 |
+
+빌드 / 실행:
+
+```bash
+# 단독 사용 (변화 없음)
+pnpm dev
+
+# Geny compose 안에서 (Geny 가 자동으로 셋업)
+NEXT_PUBLIC_BASE_PATH=/avatar-editor \
+NEXT_PUBLIC_GENY_HOST=true \
+GENY_BAKED_EXPORTS_DIR=/exports \
+  pnpm build && node .next/standalone/server.js
+
+# Docker (Geny 의 compose 가 본 레포의 Dockerfile 을 build context 로 사용)
+docker build -t geny-avatar:latest .
+```
+
+자세한 통합 아키텍처 / 데이터 흐름 / sprint 분할은 [Geny 의 GENY_AVATAR_INTEGRATION.md](https://github.com/CocoRoF/Geny/blob/main/docs/plan/GENY_AVATAR_INTEGRATION.md) 참고.
 
 ## 라이선스
 
