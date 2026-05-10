@@ -14,6 +14,7 @@
 | 06 | [ui_ux](06_ui_ux.md) | 화면 구성 / 상호작용 / 상태 흐름 |
 | 07 | [phased_roadmap](07_phased_roadmap.md) | Phase 0 ~ V1까지의 단계별 계획 |
 | 08 | [risks_and_mitigations](08_risks_and_mitigations.md) | 무엇이 실패할 수 있고 어떻게 막을 것인가 |
+| 09 | [editor_animation_tab](09_editor_animation_tab.md) | Phase 8 — 에디터 애니메이션 탭 (motion/expression/emotion 매핑 + Geny export schema v2) |
 
 ## 작성 규칙
 

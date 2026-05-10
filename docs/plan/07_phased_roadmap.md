@@ -151,6 +151,27 @@ V1까지의 단계. 각 Phase는 끝났을 때 "지금 시연 가능한 것"이 
 
 **예상 기간**: 2주.
 
+## Phase 8 — Editor Animation Tab (post-V1)
+
+**목표**: editor 안에서 motion / expression / emotion 매핑을 GUI 로 편집. baked zip 의 schemaVersion v1 → v2 로 bump 하여 Geny 가 자동 적용.
+
+**스코프**:
+- Editor 헤더 [Edit | Animation] 탭 스위처
+- Motion / expression preview (▶ 버튼 → 캔버스에서 즉시 재생)
+- 8 GoEmotions × expression dropdown 매트릭스
+- Display tuning (kScale / shift) 라이브 슬라이더
+- Hit areas → tap motion 매핑 (model 에 정의된 경우)
+- IDB 영구 저장 + buildModelZip 의 animationConfig 출력
+- Geny 측 install endpoint 가 schemaVersion 2 메타 적용
+
+**완료 조건**: ellen_joe / hiyori 같은 puppet 을 editor 에서 매핑 → "send to Geny" → Geny 의 model_registry 에 정확히 반영된 상태로 install. 단독 사용도 동일하게 작동.
+
+**예상 기간**: 2~3 주.
+
+자세한 설계 / sub-sprint 분할 / interface contract 는 [09_editor_animation_tab](09_editor_animation_tab.md).
+
+**v0.3.0** (minor — 신규 기능).
+
 ## V1 마일스톤 — 합산
 
 총 ~17주 (Phase 0~7). 1인 hobby 작업 가정. Phase 1이 두 런타임 + 업로드로 4주로 늘었지만 Phase 2는 분해 핵심으로 좁혀져 2주. 매주의 시간 투자가 들쑥날쑥할 수 있으니 달력상 더 길어질 수 있음.
