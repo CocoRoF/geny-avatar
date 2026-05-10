@@ -1,6 +1,7 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
+import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ReferencesPanel } from "@/components/ReferencesPanel";
@@ -24,10 +25,28 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
 
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const { toggleLayer, bulkSetLayerVisibility, applyVariant, playAnimation, reset, undo, redo } =
     usePuppetMutations(adapter);
   useEditorShortcuts({ undo, redo, reset });
+
+  // `?` key toggles the help modal — same input-focus guard as the
+  // editor shortcuts hook.
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "?") return;
+      const t = ev.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable) return;
+      }
+      ev.preventDefault();
+      setHelpOpen((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
@@ -90,6 +109,14 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
           >
             ← home
           </a>
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
+            title="단축키 / 워크플로 / 패널 안내 (?)"
+          >
+            ?
+          </button>
         </header>
 
         <PuppetCanvas
@@ -114,6 +141,8 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
           onBulkSet={bulkSetLayerVisibility}
         />
       </aside>
+
+      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>
   );
 }

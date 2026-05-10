@@ -3,6 +3,7 @@
 import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
 import { ExportButton } from "@/components/ExportButton";
+import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ReferencesPanel } from "@/components/ReferencesPanel";
@@ -27,6 +28,11 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [app, setApp] = useState<Application | null>(null);
+  /** Sprint 7.1: discoverability surface. `?` key (Shift+/) toggles
+   *  the modal, `?` button in the header opens it. Lists shortcuts
+   *  + workflow + per-panel intro so a first-timer doesn't need to
+   *  bounce between tabs to figure out what's where. */
+  const [helpOpen, setHelpOpen] = useState(false);
 
   // Load the puppet from IndexedDB on mount.
   useEffect(() => {
@@ -89,6 +95,25 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const { toggleLayer, bulkSetLayerVisibility, applyVariant, playAnimation, reset, undo, redo } =
     usePuppetMutations(adapter);
   useEditorShortcuts({ undo, redo, reset });
+
+  // `?` key toggles help. Same input-focus guard as the existing
+  // editor shortcuts hook — typing into a textarea shouldn't pop
+  // help. Live with the minor duplication rather than threading
+  // help into the shared hook (which has a non-overlapping API).
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "?") return;
+      const t = ev.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable) return;
+      }
+      ev.preventDefault();
+      setHelpOpen((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
   const layers = useEditorStore(selectLayers);
@@ -151,6 +176,14 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           >
             ← library
           </a>
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
+            title="단축키 / 워크플로 / 패널 안내 (?)"
+          >
+            ?
+          </button>
         </header>
 
         <PuppetCanvas
@@ -182,6 +215,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           onBulkSet={bulkSetLayerVisibility}
         />
       </aside>
+
+      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>
   );
 }
