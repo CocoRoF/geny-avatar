@@ -1,6 +1,6 @@
 "use client";
 
-import type { ToolDef, ToolId } from "@/lib/avatar/decompose/tools";
+import type { StudioMode, ToolDef, ToolId } from "@/lib/avatar/decompose/tools";
 import { TOOLS } from "@/lib/avatar/decompose/tools";
 
 /**
@@ -16,12 +16,14 @@ import { TOOLS } from "@/lib/avatar/decompose/tools";
 export interface ToolboxProps {
   selectedTool: ToolId;
   onSelectTool: (id: ToolId) => void;
-  studioMode: "trim" | "split";
+  studioMode: StudioMode;
   className?: string;
 }
 
 export function Toolbox({ selectedTool, onSelectTool, studioMode, className = "" }: ToolboxProps) {
-  const visible = TOOLS.filter((t) => !t.splitOnly || studioMode === "split");
+  const visible = TOOLS.filter(
+    (t) => (!t.splitOnly || studioMode === "split") && (!t.paintOnly || studioMode === "paint"),
+  );
   return (
     <div
       className={`flex w-12 shrink-0 flex-col gap-0.5 border-r border-[var(--color-border)] bg-[var(--color-panel)] py-2 ${className}`}
@@ -154,6 +156,23 @@ function ToolIcon({ id, className = "" }: { id: ToolId; className?: string }) {
           strokeLinejoin="round"
         >
           <path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M15 9h0M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5" />
+        </svg>
+      );
+    case "eyedropper":
+      return (
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className={className}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 22l1-1h3l9-9" />
+          <path d="M5.82 17.18l-2.65 2.66M14.5 7.5l3-3a2.12 2.12 0 0 1 3 3l-3 3" />
+          <path d="M15.5 8.5l3 3-3 3-3-3z" />
         </svg>
       );
     case "zoom":

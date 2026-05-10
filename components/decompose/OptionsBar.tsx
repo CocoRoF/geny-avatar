@@ -1,6 +1,11 @@
 "use client";
 
-import { type BrushOp, brushOpLabels, type ToolId } from "@/lib/avatar/decompose/tools";
+import {
+  type BrushOp,
+  brushOpLabels,
+  type StudioMode,
+  type ToolId,
+} from "@/lib/avatar/decompose/tools";
 
 /**
  * Top context-sensitive options bar — Photoshop-style.
@@ -15,7 +20,7 @@ import { type BrushOp, brushOpLabels, type ToolId } from "@/lib/avatar/decompose
  */
 export interface OptionsBarProps {
   selectedTool: ToolId;
-  studioMode: "trim" | "split";
+  studioMode: StudioMode;
 
   // Brush / Eraser / Bucket all share size + op
   brushSize: number;
@@ -39,6 +44,12 @@ export interface OptionsBarProps {
   onZoomOut: () => void;
   onFit: () => void;
   onActualSize: () => void;
+
+  // Foreground colour for the Brush / Bucket / Wand-fill in paint
+  // mode. Ignored in trim / split modes (where brush strokes are
+  // always opaque white into the mask). Hex string e.g. "#ff0000".
+  foregroundColor: string;
+  onForegroundColor: (hex: string) => void;
 }
 
 export function OptionsBar(props: OptionsBarProps) {
@@ -60,10 +71,34 @@ export function OptionsBar(props: OptionsBarProps) {
     onZoomOut,
     onFit,
     onActualSize,
+    foregroundColor,
+    onForegroundColor,
   } = props;
 
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px]">
+      {/* Foreground colour swatch — only meaningful in paint mode.
+          Click to open the native colour picker. */}
+      {studioMode === "paint" && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[var(--color-fg-dim)]">Colour:</span>
+          <label
+            className="block h-5 w-5 cursor-pointer rounded border border-[var(--color-border)]"
+            style={{ background: foregroundColor }}
+            title="전경색 — 클릭해서 변경 (paint 모드의 브러시 / 버킷 / 셀렉션 채우기 색)"
+          >
+            <input
+              type="color"
+              value={foregroundColor}
+              onChange={(e) => onForegroundColor(e.target.value)}
+              className="sr-only"
+            />
+          </label>
+          <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
+            {foregroundColor.toUpperCase()}
+          </span>
+        </div>
+      )}
       {/* Tool-specific options */}
       <div className="flex min-w-0 flex-1 items-center gap-3">
         {(selectedTool === "brush" || selectedTool === "eraser") && (
@@ -88,6 +123,9 @@ export function OptionsBar(props: OptionsBarProps) {
           />
         )}
         {selectedTool === "wand" && <WandOptions tolerance={tolerance} onTolerance={onTolerance} />}
+        {selectedTool === "eyedropper" && (
+          <span className="text-[var(--color-fg-dim)]">Click a pixel to set foreground color</span>
+        )}
         {selectedTool === "move" && (
           <span className="text-[var(--color-fg-dim)]">
             Drag to pan · Wheel to zoom · Hold Space for Hand
@@ -179,7 +217,7 @@ function BrushOptions({
   onBrushHardness,
 }: {
   tool: "brush" | "eraser";
-  studioMode: "trim" | "split";
+  studioMode: StudioMode;
   brushSize: number;
   onBrushSize: (n: number) => void;
   brushOp: BrushOp;
@@ -260,7 +298,7 @@ function BucketOptions({
   brushOp,
   onBrushOp,
 }: {
-  studioMode: "trim" | "split";
+  studioMode: StudioMode;
   tolerance: number;
   onTolerance: (n: number) => void;
   brushOp: BrushOp;

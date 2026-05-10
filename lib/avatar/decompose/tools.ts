@@ -24,7 +24,16 @@
  * "Add / Remove" depending on `studioMode`.
  */
 
-export type ToolId = "move" | "brush" | "eraser" | "bucket" | "wand" | "zoom" | "hand" | "sam";
+export type ToolId =
+  | "move"
+  | "brush"
+  | "eraser"
+  | "bucket"
+  | "wand"
+  | "eyedropper"
+  | "zoom"
+  | "hand"
+  | "sam";
 
 export interface ToolDef {
   id: ToolId;
@@ -36,6 +45,9 @@ export interface ToolDef {
   tooltip: string;
   /** When true, this tool is available only in split mode (e.g. SAM). */
   splitOnly?: boolean;
+  /** When true, this tool is available only in paint mode (e.g.
+   *  Eyedropper has no meaning when painting masks). */
+  paintOnly?: boolean;
 }
 
 export const TOOLS: readonly ToolDef[] = [
@@ -70,6 +82,13 @@ export const TOOLS: readonly ToolDef[] = [
     tooltip: "매직 셀렉터 — 비슷한 알파를 가진 영역을 선택",
   },
   {
+    id: "eyedropper",
+    label: "Eyedropper",
+    shortcut: "I",
+    tooltip: "픽셀 색을 추출해서 전경색으로 설정 (paint 모드)",
+    paintOnly: true,
+  },
+  {
     id: "zoom",
     label: "Zoom",
     shortcut: "Z",
@@ -100,16 +119,28 @@ export function toolForShortcut(key: string): ToolId | null {
 /** Operation a brush-like tool performs on a mask canvas. */
 export type BrushOp = "add" | "remove";
 
+/** Studio mode the editor is currently in. Each mode has its own
+ *  meaning for brush "add" / "remove" semantics — trim hides /
+ *  reveals pixels via a single mask, split adds / removes pixels
+ *  to / from named region masks, and paint actually paints colour
+ *  pixels onto the layer texture (an eraser in paint mode wipes
+ *  pixels to transparent rather than touching any mask). */
+export type StudioMode = "trim" | "split" | "paint";
+
 /** Returns the user-visible mode-aware label pair for the brush op
  *  selector — the OptionsBar shows this beside the active brush /
  *  eraser / bucket so the user knows what the stroke will do. */
-export function brushOpLabels(studioMode: "trim" | "split"): {
+export function brushOpLabels(studioMode: StudioMode): {
   add: string;
   remove: string;
 } {
   if (studioMode === "trim") {
     // Trim mode masks hide pixels.
     return { add: "Hide", remove: "Reveal" };
+  }
+  if (studioMode === "paint") {
+    // Paint mode writes / erases real texture pixels.
+    return { add: "Paint", remove: "Erase" };
   }
   // Split mode masks define region membership.
   return { add: "Add", remove: "Remove" };

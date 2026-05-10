@@ -12,6 +12,7 @@ import { floodFillAlpha, maskToCanvas } from "@/lib/avatar/decompose/floodFill";
 import {
   type BrushOp,
   type SelectionOp,
+  type StudioMode,
   type ToolId,
   toolForShortcut,
 } from "@/lib/avatar/decompose/tools";
@@ -44,14 +45,19 @@ type Props = {
  */
 type BrushMode = "paint" | "erase" | "auto";
 /**
- * Top mode toggle:
- *   - "trim"  — classic single-mask paint/erase (existing behavior).
- *               Saves to `editorStore.layerMasks[layer.id]`.
- *   - "split" — Sprint E.2 multi-region painter. Each named region
- *               has its own binary mask; brush paints into the
- *               selected region. Saves to IDB (`regionMasks`).
+ * Top mode toggle (StudioMode imported from `lib/avatar/decompose/tools`):
+ *   - "trim"  — single-mask paint/erase. Saves to
+ *               `editorStore.layerMasks[layer.id]`.
+ *   - "split" — multi-region painter. Each named region has its own
+ *               binary mask; brush paints into the selected region.
+ *               Saves to IDB (`regionMasks`).
+ *   - "paint" — direct texture editing. Brush / Bucket / Wand-fill
+ *               write coloured pixels onto a clone of the layer's
+ *               current texture; eraser wipes pixels to transparent.
+ *               Saves to `editorStore.layerTextureOverrides[layer.id]`
+ *               so the rest of the editor / GeneratePanel sees the
+ *               new texture as the layer's pristine source.
  */
-type StudioMode = "trim" | "split";
 
 const REGION_COLORS = ["#22c55e", "#f97316", "#ec4899", "#3b82f6", "#eab308", "#a855f7"];
 
@@ -69,11 +75,17 @@ const REGION_COLORS = ["#22c55e", "#f97316", "#ec4899", "#3b82f6", "#eab308", "#
 export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const close = useEditorStore((s) => s.setStudioLayer);
   const setMask = useEditorStore((s) => s.setLayerMask);
+  const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
   const existingMask = useEditorStore((s) => s.layerMasks[layer.id] ?? null);
   const existingTexture = useEditorStore((s) => s.layerTextureOverrides[layer.id] ?? null);
 
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Paint mode's working texture canvas. Cloned from the source on
+   *  first entry into paint mode; brush / bucket / wand-fill write
+   *  coloured pixels into it. On save, this is what becomes the new
+   *  layer texture override. */
+  const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   /** Wrapper that the CSS zoom/pan transform is applied to. Pan +
    *  wheel zoom listeners attach here so the user can scroll past
@@ -115,6 +127,12 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  layers, or applies the selection. */
   const [wandSelection, setWandSelection] = useState<HTMLCanvasElement | null>(null);
   const [wandSelectionArea, setWandSelectionArea] = useState(0);
+  /** Foreground colour for paint-mode strokes / fills. Updated by
+   *  the OptionsBar colour picker and by the Eyedropper tool. */
+  const [foregroundColor, setForegroundColor] = useState("#ffffff");
+  /** Dirty flag for paint mode — distinct from `dirty` (trim) and
+   *  `splitDirty` (split) so the unsaved-changes warning is precise. */
+  const [paintDirty, setPaintDirty] = useState(false);
   /** Map selectedTool back to the legacy paint/erase/auto enum the
    *  SAM bookkeeping effect keys off. Stays in sync automatically
    *  whenever the tool changes. */
@@ -252,6 +270,18 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       mask.height = extracted.canvas.height;
       maskCanvasRef.current = mask;
 
+      // Paint canvas: starts as a clone of the source so brush
+      // strokes paint over the existing texture. Reuses the
+      // already-extracted source bitmap (which already includes
+      // any prior `existingTexture` override).
+      const paint = document.createElement("canvas");
+      paint.width = extracted.canvas.width;
+      paint.height = extracted.canvas.height;
+      const paintCtx = paint.getContext("2d");
+      if (paintCtx) paintCtx.drawImage(extracted.canvas, 0, 0);
+      paintCanvasRef.current = paint;
+      setPaintDirty(false);
+
       if (existingMask) {
         // restore previous mask if any
         const img = new Image();
@@ -360,6 +390,20 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     }
     ctx.clearRect(0, 0, preview.width, preview.height);
 
+    if (studioMode === "paint") {
+      // Paint mode: render whatever's on the paint canvas as the
+      // final layer. The mask still applies on top (so users can
+      // hide painted pixels with the trim mask) — but if no mask
+      // is set, the paint canvas is shown as-is.
+      const paint = paintCanvasRef.current;
+      if (paint) {
+        ctx.drawImage(paint, 0, 0, preview.width, preview.height);
+      } else {
+        ctx.drawImage(source, 0, 0, preview.width, preview.height);
+      }
+      return;
+    }
+
     if (studioMode === "split") {
       // Split mode: show source as-is, then overlay each region's
       // mask painted in its assigned color (semi-transparent so the
@@ -447,19 +491,29 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     redraw();
   }, [ready, redraw]);
 
+  // ----- dirty flag dispatch -----
+  /** Set the right dirty flag based on the current studio mode.
+   *  Defined before the paint / bucket / wand callbacks that use it
+   *  to keep the dep arrays correct. */
+  const markDirty = useCallback(() => {
+    if (studioMode === "split") setSplitDirty(true);
+    else if (studioMode === "paint") setPaintDirty(true);
+    else setDirty(true);
+  }, [studioMode]);
+
   // ----- target-canvas selector + brush stroke -----
-  /** Pick the mask canvas the active tool's stroke / fill should
-   *  land on. Trim mode → the single layer mask; split mode → the
-   *  focused region (when solo is on) or the selected region. The
-   *  focus override is enforced here so a stroke in solo mode can
-   *  never bleed onto a different region's canvas — the user's
-   *  selection state still tracks which row in the sidebar is
-   *  highlighted, but the brush honours focus. */
+  /** Pick the canvas the active tool's stroke / fill should land on.
+   *    trim  → the single layer mask
+   *    split → the focused region (solo) or the selected region
+   *    paint → the working texture canvas
+   *  Focus override is enforced for split mode so a stroke in solo
+   *  can never bleed onto a different region's canvas. */
   const activeTargetCanvas = useCallback((): HTMLCanvasElement | null => {
     if (studioMode === "split") {
       const id = focusRegionId ?? selectedRegionId;
       return (id ? regionCanvasMap.current.get(id) : null) ?? null;
     }
+    if (studioMode === "paint") return paintCanvasRef.current;
     return maskCanvasRef.current;
   }, [studioMode, selectedRegionId, focusRegionId]);
 
@@ -470,11 +524,20 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   // function never closes over component state.
 
   /**
-   * Single brush dab at (sx, sy) in source-pixel space. Optionally
-   * uses a soft-edge radial gradient when hardness < 100%. Hardness
-   * is the inner-radius percentage of the brush — at 100% the dab
-   * is a hard disc; at 0% the gradient fades from full strength at
-   * the centre to zero at the rim.
+   * Single brush dab at (sx, sy) in source-pixel space. Stroke
+   * colour and composite mode depend on the studio mode:
+   *
+   *   trim / split  — strokes are opaque white into the mask, with
+   *                   composite=source-over for "add" or
+   *                   destination-out for "remove" (eraser).
+   *   paint         — strokes use the foreground colour for "add"
+   *                   (Brush) and destination-out (clear pixels to
+   *                   transparent) for "remove" (Eraser). Bucket /
+   *                   Wand-fill share the same path.
+   *
+   * Hardness % defines the inner solid radius as a fraction of the
+   * brush radius. The remaining annulus blends to alpha 0 via a
+   * radial gradient — same on both modes.
    */
   const applyBrushDab = useCallback(
     (target: HTMLCanvasElement, sx: number, sy: number, op: BrushOp) => {
@@ -484,15 +547,20 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       tctx.save();
       if (clipPathRef.current) tctx.clip(clipPathRef.current);
       tctx.globalCompositeOperation = compositeForOp(op);
+      // Pick the dab colour. In paint mode "add" is the foreground
+      // colour; the "remove" eraser uses destination-out so the
+      // gradient just needs alpha-modulated white.
+      const fillRGB =
+        studioMode === "paint" && op === "add"
+          ? hexToRgb(foregroundColor)
+          : { r: 255, g: 255, b: 255 };
       if (brushHardness >= 100) {
-        tctx.fillStyle = "rgba(255, 255, 255, 1)";
+        tctx.fillStyle = `rgba(${fillRGB.r}, ${fillRGB.g}, ${fillRGB.b}, 1)`;
       } else {
-        // Hardness % defines the inner solid radius as a fraction of
-        // the brush radius. The remaining annulus blends to alpha 0.
         const inner = radius * (brushHardness / 100);
         const grad = tctx.createRadialGradient(sx, sy, inner, sx, sy, radius);
-        grad.addColorStop(0, "rgba(255,255,255,1)");
-        grad.addColorStop(1, "rgba(255,255,255,0)");
+        grad.addColorStop(0, `rgba(${fillRGB.r},${fillRGB.g},${fillRGB.b},1)`);
+        grad.addColorStop(1, `rgba(${fillRGB.r},${fillRGB.g},${fillRGB.b},0)`);
         tctx.fillStyle = grad;
       }
       tctx.beginPath();
@@ -500,7 +568,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       tctx.fill();
       tctx.restore();
     },
-    [brushSize, brushHardness],
+    [brushSize, brushHardness, studioMode, foregroundColor],
   );
 
   // ----- pointer painting -----
@@ -513,11 +581,10 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       if (!target) return;
       const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
       applyBrushDab(target, x, y, effectiveBrushOp());
-      if (studioMode === "split") setSplitDirty(true);
-      else setDirty(true);
+      markDirty();
       redraw();
     },
-    [activeTargetCanvas, applyBrushDab, effectiveBrushOp, redraw, studioMode],
+    [activeTargetCanvas, applyBrushDab, effectiveBrushOp, redraw, markDirty],
   );
 
   // ----- bucket fill -----
@@ -546,14 +613,30 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       if (!tctx) return;
       tctx.save();
       if (clipPathRef.current) tctx.clip(clipPathRef.current);
-      tctx.globalCompositeOperation = compositeForOp(effectiveBrushOp("bucket"));
-      tctx.drawImage(fillCanvas, 0, 0);
+      const op = effectiveBrushOp("bucket");
+      tctx.globalCompositeOperation = compositeForOp(op);
+      // In paint mode "add" tints the fill canvas with the foreground
+      // colour first (the fill canvas is white-on-transparent from
+      // the flood). For trim / split the white is fine.
+      if (studioMode === "paint" && op === "add") {
+        const tinted = tintCanvas(fillCanvas, foregroundColor);
+        tctx.drawImage(tinted, 0, 0);
+      } else {
+        tctx.drawImage(fillCanvas, 0, 0);
+      }
       tctx.restore();
-      if (studioMode === "split") setSplitDirty(true);
-      else setDirty(true);
+      markDirty();
       redraw();
     },
-    [activeTargetCanvas, effectiveBrushOp, redraw, studioMode, tolerance],
+    [
+      activeTargetCanvas,
+      effectiveBrushOp,
+      redraw,
+      studioMode,
+      tolerance,
+      foregroundColor,
+      markDirty,
+    ],
   );
 
   // ----- magic wand selection -----
@@ -609,9 +692,9 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     [tolerance, wandSelection],
   );
 
-  /** Apply the wand selection to the active mask canvas with the
-   *  current brush op, then optionally clear the selection. The
-   *  Wand panel exposes Add/Remove buttons that call this. */
+  /** Apply the wand selection to the active canvas with the given
+   *  brush op. In paint mode "add" tints the selection with the
+   *  foreground colour; trim / split keep it white-into-mask. */
   const applyWandSelection = useCallback(
     (op: BrushOp, clearAfter: boolean) => {
       if (!wandSelection) return;
@@ -622,17 +705,21 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       tctx.save();
       if (clipPathRef.current) tctx.clip(clipPathRef.current);
       tctx.globalCompositeOperation = compositeForOp(op);
-      tctx.drawImage(wandSelection, 0, 0);
+      if (studioMode === "paint" && op === "add") {
+        const tinted = tintCanvas(wandSelection, foregroundColor);
+        tctx.drawImage(tinted, 0, 0);
+      } else {
+        tctx.drawImage(wandSelection, 0, 0);
+      }
       tctx.restore();
       if (clearAfter) {
         setWandSelection(null);
         setWandSelectionArea(0);
       }
-      if (studioMode === "split") setSplitDirty(true);
-      else setDirty(true);
+      markDirty();
       redraw();
     },
-    [activeTargetCanvas, redraw, studioMode, wandSelection],
+    [activeTargetCanvas, redraw, studioMode, wandSelection, foregroundColor, markDirty],
   );
 
   /** Sprint 6.2: convert a pointer event in auto mode into a SAM
@@ -658,9 +745,22 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
 
   /** Tool-aware pointer dispatch. The selectedTool decides what the
    *  click does. Space-held overrides any tool to Hand for
-   *  temporary panning, matching Photoshop. */
+   *  temporary panning, matching Photoshop. Right-click drag also
+   *  pans (regardless of tool) — except in SAM mode where right-
+   *  click adds a background point. */
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // Right-click pan (button 2). Always pans except when SAM is
+      // active — SAM uses right-click for background points and we
+      // don't want to break that pre-existing workflow.
+      const isRightClick = e.button === 2;
+      if (isRightClick && selectedTool !== "sam") {
+        e.preventDefault();
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        viewport.onPanPointerDown(e.nativeEvent);
+        return;
+      }
+
       // Hand override (Space-drag pan).
       if (viewport.spaceHeld || selectedTool === "hand") {
         e.preventDefault();
@@ -678,6 +778,22 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           // Click = zoom in around point; Alt+click = zoom out.
           const factor = e.altKey ? 1 / 1.5 : 1.5;
           viewport.zoomAtClient(factor, e.clientX, e.clientY);
+          return;
+        }
+        case "eyedropper": {
+          // Sample the pixel under the cursor + set as foreground.
+          // Reads from the paint canvas in paint mode (so the user
+          // can pick a colour they just laid down) and from the
+          // source elsewhere.
+          const preview = previewRef.current;
+          const source = sourceCanvasRef.current;
+          if (!preview || !source) return;
+          const { x, y } = clientToSourcePixel(e.clientX, e.clientY, preview, source);
+          const sample =
+            studioMode === "paint" && paintCanvasRef.current
+              ? samplePixelHex(paintCanvasRef.current, x, y)
+              : samplePixelHex(source, x, y);
+          if (sample) setForegroundColor(sample);
           return;
         }
         case "bucket":
@@ -1092,10 +1208,27 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     close(null);
   }, [regionEntries, persistedRegions.length, saveRegions, clearRegions, close]);
 
+  /** Bake the paint canvas into a PNG and store as the layer
+   *  texture override. Downstream features (Live2D / Spine
+   *  rendering, Geny export bake) pick this up as the new "source"
+   *  for the layer, so paint changes are visible everywhere the
+   *  layer is rendered. */
+  const onSavePaint = useCallback(async () => {
+    const paint = paintCanvasRef.current;
+    if (!paint) return;
+    const blob = await new Promise<Blob | null>((resolve) =>
+      paint.toBlob((b) => resolve(b), "image/png"),
+    );
+    if (blob) setLayerTextureOverride(layer.id, blob);
+    setPaintDirty(false);
+    close(null);
+  }, [close, layer.id, setLayerTextureOverride]);
+
   const onSave = useCallback(async () => {
     if (studioMode === "split") await onSaveSplit();
+    else if (studioMode === "paint") await onSavePaint();
     else await onSaveTrim();
-  }, [studioMode, onSaveSplit, onSaveTrim]);
+  }, [studioMode, onSaveSplit, onSavePaint, onSaveTrim]);
 
   const onClear = useCallback(() => {
     if (studioMode === "split") {
@@ -1107,6 +1240,20 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       const cctx = c.getContext("2d");
       cctx?.clearRect(0, 0, c.width, c.height);
       setSplitDirty(true);
+      redraw();
+      return;
+    }
+    if (studioMode === "paint") {
+      // Reset the paint canvas back to the source bitmap so the user
+      // can start over without losing the underlying texture.
+      const paint = paintCanvasRef.current;
+      const source = sourceCanvasRef.current;
+      if (!paint || !source) return;
+      const pctx = paint.getContext("2d");
+      if (!pctx) return;
+      pctx.clearRect(0, 0, paint.width, paint.height);
+      pctx.drawImage(source, 0, 0);
+      setPaintDirty(true);
       redraw();
       return;
     }
@@ -1128,7 +1275,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  intent explicit. Save & close is still one click away in the
    *  header for the non-discard path. */
   const requestClose = useCallback(() => {
-    const isDirty = studioMode === "trim" ? dirty : splitDirty;
+    const isDirty =
+      studioMode === "trim" ? dirty : studioMode === "split" ? splitDirty : paintDirty;
     if (!isDirty) {
       close(null);
       return;
@@ -1143,7 +1291,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         "취소 = 계속 편집 ('save & close' 로 저장 후 닫기)",
     );
     if (ok) close(null);
-  }, [studioMode, dirty, splitDirty, close]);
+  }, [studioMode, dirty, splitDirty, paintDirty, close]);
 
   // ── Keyboard shortcuts (Photoshop-style) ──────────────────────────
   // Esc dismisses through requestClose. All other shortcuts go
@@ -1260,7 +1408,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
           <span className="font-mono text-[var(--color-accent)]">decompose · v1</span>
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
-          {(studioMode === "trim" ? dirty : splitDirty) && (
+          {(studioMode === "trim" ? dirty : studioMode === "split" ? splitDirty : paintDirty) && (
             <span className="text-yellow-400">· unsaved</span>
           )}
           {/* Focus chip — only visible in split mode while a region is
@@ -1288,21 +1436,33 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                   ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
                   : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
               }`}
-              title="single mask paint/erase (existing)"
+              title="단일 마스크로 픽셀 숨기기 / 복원"
             >
-              trim
+              Trim
             </button>
             <button
               type="button"
               onClick={() => setStudioMode("split")}
-              className={`rounded-r border px-2 py-0.5 ${
+              className={`border px-2 py-0.5 ${
                 studioMode === "split"
                   ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
                   : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
               }`}
-              title="multi-region named masks (GeneratePanel uses these)"
+              title="여러 region 별 named 마스크 — GeneratePanel 이 사용"
             >
-              split
+              Split
+            </button>
+            <button
+              type="button"
+              onClick={() => setStudioMode("paint")}
+              className={`rounded-r border px-2 py-0.5 ${
+                studioMode === "paint"
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+              }`}
+              title="실제 텍스처 픽셀에 색을 칠하거나 지우기"
+            >
+              Paint
             </button>
           </div>
           <button
@@ -1367,6 +1527,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
               onZoomOut={viewport.zoomOut}
               onFit={viewport.fit}
               onActualSize={viewport.actualSize}
+              foregroundColor={foregroundColor}
+              onForegroundColor={setForegroundColor}
             />
 
             <div className="grid min-h-0 flex-1 grid-cols-[1fr_320px] overflow-hidden">
@@ -1408,11 +1570,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                       onPointerUp={onPointerUp}
                       onPointerCancel={onPointerUp}
                       onContextMenu={(e) => {
-                        // SAM right-click for background points; Wand
-                        // also wants the menu suppressed so subtract /
-                        // intersect modifiers don't trigger it.
-                        if ((studioMode === "split" && mode === "auto") || selectedTool === "wand")
-                          e.preventDefault();
+                        // Always suppress the browser context menu —
+                        // right-click on the canvas is reserved for
+                        // panning (or SAM background points / Wand
+                        // selection modifiers). The user can still
+                        // right-click outside the canvas wrapper if
+                        // they want the OS menu.
+                        e.preventDefault();
                       }}
                       className={`block h-full w-full touch-none border border-[var(--color-border)] ${cursorClassForTool(selectedTool, viewport.spaceHeld, viewport.isPanning)}`}
                       style={
@@ -1495,6 +1659,11 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                   <>
                     <ShortcutsHelp />
                     <TrimHelp />
+                  </>
+                ) : studioMode === "paint" ? (
+                  <>
+                    <ShortcutsHelp />
+                    <PaintHelp />
                   </>
                 ) : (
                   <>
@@ -1767,6 +1936,59 @@ function compositeForOp(op: BrushOp): GlobalCompositeOperation {
   return op === "add" ? "source-over" : "destination-out";
 }
 
+/** Parse "#rrggbb" or "rgb(...)" into an {r,g,b} triple. Falls back
+ *  to white on a parse failure so paint strokes still produce a
+ *  visible mark. */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  if (!hex) return { r: 255, g: 255, b: 255 };
+  let h = hex.trim();
+  if (h.startsWith("#")) h = h.slice(1);
+  if (h.length === 3)
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  if (h.length !== 6) return { r: 255, g: 255, b: 255 };
+  const n = Number.parseInt(h, 16);
+  if (!Number.isFinite(n)) return { r: 255, g: 255, b: 255 };
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+/** Recolour an opaque-white-on-transparent mask canvas with the
+ *  given hex colour while preserving its alpha shape. Used by the
+ *  paint-mode bucket / wand-fill so flood-fill output picks up the
+ *  user's foreground colour. */
+function tintCanvas(maskCanvas: HTMLCanvasElement, hex: string): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = maskCanvas.width;
+  out.height = maskCanvas.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return maskCanvas;
+  ctx.drawImage(maskCanvas, 0, 0);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = hex;
+  ctx.fillRect(0, 0, out.width, out.height);
+  return out;
+}
+
+/** Read the RGB at a source-pixel coordinate. Used by the
+ *  Eyedropper tool to pick a colour off the current canvas. The
+ *  source bitmap is whatever's "behind" the active stroke target —
+ *  in paint mode that's the paintCanvas (the user's working
+ *  texture), elsewhere it's the original layer source. */
+function samplePixelHex(canvas: HTMLCanvasElement, sx: number, sy: number): string | null {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const x = Math.max(0, Math.min(canvas.width - 1, Math.floor(sx)));
+  const y = Math.max(0, Math.min(canvas.height - 1, Math.floor(sy)));
+  const data = ctx.getImageData(x, y, 1, 1).data;
+  // Skip fully-transparent pixels — they'd resolve to "#000000"
+  // which is a misleading sample.
+  if (data[3] === 0) return null;
+  const toHex = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${toHex(data[0])}${toHex(data[1])}${toHex(data[2])}`;
+}
+
 /** Whether the active tool needs the brush-size cursor overlay. */
 function isSizedBrushTool(tool: ToolId): boolean {
   return tool === "brush" || tool === "eraser" || tool === "bucket" || tool === "wand";
@@ -1781,6 +2003,7 @@ function cursorClassForTool(tool: ToolId, spaceHeld: boolean, isPanning: boolean
   if (tool === "zoom") return "cursor-zoom-in";
   if (tool === "move") return "cursor-default";
   if (tool === "sam") return "cursor-crosshair";
+  if (tool === "eyedropper") return "cursor-crosshair";
   // brush / eraser / bucket / wand — overlay handles the visual.
   return "cursor-crosshair";
 }
@@ -1842,7 +2065,7 @@ function WandPanel({
   onDeselect,
 }: {
   area: number;
-  studioMode: "trim" | "split";
+  studioMode: StudioMode;
   onApplyAdd: () => void;
   onApplyRemove: () => void;
   onDeselect: () => void;
@@ -1850,7 +2073,9 @@ function WandPanel({
   const labels =
     studioMode === "trim"
       ? { add: "Hide selected", remove: "Reveal selected" }
-      : { add: "Add to region", remove: "Remove from region" };
+      : studioMode === "paint"
+        ? { add: "Fill selected", remove: "Erase selected" }
+        : { add: "Add to region", remove: "Remove from region" };
   return (
     <div className="mb-3 rounded border border-blue-500/40 bg-blue-500/5 p-2">
       <div className="mb-1.5 flex items-center justify-between">
@@ -1896,10 +2121,12 @@ function ShortcutsHelp() {
     ["B / E", "Brush / Eraser"],
     ["G", "Bucket fill"],
     ["W", "Magic wand"],
+    ["I", "Eyedropper"],
     ["Z / H", "Zoom / Hand"],
     ["[ / ]", "Brush size −/+"],
     ["X", "Swap mode"],
     ["Space", "Pan (hold)"],
+    ["RMB-drag", "Pan (any tool)"],
     ["⌘0 / ⌘1", "Fit / 100%"],
     ["Esc", "Deselect / close"],
   ];
@@ -1936,6 +2163,31 @@ function TrimHelp() {
         </li>
         <li>상단 alpha 슬라이더로 feathered edge 제거</li>
         <li>save 시 마스크 + threshold 모두 PNG 로 baked</li>
+      </ul>
+    </div>
+  );
+}
+
+function PaintHelp() {
+  return (
+    <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
+      <div className="mb-1 uppercase tracking-widest">How (Paint)</div>
+      <ul className="list-disc list-inside space-y-1">
+        <li>실제 텍스처에 색을 칠합니다 — 마스크가 아니라 픽셀 자체를 변경</li>
+        <li>
+          <span className="text-[var(--color-fg)]">B</span> 브러시(전경색),{" "}
+          <span className="text-[var(--color-fg)]">E</span> 지우개(투명),{" "}
+          <span className="text-[var(--color-fg)]">G</span> 버킷,{" "}
+          <span className="text-[var(--color-fg)]">W</span> 매직 셀렉터
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">I</span> 스포이드 — 클릭한 픽셀 색을 전경색으로
+        </li>
+        <li>
+          상단 컬러 스와치 클릭 → 색상 선택. <span className="text-[var(--color-fg)]">X</span> 로
+          paint ↔ erase 토글
+        </li>
+        <li>save 시 layer texture override 로 저장 — 모든 렌더 경로가 새 텍스처를 사용</li>
       </ul>
     </div>
   );
