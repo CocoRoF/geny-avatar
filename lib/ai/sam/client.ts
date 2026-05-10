@@ -8,6 +8,7 @@
  * promise is pending.
  */
 
+import { apiUrl } from "@/lib/basePath";
 import type { SamCandidate, SamPoint, SamResponse } from "./types";
 
 type SubmitInput = {
@@ -28,7 +29,7 @@ export async function submitSam(input: SubmitInput): Promise<SamResponse> {
   form.set("points", JSON.stringify(input.points));
   if (input.modelId) form.set("modelId", input.modelId);
 
-  const response = await fetch("/api/ai/sam", { method: "POST", body: form });
+  const response = await fetch(apiUrl("/api/ai/sam"), { method: "POST", body: form });
   const text = await response.text();
   let parsed: RouteResponse | { error?: string };
   try {

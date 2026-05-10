@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AttributionFooter } from "@/components/AttributionFooter";
@@ -190,7 +191,7 @@ export default function Home() {
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {BUILTIN_SAMPLES.map((s) => (
-              <a
+              <Link
                 key={s.key}
                 href={`/edit/builtin/${s.key}`}
                 className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-4 hover:border-[var(--color-accent)]"
@@ -207,7 +208,7 @@ export default function Home() {
                 </div>
                 <div className="mb-1 text-base font-medium">{s.name}</div>
                 <p className="text-sm leading-relaxed text-[var(--color-fg-dim)]">{s.blurb}</p>
-              </a>
+              </Link>
             ))}
           </div>
         </section>
@@ -277,7 +278,7 @@ function LibraryCard({
 }) {
   return (
     <li className="flex flex-col rounded border border-[var(--color-border)] bg-[var(--color-panel)]">
-      <a
+      <Link
         href={`/edit/${puppet.id}`}
         className="flex flex-1 flex-col p-4 hover:bg-[var(--color-bg)]"
       >
@@ -300,7 +301,7 @@ function LibraryCard({
         <div className="mt-1 text-xs text-[var(--color-fg-dim)]">
           {formatRelative(puppet.updatedAt)}
         </div>
-      </a>
+      </Link>
       <div className="flex shrink-0 items-center gap-2 border-t border-[var(--color-border)] px-3 py-1.5 text-xs">
         <span className="text-[var(--color-fg-dim)]">origin:</span>
         <select

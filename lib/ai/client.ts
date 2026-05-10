@@ -1,5 +1,7 @@
 "use client";
 
+import { apiUrl } from "@/lib/basePath";
+
 /**
  * Client-side helpers for the AI generate flow.
  *
@@ -34,7 +36,7 @@ export type ProviderAvailability = {
 };
 
 export async function fetchProviders(): Promise<ProviderAvailability[]> {
-  const r = await fetch("/api/ai/providers");
+  const r = await fetch(apiUrl("/api/ai/providers"));
   if (!r.ok) throw new Error(`/api/ai/providers ${r.status}`);
   const data = (await r.json()) as { providers: ProviderAvailability[] };
   return data.providers;
@@ -84,7 +86,7 @@ export async function refinePrompt(input: RefinePromptInput): Promise<RefineProm
     form.append("referenceImage", b, `ref-${idx}.png`);
   });
 
-  const r = await fetch("/api/ai/refine-prompt", {
+  const r = await fetch(apiUrl("/api/ai/refine-prompt"), {
     method: "POST",
     body: form,
   });
@@ -691,7 +693,7 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
     });
   }
 
-  const submit = await fetch("/api/ai/generate", { method: "POST", body: form });
+  const submit = await fetch(apiUrl("/api/ai/generate"), { method: "POST", body: form });
   if (!submit.ok) {
     const body = await safeJson(submit);
     throw new Error(`generate ${submit.status}: ${body?.error ?? submit.statusText}`);
@@ -704,13 +706,13 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
 
   while (Date.now() - start < timeoutMs) {
     await delay(intervalMs);
-    const r = await fetch(`/api/ai/status/${encodeURIComponent(jobId)}`);
+    const r = await fetch(apiUrl(`/api/ai/status/${encodeURIComponent(jobId)}`));
     if (!r.ok) {
       throw new Error(`status ${r.status}`);
     }
     const status = (await r.json()) as AIJobStatus;
     if (status.kind === "succeeded") {
-      const result = await fetch(`/api/ai/result/${encodeURIComponent(jobId)}`);
+      const result = await fetch(apiUrl(`/api/ai/result/${encodeURIComponent(jobId)}`));
       if (!result.ok) throw new Error(`result ${result.status}`);
       return await result.blob();
     }

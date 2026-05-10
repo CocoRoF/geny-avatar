@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
@@ -58,9 +59,9 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
     return (
       <main className="flex h-full items-center justify-center bg-[var(--color-bg)] text-sm text-[var(--color-fg-dim)]">
         unknown built-in sample: {key}
-        <a href="/" className="ml-3 text-[var(--color-accent)] underline">
+        <Link href="/" className="ml-3 text-[var(--color-accent)] underline">
           home
-        </a>
+        </Link>
       </main>
     );
   }
@@ -104,12 +105,12 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
           >
             reset
           </button>
-          <a
+          <Link
             href="/"
             className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
           >
             ← home
-          </a>
+          </Link>
           <button
             type="button"
             onClick={() => setHelpOpen(true)}

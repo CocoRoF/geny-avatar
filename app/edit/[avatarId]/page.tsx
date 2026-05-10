@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
 import { ExportButton } from "@/components/ExportButton";
@@ -171,12 +172,12 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           <span className="ml-3">
             <ExportButton puppetId={puppetId} adapter={adapter} />
           </span>
-          <a
+          <Link
             href="/"
             className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
           >
             ← library
-          </a>
+          </Link>
           <button
             type="button"
             onClick={() => setHelpOpen(true)}
