@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
-import { buildExportZip } from "@/lib/export/buildBundle";
-import { buildModelZip } from "@/lib/export/buildModelZip";
 import type { PuppetId } from "@/lib/persistence/db";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
+
+// 7.6 perf: defer-load fflate + the zip builders until the user actually
+// clicks save / export. The builders pull fflate (~28KB) and a chunk of
+// our own bake/atlas helpers — none of which is needed for first paint.
 
 type Props = {
   /** IDB id of the puppet being edited. `null` for builtin samples or
@@ -101,6 +103,7 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     setSavingMode("save");
     setError(null);
     try {
+      const { buildExportZip } = await import("@/lib/export/buildBundle");
       const result = await buildExportZip({
         puppetId,
         layers,
@@ -125,6 +128,7 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     setSavingMode("model");
     setError(null);
     try {
+      const { buildModelZip } = await import("@/lib/export/buildModelZip");
       const result = await buildModelZip({
         puppetId,
         adapter,

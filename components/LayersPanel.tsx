@@ -1,12 +1,26 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo } from "react";
-import { DecomposeStudio } from "@/components/DecomposeStudio";
-import { GeneratePanel } from "@/components/GeneratePanel";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
 import { useLayerThumbnail } from "@/lib/avatar/useLayerThumbnail";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
+
+// 7.6 perf: heavy modal bodies (DecomposeStudio ~1.4k LOC + GeneratePanel
+// ~2.6k LOC) are conditionally rendered, but a static import still pulls
+// them into the editor's first paint chunk. Splitting these out drops
+// the initial JS by ~120KB on /edit/[avatarId]. ssr:false is safe — both
+// modals already gate behind a `studioLayer` / `generateLayer` selection
+// that only resolves on the client after the puppet hydrates.
+const DecomposeStudio = dynamic(
+  () => import("@/components/DecomposeStudio").then((m) => m.DecomposeStudio),
+  { ssr: false },
+);
+const GeneratePanel = dynamic(
+  () => import("@/components/GeneratePanel").then((m) => m.GeneratePanel),
+  { ssr: false },
+);
 
 type Props = {
   /** Adapter held by the parent page. Used to read texture page bitmaps
