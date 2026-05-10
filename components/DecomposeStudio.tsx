@@ -149,7 +149,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setError(null);
     setDirty(false);
     if (!adapter || !layer.texture) {
-      setError("layer has no texture region");
+      setError("이 레이어에는 텍스처 영역이 없습니다");
       return;
     }
 
@@ -162,7 +162,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       });
       if (cancelled) return;
       if (!extracted) {
-        setError("region rect is empty / unrenderable");
+        setError("영역이 비어있거나 렌더링할 수 없습니다");
         return;
       }
       sourceCanvasRef.current = extracted.canvas;
@@ -557,18 +557,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         // popup when there's no component to detect (the empty
         // regions list itself is feedback enough).
         if (!opts?.silent && typeof window !== "undefined") {
-          window.alert("no silhouette components detected on this layer");
+          window.alert("이 레이어에서 silhouette 컴포넌트를 검출하지 못했습니다");
         }
         return;
       }
       let action: "replace" | "add" = "replace";
       if (regionEntries.length > 0 && typeof window !== "undefined") {
         const ok = window.confirm(
-          `Replace the ${regionEntries.length} existing region${
-            regionEntries.length === 1 ? "" : "s"
-          } with ${detected.length} auto-detected component${
-            detected.length === 1 ? "" : "s"
-          }? (Cancel = append instead.)`,
+          `기존 region ${regionEntries.length}개를 자동 검출된 component ${detected.length}개로 교체하시겠습니까?\n` +
+            `확인 = 교체 · 취소 = 기존 region 뒤에 추가`,
         );
         action = ok ? "replace" : "add";
       }
@@ -608,9 +605,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     if (regionEntries.length === 0) return;
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        `Delete all ${regionEntries.length} region${
-          regionEntries.length === 1 ? "" : "s"
-        }? Painted strokes and SAM masks will be lost.`,
+        `region ${regionEntries.length}개를 모두 삭제하시겠습니까? paint 한 stroke 와 SAM mask 가 모두 사라집니다.`,
       );
       if (!ok) return;
     }
@@ -816,9 +811,9 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       return;
     }
     const ok = window.confirm(
-      "You have unsaved changes — painted strokes, regions, or SAM masks haven't been saved.\n\n" +
-        "Click OK to discard and close.\n" +
-        "Click Cancel to keep editing (then use 'save & close' to keep your work).",
+      "저장되지 않은 변경사항이 있습니다 — paint stroke, region, SAM mask 가 아직 저장되지 않았습니다.\n\n" +
+        "확인 = 변경사항 버리고 닫기\n" +
+        "취소 = 계속 편집 ('save & close' 로 저장 후 닫기)",
     );
     if (ok) close(null);
   }, [studioMode, dirty, splitDirty, close]);
@@ -1180,7 +1175,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                               onClick={() => {
                                 if (typeof window !== "undefined") {
                                   const ok = window.confirm(
-                                    `Delete region${r.name ? ` "${r.name}"` : ""}? Painted strokes / SAM masks for this region will be lost.`,
+                                    `region${r.name ? ` "${r.name}"` : ""} 을 삭제하시겠습니까? 이 region 의 paint stroke / SAM mask 가 사라집니다.`,
                                   );
                                   if (!ok) return;
                                 }

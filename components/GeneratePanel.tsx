@@ -271,7 +271,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setReady(false);
     setError(null);
     if (!adapter || !layer.texture) {
-      setError("layer has no texture region");
+      setError("이 레이어에는 텍스처 영역이 없습니다");
       return;
     }
 
@@ -283,7 +283,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       });
       if (cancelled) return;
       if (!aiExtracted) {
-        setError("region rect is empty / unrenderable");
+        setError("영역이 비어있거나 렌더링할 수 없습니다");
         return;
       }
       aiSourceCanvasRef.current = aiExtracted.canvas;
@@ -585,7 +585,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     ) {
       if (typeof window !== "undefined") {
         window.alert(
-          "Generation is in progress — please wait or use 'reset · keep generating' to discard the run before closing.",
+          "생성이 진행 중입니다. 완료될 때까지 기다리거나 'reset · keep generating' 으로 진행 중인 작업을 취소한 후 닫아주세요.",
         );
       }
       return;
@@ -595,9 +595,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     if (hasUnappliedComposite || hasUnappliedRegion) {
       if (typeof window !== "undefined") {
         const ok = window.confirm(
-          "You have an unapplied generated result.\n\n" +
-            "Click OK to discard and close.\n" +
-            "Click Cancel to keep editing (use 'apply to atlas' to keep the result).",
+          "적용되지 않은 생성 결과가 있습니다.\n\n" +
+            "확인 = 결과를 버리고 닫기\n" +
+            "취소 = 계속 편집 ('apply to atlas' 로 결과를 적용한 후 닫기)",
         );
         if (!ok) return;
       }
@@ -1333,7 +1333,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     if (!existingTexture) return;
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        "Clear the applied AI texture for this layer? The atlas will revert to its original content. (The mask, if any, stays.)",
+        "이 레이어에 적용된 AI 텍스처를 모두 지우시겠습니까? atlas 가 원본 상태로 복귀합니다. (마스크는 유지)",
       );
       if (!ok) return;
     }
@@ -1377,7 +1377,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       const label = (c.name ?? componentLabels[componentSignature(c.bbox)] ?? "").trim();
       const display = label || `region ${focusedRegionIdx + 1}`;
       const ok = window.confirm(
-        `Revert region "${display}" to its original atlas content? Other regions' edits stay applied.`,
+        `region "${display}" 만 원본 atlas 내용으로 되돌리시겠습니까? 다른 region 의 편집은 유지됩니다.`,
       );
       if (!ok) return;
     }
@@ -1631,7 +1631,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               {error ? (
                 <div className="text-sm text-red-400">{error}</div>
               ) : !ready ? (
-                <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
+                <div className="text-sm text-[var(--color-fg-dim)]">영역 불러오는 중…</div>
               ) : (
                 <div className="relative inline-flex max-h-full max-w-full">
                   <canvas
@@ -1671,18 +1671,18 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 <>
                   {focusedRegionState?.status === "idle" && (
                     <div className="text-sm text-[var(--color-fg-dim)]">
-                      type a prompt and generate to see output
+                      프롬프트를 입력하고 generate 하면 결과가 표시됩니다
                     </div>
                   )}
                   {focusedRegionState?.status === "running" && (
                     <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
-                      <span>generating this region · provider call in flight</span>
-                      <span className="text-xs">OpenAI ~10–30s · don't dismiss</span>
+                      <span>이 region 생성 중 · provider 호출 중</span>
+                      <span className="text-xs">OpenAI ~10–30초 · 닫지 마세요</span>
                     </div>
                   )}
                   {focusedRegionState?.status === "failed" && (
                     <div className="max-w-md text-sm text-red-400">
-                      <div className="mb-2 font-medium">failed</div>
+                      <div className="mb-2 font-medium">실패</div>
                       <div className="text-xs">{focusedRegionState.failedReason}</div>
                     </div>
                   )}
@@ -1696,22 +1696,24 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
               ) : (
                 <>
                   {phase.kind === "idle" && (
-                    <div className="text-sm text-[var(--color-fg-dim)]">generate to see output</div>
+                    <div className="text-sm text-[var(--color-fg-dim)]">
+                      generate 하면 결과가 표시됩니다
+                    </div>
                   )}
                   {phase.kind === "submitting" && (
-                    <div className="text-sm text-[var(--color-fg-dim)]">submitting…</div>
+                    <div className="text-sm text-[var(--color-fg-dim)]">제출 중…</div>
                   )}
                   {phase.kind === "running" && (
                     <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
-                      <span>generating · provider call in flight</span>
+                      <span>생성 중 · provider 호출 중</span>
                       <span className="text-xs">
-                        Gemini ~5–15s · OpenAI ~10–30s · don't dismiss
+                        Gemini ~5–15초 · OpenAI ~10–30초 · 닫지 마세요
                       </span>
                     </div>
                   )}
                   {phase.kind === "failed" && (
                     <div className="max-w-md text-sm text-red-400">
-                      <div className="mb-2 font-medium">failed</div>
+                      <div className="mb-2 font-medium">실패</div>
                       <div className="text-xs">{phase.reason}</div>
                       <div className="mt-3 flex gap-2">
                         <button
@@ -2101,8 +2103,8 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                     onChange={(e) => setFocusedPromptValue(e.target.value)}
                     placeholder={
                       isFocusedMulti
-                        ? `describe what should fill this region — e.g. 'navy pleated skirt with white lace hem'`
-                        : "describe the new texture — e.g. 'red plaid skirt, soft cotton fabric'"
+                        ? `이 region 을 어떻게 채울지 설명 — 예: '네이비 플리츠 스커트, 흰색 레이스 단'`
+                        : "새 텍스처 설명 — 예: '빨간 체크 스커트, 부드러운 코튼 재질'"
                     }
                     className="h-28 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
                   />
@@ -2125,7 +2127,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                   <textarea
                     value={negativePrompt}
                     onChange={(e) => setNegativePrompt(e.target.value)}
-                    placeholder="things to avoid"
+                    placeholder="피하고 싶은 요소"
                     className="h-16 w-full resize-none rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
                   />
                 </div>

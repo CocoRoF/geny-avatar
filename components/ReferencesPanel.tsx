@@ -70,7 +70,7 @@ export function ReferencesPanel({ puppetKey }: Props) {
     try {
       for (const file of files) {
         if (!file.type.startsWith("image/")) {
-          setError(`${file.name} is not an image (${file.type || "no MIME"})`);
+          setError(`${file.name} 은(는) 이미지 파일이 아닙니다 (${file.type || "MIME 없음"})`);
           continue;
         }
         const id = await upload(file);
