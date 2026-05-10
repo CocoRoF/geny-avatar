@@ -44,8 +44,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 # ── Stage 3: runner ──────────────────────────────────────────────────
-# Minimal image: just Node 22 + the standalone bundle. Runs as a non-
-# root user. Listens on PORT (default 3000) on all interfaces.
+# Minimal image: just Node 22 + the standalone bundle. Listens on PORT
+# (default 3000) on all interfaces.
 #
 # Why Node 22 and not 20: Pixi.js v8 reads `globalThis.navigator` at
 # module init for feature detection. `navigator` was added to Node's
@@ -53,15 +53,23 @@ RUN pnpm build
 # any page that pulls Pixi (e.g. /poc/spine) crashes with
 # "ReferenceError: navigator is not defined". Node 22 LTS is the
 # minimum that ships globalThis.navigator out of the box.
+#
+# Why we run as root and not nextjs:1001: The /api/send-to-geny route
+# writes baked zips to a docker named volume mounted at /exports.
+# Docker creates fresh named volumes with root:root ownership, so a
+# UID-1001 process can't write into them; the resulting EACCES blocks
+# the entire integration. Adding an init container or su-exec
+# entrypoint just to chown one directory is more moving parts than
+# it's worth for a single-tenant hobby deployment, so we accept the
+# small security trade-off and run as root. The container exposes no
+# shell or arbitrary-input surface, so blast radius is minimal.
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001 -G nodejs
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-USER nextjs
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
