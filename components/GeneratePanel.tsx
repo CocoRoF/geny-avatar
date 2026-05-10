@@ -81,6 +81,13 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
   /** Source we display in the panel: post-gen, *post-mask*. Matches
    *  what the live atlas renders. */
   const previewSourceRef = useRef<HTMLCanvasElement | null>(null);
+  /** Pristine source — extracted with NO texture override applied.
+   *  Used by per-region revert: when the user wants to wipe just
+   *  one region's edits back to the original atlas content (not
+   *  the whole layer like the existing "revert texture" does), we
+   *  isolate that region's silhouette out of this canvas and
+   *  swap it into regionStates. */
+  const originalSourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -280,6 +287,21 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         return;
       }
       aiSourceCanvasRef.current = aiExtracted.canvas;
+
+      // Pristine source for per-region revert. Pass `texture: null`
+      // explicitly (no override applied) so the extracted canvas
+      // shows whatever the atlas would render with all AI textures
+      // wiped. Falls back to aiSource when there's no existing
+      // texture override (the two are identical anyway).
+      if (existingTexture) {
+        const originalExtracted = await extractCurrentLayerCanvas(adapter, layer, {
+          texture: null,
+        });
+        if (cancelled) return;
+        originalSourceCanvasRef.current = originalExtracted?.canvas ?? aiExtracted.canvas;
+      } else {
+        originalSourceCanvasRef.current = aiExtracted.canvas;
+      }
 
       const previewExtracted = await extractCurrentLayerCanvas(adapter, layer, {
         texture: existingTexture,
@@ -541,16 +563,58 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     if (p) setModelId(p.capabilities.defaultModelId);
   }, [providerId, providers]);
 
-  // Esc closes (but not while running, to avoid losing in-flight job)
+  /** G/F-style close guard. Three failure modes a stray click can
+   *  hit:
+   *    1. Generation in flight — closing drops the API call's
+   *       result on the floor (the cost was already paid). Reject
+   *       the close outright with an alert; the user can hit
+   *       "reset · keep generating" if they actually want to
+   *       discard the run.
+   *    2. Succeeded result not applied — closing wipes the result
+   *       blob from memory. Confirm-to-discard.
+   *    3. Per-region focused result not applied — same risk for
+   *       multi-region focus mode. Confirm-to-discard.
+   *  Used by every dismiss path: header close, backdrop click,
+   *  Esc key. */
+  const requestClose = useCallback(() => {
+    if (
+      phase.kind === "running" ||
+      phase.kind === "submitting" ||
+      phase.kind === "applying" ||
+      refining
+    ) {
+      if (typeof window !== "undefined") {
+        window.alert(
+          "Generation is in progress — please wait or use 'reset · keep generating' to discard the run before closing.",
+        );
+      }
+      return;
+    }
+    const hasUnappliedComposite = phase.kind === "succeeded";
+    const hasUnappliedRegion = regionStates.some((s) => s.status === "succeeded");
+    if (hasUnappliedComposite || hasUnappliedRegion) {
+      if (typeof window !== "undefined") {
+        const ok = window.confirm(
+          "You have an unapplied generated result.\n\n" +
+            "Click OK to discard and close.\n" +
+            "Click Cancel to keep editing (use 'apply to atlas' to keep the result).",
+        );
+        if (!ok) return;
+      }
+    }
+    close(null);
+  }, [phase.kind, refining, regionStates, close]);
+
+  // Esc routes through the guard so in-flight jobs are protected
+  // and unsaved results prompt a confirm.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
-      if (phase.kind === "running" || phase.kind === "submitting") return;
-      close(null);
+      requestClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close, phase.kind]);
+  }, [requestClose]);
 
   // Cleanup blob URL on phase change / unmount
   useEffect(() => {
@@ -605,10 +669,26 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       return next.length > 2 ? next.slice(next.length - 2) : next;
     });
   }
+  /** History filtered to the currently-focused region (multi-region
+   *  focus mode only). Each apply tags its row with the focused
+   *  region's bbox signature; history filtered to matches gives the
+   *  user a per-region log of attempts so revisiting / comparing
+   *  stays scoped. Picker view (no focus) and single-source layers
+   *  see the full history list. Old rows without a regionSignature
+   *  show only in non-focused views. */
+  const visibleHistory = useMemo(() => {
+    if (!isFocusedMulti || focusedRegionIdx === null) return history;
+    const focusedComp = components[focusedRegionIdx];
+    if (!focusedComp) return history;
+    const sig = componentSignature(focusedComp.bbox);
+    return history.filter((r) => r.regionSignature === sig);
+  }, [history, isFocusedMulti, focusedRegionIdx, components]);
   const comparisonRows = useMemo(
     () =>
-      comparisonIds.map((id) => history.find((r) => r.id === id)).filter((r): r is AIJobRow => !!r),
-    [comparisonIds, history],
+      comparisonIds
+        .map((id) => visibleHistory.find((r) => r.id === id))
+        .filter((r): r is AIJobRow => !!r),
+    [comparisonIds, visibleHistory],
   );
   // Drop selections that no longer exist (e.g. history was reloaded
   // and a row got pruned). Run after every history fetch.
@@ -1177,6 +1257,14 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       // settles — we just skip persistence in that case.
       if (puppetKey) {
         try {
+          // Tag the row with the focused region's bbox signature so
+          // history can filter per-region in focus mode. Single-
+          // source applies (no focus or non-multi) leave it
+          // undefined and show only in the picker / single-source
+          // history list.
+          const focusedComp =
+            isFocusedMulti && focusedRegionIdx !== null ? components[focusedRegionIdx] : null;
+          const regionSig = focusedComp ? componentSignature(focusedComp.bbox) : undefined;
           await saveAIJob({
             puppetKey,
             layerExternalId: layer.externalId,
@@ -1185,6 +1273,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
             prompt,
             negativePrompt: negativePrompt.trim() || undefined,
             resultBlob: processed,
+            regionSignature: regionSig,
           });
           // Refresh history so the user sees the new entry next time
           // the panel opens for this layer.
@@ -1267,6 +1356,66 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
     setLastResultBlob(null);
   }
 
+  /** Revert just the focused region to its pristine atlas content,
+   *  leaving every other region's previously-applied gen intact.
+   *  Different from onRevertTexture (which wipes the whole layer).
+   *
+   *  Pulls the region's silhouette out of `originalSourceCanvasRef`
+   *  (extracted at mount with no texture override), swaps it into
+   *  regionStates[focused], recomposites with the other regions'
+   *  current blobs, and writes the new composite straight to the
+   *  layer's texture override. The user sees the atlas update
+   *  immediately — no separate "apply" step needed for revert. */
+  async function onRevertFocusedRegion() {
+    if (!isFocusedMulti || focusedRegionIdx === null) return;
+    const original = originalSourceCanvasRef.current;
+    const sourceCanvas = aiSourceCanvasRef.current;
+    if (!original || !sourceCanvas) return;
+    const c = components[focusedRegionIdx];
+    if (!c) return;
+    if (typeof window !== "undefined") {
+      const label = (c.name ?? componentLabels[componentSignature(c.bbox)] ?? "").trim();
+      const display = label || `region ${focusedRegionIdx + 1}`;
+      const ok = window.confirm(
+        `Revert region "${display}" to its original atlas content? Other regions' edits stay applied.`,
+      );
+      if (!ok) return;
+    }
+    // Lazy-import the isolation helper so the connectedComponents
+    // module isn't pulled in just for this less-common path.
+    const { isolateWithMask } = await import("@/lib/avatar/connectedComponents");
+    const isolatedOriginal = isolateWithMask(original, c.maskCanvas);
+    const newBlob = await canvasToPngBlob(isolatedOriginal);
+
+    // Swap the region's blob into regionStates and recompose using
+    // the other regions' current blobs (regionStatesRef avoids the
+    // useState-updater race; same pattern as regenerateOneRegion).
+    const baseStates = regionStatesRef.current;
+    const idx = focusedRegionIdx;
+    const updatedBlobs = baseStates.map((s, i) => (i === idx ? newBlob : s.resultBlob));
+    setRegionStates((prev) => {
+      const next = [...prev];
+      if (next[idx]) {
+        next[idx] = { resultBlob: newBlob, status: "idle" as const, failedReason: undefined };
+      }
+      return next;
+    });
+
+    const composite = await compositeProcessedComponents({
+      componentBlobs: updatedBlobs,
+      sourceCanvas,
+    });
+    // Push to the live atlas immediately and persist via the store
+    // (the existing useLayerOverridesPersistence bridge mirrors to
+    // IDB).
+    setLayerTextureOverride(layer.id, composite);
+    setLastResultBlob(composite);
+    // Clear any pending preview so the panel reflects the new state.
+    if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
+    const url = URL.createObjectURL(composite);
+    setPhase({ kind: "succeeded", url, blob: composite });
+  }
+
   const submitDisabled =
     !ready ||
     !provider?.available ||
@@ -1292,10 +1441,10 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       <button
         type="button"
         aria-label="close"
-        onClick={() => close(null)}
+        onClick={requestClose}
         className="absolute inset-0 cursor-default"
       />
-      <div className="relative z-10 m-auto flex h-[90vh] w-[min(92vw,1200px)] flex-col rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
+      <div className="relative z-10 m-auto flex h-[95vh] w-[min(96vw,1800px)] flex-col rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
           <span className="font-mono text-[var(--color-accent)]">generate · v1</span>
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
@@ -1352,7 +1501,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           )}
           <button
             type="button"
-            onClick={() => close(null)}
+            onClick={requestClose}
             className="ml-auto rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
             title="esc"
           >
@@ -1456,12 +1605,16 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                 }
                 className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
               >
-                revert texture
+                revert layer · all regions
               </button>
             </div>
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-[1fr_1fr_320px] overflow-hidden">
+          // Sidebar bumped 320px → 480px (1.5×) so the prompt
+          // textarea, refs list, refine panel, and history fit
+          // comfortably with room to read. The two preview columns
+          // still split whatever's left equally.
+          <div className="grid min-h-0 flex-1 grid-cols-[1fr_1fr_480px] overflow-hidden">
             {/* source */}
             <div
               className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 border-r border-[var(--color-border)] p-4"
@@ -2121,10 +2274,17 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                   <div className="mb-2 text-xs text-[var(--color-fg-dim)]">applying…</div>
                 )}
 
-                {history.length > 0 && (
+                {visibleHistory.length > 0 && (
                   <div className="mt-4 flex min-h-0 shrink-0 flex-col">
                     <div className="mb-1 flex items-baseline justify-between uppercase tracking-widest text-[var(--color-fg-dim)]">
-                      <span>history · {history.length}</span>
+                      <span>
+                        history · {visibleHistory.length}
+                        {isFocusedMulti && history.length !== visibleHistory.length && (
+                          <span className="ml-1 normal-case tracking-normal text-[10px] text-[var(--color-fg-dim)]">
+                            (this region · {history.length} total)
+                          </span>
+                        )}
+                      </span>
                       <span className="normal-case tracking-normal text-[10px]">
                         click to revisit · ☐ to compare
                       </span>
@@ -2152,7 +2312,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                       </div>
                     )}
                     <ul className="flex flex-col gap-1 overflow-y-auto pr-1">
-                      {history.map((row) => (
+                      {visibleHistory.map((row) => (
                         <HistoryRow
                           key={row.id}
                           row={row}
@@ -2241,6 +2401,27 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                     </button>
                   </>
                 )}
+                {/* Revert just the focused region (multi-region only).
+                    Pulls that region back to pristine atlas content
+                    while keeping every other region's edits applied.
+                    Atlas updates immediately. */}
+                {isFocusedMulti && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onRevertFocusedRegion();
+                    }}
+                    disabled={!existingTexture}
+                    title={
+                      existingTexture
+                        ? "revert just this region back to its original atlas content"
+                        : "no AI texture applied to this layer"
+                    }
+                    className="rounded border border-red-500/30 px-3 py-1 text-xs text-red-300/80 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    revert this region
+                  </button>
+                )}
                 {/* F.3: revert applied texture. Only enabled when an
                   AI texture is currently on the layer. Destructive
                   (confirms first) — atlas falls back to its original
@@ -2258,7 +2439,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
                   }
                   className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
                 >
-                  revert texture
+                  revert layer · all regions
                 </button>
               </div>
             </aside>

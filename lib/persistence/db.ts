@@ -80,6 +80,13 @@ export type AIJobRow = {
   /** PNG sized to the layer's upright rect, postprocessed (cropped +
    *  alpha-enforced) and ready to drop into `setLayerOverrides`. */
   resultBlob: Blob;
+  /** Bbox signature of the focused region at apply time, for the
+   *  multi-region focus flow. Lets the panel filter history per
+   *  region (only show entries that came from the same region's
+   *  edits). Undefined for single-region applies and for rows
+   *  written before this field was added — they only show in the
+   *  picker / single-source views. */
+  regionSignature?: string;
   createdAt: number;
 };
 
@@ -474,6 +481,7 @@ export async function saveAIJob(input: SaveAIJobInput): Promise<AIJobRowId> {
     negativePrompt: input.negativePrompt,
     seed: input.seed,
     resultBlob: input.resultBlob,
+    regionSignature: input.regionSignature,
     createdAt: Date.now(),
   });
   return id;
