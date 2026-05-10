@@ -221,44 +221,44 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             type="button"
             onClick={undo}
             disabled={!canUndo}
-            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
             title="Cmd/Ctrl+Z"
           >
-            undo
+            Undo
           </button>
           <button
             type="button"
             onClick={redo}
             disabled={!canRedo}
-            className="ml-1 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-1 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
             title="Cmd/Ctrl+Shift+Z"
           >
-            redo
+            Redo
           </button>
           <button
             type="button"
             onClick={reset}
-            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
-            title="r"
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title="R"
           >
-            reset
+            Reset
           </button>
           <span className="ml-3">
             <ExportButton puppetId={puppetId} adapter={adapter} />
           </span>
           <Link
             href="/"
-            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
           >
-            ← library
+            ← Library
           </Link>
           <button
             type="button"
             onClick={() => setHelpOpen(true)}
-            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
+            className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
             title="단축키 / 워크플로 / 패널 안내 (?)"
           >
-            ?
+            Help
           </button>
         </header>
 

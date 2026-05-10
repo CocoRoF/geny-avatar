@@ -6,8 +6,8 @@ import { useCallback } from "react";
 export type EditorTab = "edit" | "animation";
 
 const TABS: { id: EditorTab; label: string; title: string }[] = [
-  { id: "edit", label: "edit", title: "텍스처 편집 — 레이어 / decompose / generate" },
-  { id: "animation", label: "animation", title: "애니메이션 — motion / expression / emotion 매핑" },
+  { id: "edit", label: "Edit", title: "텍스처 편집 — 레이어 / decompose / generate" },
+  { id: "animation", label: "Animation", title: "애니메이션 — motion / expression / emotion 매핑" },
 ];
 
 /**

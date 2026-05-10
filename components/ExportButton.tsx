@@ -168,6 +168,12 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     aiTextureCount,
   );
 
+  // Both export actions are primary (file-producing) operations, so
+  // they share the accent-bordered chip style. Utility actions like
+  // undo/redo/reset live in the page header and use the muted style.
+  const primaryButton =
+    "rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-40";
+
   return (
     <span className={`inline-flex items-center gap-1 ${className}`}>
       <button
@@ -175,23 +181,23 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
         onClick={() => void handleSave()}
         disabled={disabled}
         title={saveTitle}
-        className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+        className={primaryButton}
       >
-        {savingMode === "save" ? "saving file…" : "save file"}
+        {savingMode === "save" ? "Saving File…" : "Save File"}
       </button>
       <button
         type="button"
         onClick={() => void handleExportModel()}
         disabled={modelDisabled}
         title={modelTitle}
-        className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-40"
+        className={primaryButton}
       >
-        {savingMode === "model" ? "baking file…" : "export model file"}
+        {savingMode === "model" ? "Baking File…" : "Export Model File"}
       </button>
       {!disabled && stagedSummary && (
         <span
           className="rounded border border-[var(--color-border)] px-1 font-mono text-[10px] text-[var(--color-fg-dim)]"
-          title="edits staged for the next export"
+          title="Edits staged for the next export"
         >
           {stagedSummary}
         </span>
