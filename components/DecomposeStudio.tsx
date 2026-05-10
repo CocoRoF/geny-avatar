@@ -1,10 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrushCursor } from "@/components/decompose/BrushCursor";
+import { OptionsBar } from "@/components/decompose/OptionsBar";
+import { Toolbox } from "@/components/decompose/Toolbox";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { submitSam } from "@/lib/ai/sam/client";
 import type { SamCandidate, SamPoint } from "@/lib/ai/sam/types";
 import { findAlphaComponents } from "@/lib/avatar/connectedComponents";
+import { floodFillAlpha, maskToCanvas } from "@/lib/avatar/decompose/floodFill";
+import {
+  type BrushOp,
+  type SelectionOp,
+  type ToolId,
+  toolForShortcut,
+} from "@/lib/avatar/decompose/tools";
+import { clientToSourcePixel, useCanvasViewport } from "@/lib/avatar/decompose/useCanvasViewport";
 import { ID_PREFIX, newId } from "@/lib/avatar/id";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -21,14 +32,15 @@ type Props = {
 };
 
 /**
- * Tool the brush canvas is currently using:
- *   - paint / erase: direct stroke into the selected canvas
- *   - auto: Sprint 6.2 SAM-driven mask. User accumulates click
- *           points (left = foreground, right = background), hits
- *           "compute mask" → /api/ai/sam returns 1–3 candidate
- *           masks → user picks one → it's union'd into the
- *           selected region's canvas. Available only inside
- *           "split" studio mode for now.
+ * Legacy brush sub-mode preserved for the existing SAM apply path.
+ *
+ * The new tool system (ToolId from `lib/avatar/decompose/tools`) is
+ * the source of truth for what the user is doing — see `selectedTool`
+ * + `brushOp` below. This local enum stays only because the SAM
+ * effect at the bottom of the file keys off `mode === "auto"` to
+ * clear point state when leaving auto sub-mode; rather than
+ * rewriting that effect we derive the legacy value from the new
+ * state on the fly via `legacyMode()`.
  */
 type BrushMode = "paint" | "erase" | "auto";
 /**
@@ -63,17 +75,70 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
+  /** Wrapper that the CSS zoom/pan transform is applied to. Pan +
+   *  wheel zoom listeners attach here so the user can scroll past
+   *  the canvas's edge to pan into empty space without losing the
+   *  drag. */
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
   /** Path describing the layer's true footprint inside the bbox crop.
    *  When present, the brush is clipped to it so paint outside doesn't
    *  reach atlas neighbors that aren't part of this layer. */
   const clipPathRef = useRef<Path2D | null>(null);
   const paintingRef = useRef(false);
+  /** Ref to the latest pointer position in source-pixel space. The
+   *  brush cursor overlay reads this every frame to redraw the
+   *  outline circle without forcing a React re-render. */
+  const pointerPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  // ── Viewport (zoom + pan) ─────────────────────────────────────────
+  const viewport = useCanvasViewport({ containerRef: canvasWrapperRef });
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threshold, setThreshold] = useState(0); // 0..255, 0 = no threshold mask
   const [brushSize, setBrushSize] = useState(20);
-  const [mode, setMode] = useState<BrushMode>("paint");
+  const [brushHardness, setBrushHardness] = useState(80); // 0..100; 100=hard, 0=soft
+  const [tolerance, setTolerance] = useState(32); // 0..128, used by Bucket + Wand
+  /** New tool system. The default tool is "brush" (B) so the user
+   *  lands ready to paint, matching the previous default. */
+  const [selectedTool, setSelectedTool] = useState<ToolId>("brush");
+  /** Brush / Eraser / Bucket all share this op. Brush + Bucket
+   *  default to "add"; Eraser overrides to "remove" via the
+   *  effective-op derivation in paintAt(). The OptionsBar still
+   *  exposes the toggle so the user can swap a brush into reveal
+   *  mode without leaving the brush tool. */
+  const [brushOp, setBrushOp] = useState<BrushOp>("add");
+  /** Magic wand selection state. The selection is a same-dim
+   *  bitmap (0xff inside, 0x00 outside) the user can preview as a
+   *  marquee outline + apply to the active mask via the OptionsBar
+   *  / inline panel. Cleared when the user hits Esc, switches
+   *  layers, or applies the selection. */
+  const [wandSelection, setWandSelection] = useState<HTMLCanvasElement | null>(null);
+  const [wandSelectionArea, setWandSelectionArea] = useState(0);
+  /** Map selectedTool back to the legacy paint/erase/auto enum the
+   *  SAM bookkeeping effect keys off. Stays in sync automatically
+   *  whenever the tool changes. */
+  const mode = useMemo<BrushMode>(() => {
+    if (selectedTool === "sam") return "auto";
+    if (selectedTool === "eraser") return "erase";
+    return "paint";
+  }, [selectedTool]);
+  /** Compatibility shim for legacy call sites that still call
+   *  `setMode("paint" | "erase" | "auto")`. Routes the legacy mode
+   *  back onto the new (selectedTool, brushOp) pair so the existing
+   *  sidebar buttons keep working until they're swapped out for
+   *  the new Toolbox + OptionsBar UI. */
+  const setMode = useCallback((next: BrushMode) => {
+    if (next === "auto") setSelectedTool("sam");
+    else if (next === "erase") setSelectedTool("eraser");
+    else setSelectedTool("brush");
+  }, []);
+  /** Effective brush op — Eraser is permanently "remove"; other
+   *  tools follow the explicit toggle. Bucket uses the same. */
+  const effectiveBrushOp = useCallback(
+    (tool: ToolId = selectedTool): BrushOp => (tool === "eraser" ? "remove" : brushOp),
+    [selectedTool, brushOp],
+  );
   const [dirty, setDirty] = useState(false);
 
   // E.2: studio-level mode + multi-region state. Region canvases are
@@ -93,6 +158,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const regionCanvasMap = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [splitDirty, setSplitDirty] = useState(false);
+  /** Region "solo" focus. When set to a region id, only that region's
+   *  mask is rendered on the canvas (others are hidden) and the brush
+   *  is locked to it — paint strokes can never accidentally land on
+   *  other regions. The selected region keeps its independent
+   *  pointer; toggling solo doesn't change which region the next
+   *  brush stroke targets. Null = normal multi-region overlay. */
+  const [focusRegionId, setFocusRegionId] = useState<string | null>(null);
 
   // Sprint 6.2: SAM auto-mask state. Points accumulate while the
   // brush is in "auto" mode; "compute mask" sends them to the SAM
@@ -297,11 +369,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       // canvases to the higher backing resolution.
       ctx.drawImage(source, 0, 0, preview.width, preview.height);
       for (const entry of regionEntries) {
+        // Focus mode: skip every region except the soloed one.
+        // Other regions are still in IDB / state — they just don't
+        // render so the user can concentrate on one at a time.
+        if (focusRegionId && entry.id !== focusRegionId) continue;
         const rc = regionCanvasMap.current.get(entry.id);
         if (!rc) continue;
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
-        ctx.globalAlpha = entry.id === selectedRegionId ? 0.55 : 0.3;
+        // Soloed region renders fully opaque so the user sees the
+        // mask shape clearly; without solo, the selected region is
+        // the brighter overlay and the rest stay dim.
+        const isFocused = focusRegionId === entry.id;
+        ctx.globalAlpha = isFocused ? 0.7 : entry.id === selectedRegionId ? 0.55 : 0.3;
         const tmp = document.createElement("canvas");
         tmp.width = preview.width;
         tmp.height = preview.height;
@@ -360,12 +440,68 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         ctx.drawImage(tmp, 0, 0, preview.width, preview.height);
       }
     }
-  }, [threshold, studioMode, regionEntries, selectedRegionId, fullscreen]);
+  }, [threshold, studioMode, regionEntries, selectedRegionId, focusRegionId, fullscreen]);
 
   useEffect(() => {
     if (!ready) return;
     redraw();
   }, [ready, redraw]);
+
+  // ----- target-canvas selector + brush stroke -----
+  /** Pick the mask canvas the active tool's stroke / fill should
+   *  land on. Trim mode → the single layer mask; split mode → the
+   *  focused region (when solo is on) or the selected region. The
+   *  focus override is enforced here so a stroke in solo mode can
+   *  never bleed onto a different region's canvas — the user's
+   *  selection state still tracks which row in the sidebar is
+   *  highlighted, but the brush honours focus. */
+  const activeTargetCanvas = useCallback((): HTMLCanvasElement | null => {
+    if (studioMode === "split") {
+      const id = focusRegionId ?? selectedRegionId;
+      return (id ? regionCanvasMap.current.get(id) : null) ?? null;
+    }
+    return maskCanvasRef.current;
+  }, [studioMode, selectedRegionId, focusRegionId]);
+
+  // compositeForOp is hoisted to module scope (see bottom of file) so
+  // React lint rules treat it as a stable, dep-free reference. The
+  // alternative — declaring it inline — forces every paint callback
+  // that uses it to include it in their dep array even though the
+  // function never closes over component state.
+
+  /**
+   * Single brush dab at (sx, sy) in source-pixel space. Optionally
+   * uses a soft-edge radial gradient when hardness < 100%. Hardness
+   * is the inner-radius percentage of the brush — at 100% the dab
+   * is a hard disc; at 0% the gradient fades from full strength at
+   * the centre to zero at the rim.
+   */
+  const applyBrushDab = useCallback(
+    (target: HTMLCanvasElement, sx: number, sy: number, op: BrushOp) => {
+      const tctx = target.getContext("2d");
+      if (!tctx) return;
+      const radius = Math.max(0.5, brushSize / 2);
+      tctx.save();
+      if (clipPathRef.current) tctx.clip(clipPathRef.current);
+      tctx.globalCompositeOperation = compositeForOp(op);
+      if (brushHardness >= 100) {
+        tctx.fillStyle = "rgba(255, 255, 255, 1)";
+      } else {
+        // Hardness % defines the inner solid radius as a fraction of
+        // the brush radius. The remaining annulus blends to alpha 0.
+        const inner = radius * (brushHardness / 100);
+        const grad = tctx.createRadialGradient(sx, sy, inner, sx, sy, radius);
+        grad.addColorStop(0, "rgba(255,255,255,1)");
+        grad.addColorStop(1, "rgba(255,255,255,0)");
+        tctx.fillStyle = grad;
+      }
+      tctx.beginPath();
+      tctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      tctx.fill();
+      tctx.restore();
+    },
+    [brushSize, brushHardness],
+  );
 
   // ----- pointer painting -----
   const paintAt = useCallback(
@@ -373,38 +509,130 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       const preview = previewRef.current;
       const source = sourceCanvasRef.current;
       if (!preview || !source) return;
-      const rect = preview.getBoundingClientRect();
-      // Brush coords are in source pixel space — region/mask canvases
-      // are at source dim, so scaling by preview backing (which may
-      // be higher than source dim in fullscreen) would paint outside.
-      const sx = ((clientX - rect.left) / rect.width) * source.width;
-      const sy = ((clientY - rect.top) / rect.height) * source.height;
-
-      // Pick the target canvas: in split mode it's the selected region's
-      // canvas; in trim mode it's the layer's single mask canvas.
-      const target =
-        studioMode === "split"
-          ? ((selectedRegionId ? regionCanvasMap.current.get(selectedRegionId) : null) ?? null)
-          : maskCanvasRef.current;
+      const target = activeTargetCanvas();
       if (!target) return;
+      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
+      applyBrushDab(target, x, y, effectiveBrushOp());
+      if (studioMode === "split") setSplitDirty(true);
+      else setDirty(true);
+      redraw();
+    },
+    [activeTargetCanvas, applyBrushDab, effectiveBrushOp, redraw, studioMode],
+  );
 
+  // ----- bucket fill -----
+  /** Bucket-tool click: flood-fill the connected region around the
+   *  cursor and apply with the active brush op. Tolerance is the
+   *  alpha similarity threshold from the OptionsBar. */
+  const bucketAt = useCallback(
+    (clientX: number, clientY: number) => {
+      const preview = previewRef.current;
+      const source = sourceCanvasRef.current;
+      if (!preview || !source) return;
+      const target = activeTargetCanvas();
+      if (!target) return;
+      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
+      const result = floodFillAlpha({
+        source,
+        seedX: x,
+        seedY: y,
+        tolerance,
+        requireOpaqueSeed: true,
+        clip: clipPathRef.current,
+      });
+      if (result.empty) return;
+      const fillCanvas = maskToCanvas(result);
       const tctx = target.getContext("2d");
       if (!tctx) return;
       tctx.save();
-      // Clip to the layer's actual footprint so the brush can't paint
-      // (or erase from) atlas neighbors that happen to fall in the bbox.
       if (clipPathRef.current) tctx.clip(clipPathRef.current);
-      tctx.globalCompositeOperation = mode === "paint" ? "source-over" : "destination-out";
-      tctx.fillStyle = "rgba(255, 255, 255, 1)";
-      tctx.beginPath();
-      tctx.arc(sx, sy, brushSize / 2, 0, Math.PI * 2);
-      tctx.fill();
+      tctx.globalCompositeOperation = compositeForOp(effectiveBrushOp("bucket"));
+      tctx.drawImage(fillCanvas, 0, 0);
       tctx.restore();
       if (studioMode === "split") setSplitDirty(true);
       else setDirty(true);
       redraw();
     },
-    [mode, brushSize, redraw, studioMode, selectedRegionId],
+    [activeTargetCanvas, effectiveBrushOp, redraw, studioMode, tolerance],
+  );
+
+  // ----- magic wand selection -----
+  /** Wand-tool click: produce / mutate the selection bitmap based
+   *  on modifier keys (Photoshop convention):
+   *    - no modifier: replace current selection with new one
+   *    - shift:       union new selection into existing
+   *    - alt:         subtract new selection from existing
+   *    - shift+alt:   intersect with existing
+   */
+  const wandAt = useCallback(
+    (clientX: number, clientY: number, op: SelectionOp) => {
+      const preview = previewRef.current;
+      const source = sourceCanvasRef.current;
+      if (!preview || !source) return;
+      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
+      const result = floodFillAlpha({
+        source,
+        seedX: x,
+        seedY: y,
+        tolerance,
+        requireOpaqueSeed: true,
+        clip: clipPathRef.current,
+      });
+      if (result.empty && op === "replace") {
+        setWandSelection(null);
+        setWandSelectionArea(0);
+        return;
+      }
+      const incoming = maskToCanvas(result);
+      if (op === "replace" || !wandSelection) {
+        setWandSelection(incoming);
+        setWandSelectionArea(result.area);
+        return;
+      }
+      // Compose with existing selection on a fresh canvas.
+      const merged = document.createElement("canvas");
+      merged.width = source.width;
+      merged.height = source.height;
+      const mctx = merged.getContext("2d");
+      if (!mctx) return;
+      mctx.drawImage(wandSelection, 0, 0);
+      mctx.globalCompositeOperation =
+        op === "add" ? "source-over" : op === "subtract" ? "destination-out" : "destination-in"; // intersect
+      mctx.drawImage(incoming, 0, 0);
+      // Recompute area for the status display.
+      const data = mctx.getImageData(0, 0, merged.width, merged.height).data;
+      let area = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) area++;
+      setWandSelection(merged);
+      setWandSelectionArea(area);
+    },
+    [tolerance, wandSelection],
+  );
+
+  /** Apply the wand selection to the active mask canvas with the
+   *  current brush op, then optionally clear the selection. The
+   *  Wand panel exposes Add/Remove buttons that call this. */
+  const applyWandSelection = useCallback(
+    (op: BrushOp, clearAfter: boolean) => {
+      if (!wandSelection) return;
+      const target = activeTargetCanvas();
+      if (!target) return;
+      const tctx = target.getContext("2d");
+      if (!tctx) return;
+      tctx.save();
+      if (clipPathRef.current) tctx.clip(clipPathRef.current);
+      tctx.globalCompositeOperation = compositeForOp(op);
+      tctx.drawImage(wandSelection, 0, 0);
+      tctx.restore();
+      if (clearAfter) {
+        setWandSelection(null);
+        setWandSelectionArea(0);
+      }
+      if (studioMode === "split") setSplitDirty(true);
+      else setDirty(true);
+      redraw();
+    },
+    [activeTargetCanvas, redraw, studioMode, wandSelection],
   );
 
   /** Sprint 6.2: convert a pointer event in auto mode into a SAM
@@ -428,35 +656,130 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setSamCandidates(null);
   }, []);
 
+  /** Tool-aware pointer dispatch. The selectedTool decides what the
+   *  click does. Space-held overrides any tool to Hand for
+   *  temporary panning, matching Photoshop. */
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      // In auto mode every click is a point — no drag-to-paint, no
-      // pointer capture (so right-click context menu is suppressed
-      // by the canvas's onContextMenu handler instead).
-      if (studioMode === "split" && mode === "auto") {
+      // Hand override (Space-drag pan).
+      if (viewport.spaceHeld || selectedTool === "hand") {
         e.preventDefault();
-        recordSamPoint(e);
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        viewport.onPanPointerDown(e.nativeEvent);
         return;
       }
-      paintingRef.current = true;
-      (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-      paintAt(e.clientX, e.clientY);
+
+      switch (selectedTool) {
+        case "move":
+          // Move tool is a no-op on click; viewport gestures still
+          // work via wheel + space.
+          return;
+        case "zoom": {
+          // Click = zoom in around point; Alt+click = zoom out.
+          const factor = e.altKey ? 1 / 1.5 : 1.5;
+          viewport.zoomAtClient(factor, e.clientX, e.clientY);
+          return;
+        }
+        case "bucket":
+          e.preventDefault();
+          bucketAt(e.clientX, e.clientY);
+          return;
+        case "wand": {
+          e.preventDefault();
+          const op: SelectionOp =
+            e.shiftKey && e.altKey
+              ? "intersect"
+              : e.shiftKey
+                ? "add"
+                : e.altKey
+                  ? "subtract"
+                  : "replace";
+          wandAt(e.clientX, e.clientY, op);
+          return;
+        }
+        case "sam":
+          // Legacy SAM path — every click is a point.
+          if (studioMode === "split") {
+            e.preventDefault();
+            recordSamPoint(e);
+          }
+          return;
+        case "brush":
+        case "eraser":
+          paintingRef.current = true;
+          (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+          paintAt(e.clientX, e.clientY);
+          return;
+      }
     },
-    [paintAt, recordSamPoint, studioMode, mode],
+    [
+      bucketAt,
+      paintAt,
+      recordSamPoint,
+      selectedTool,
+      studioMode,
+      viewport.spaceHeld,
+      viewport.zoomAtClient,
+      viewport.onPanPointerDown,
+      viewport,
+      wandAt,
+    ],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // Track pointer in source-pixel space for the brush cursor +
+      // status readouts. Cheap — no React state involved.
+      const preview = previewRef.current;
+      const source = sourceCanvasRef.current;
+      if (preview && source) {
+        const { x, y } = clientToSourcePixel(e.clientX, e.clientY, preview, source);
+        pointerPosRef.current = { x, y };
+      }
+      // Hand-tool / Space drag.
+      if (viewport.isPanning) {
+        viewport.onPanPointerMove(e.nativeEvent);
+        return;
+      }
       if (!paintingRef.current) return;
       paintAt(e.clientX, e.clientY);
     },
-    [paintAt],
+    [paintAt, viewport.isPanning, viewport.onPanPointerMove, viewport],
   );
 
-  const onPointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    paintingRef.current = false;
-    (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
-  }, []);
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (viewport.isPanning) {
+        viewport.onPanPointerUp(e.nativeEvent);
+        (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
+        return;
+      }
+      paintingRef.current = false;
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
+    },
+    [viewport.isPanning, viewport.onPanPointerUp, viewport],
+  );
+
+  // ── Wheel zoom ────────────────────────────────────────────────────
+  // We attach the wheel listener via a ref-effect (rather than a JSX
+  // onWheel prop) so we can pass `{ passive: false }` and call
+  // preventDefault on the event — modern browsers warn that React's
+  // synthetic onWheel can't.
+  useEffect(() => {
+    const wrapper = canvasWrapperRef.current;
+    if (!wrapper) return;
+    const handler = (e: WheelEvent) => {
+      // Skip when the wheel is targeting a scrollable input (e.g.
+      // the threshold slider) inside the same wrapper. Slider hit
+      // tests aren't an issue today since the OptionsBar lives
+      // outside the wrapper, but defensive nonetheless.
+      const target = e.target as HTMLElement | null;
+      if (target && target.tagName === "INPUT") return;
+      viewport.onWheel(e);
+    };
+    wrapper.addEventListener("wheel", handler, { passive: false });
+    return () => wrapper.removeEventListener("wheel", handler);
+  }, [viewport.onWheel, viewport]);
 
   // ----- save / clear / close -----
   const onSaveTrim = useCallback(async () => {
@@ -523,6 +846,9 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       if (selectedRegionId === id) {
         setSelectedRegionId(null);
       }
+      // Drop focus when its region disappears, otherwise the canvas
+      // would render nothing in split mode.
+      setFocusRegionId((cur) => (cur === id ? null : cur));
       setSplitDirty(true);
     },
     [selectedRegionId],
@@ -612,6 +938,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     regionCanvasMap.current.clear();
     setRegionEntries([]);
     setSelectedRegionId(null);
+    setFocusRegionId(null);
     setSplitDirty(true);
   }, [regionEntries.length]);
 
@@ -818,15 +1145,93 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     if (ok) close(null);
   }, [studioMode, dirty, splitDirty, close]);
 
-  // Esc to dismiss — routed through requestClose so it warns on
-  // unsaved work just like the explicit close paths.
+  // ── Keyboard shortcuts (Photoshop-style) ──────────────────────────
+  // Esc dismisses through requestClose. All other shortcuts go
+  // through one handler so they share the input-focus guard.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") requestClose();
+      // Don't hijack typing inside an input / textarea / region name
+      // field. The guard mirrors the global `useEditorShortcuts` hook.
+      const target = ev.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      }
+      if (ev.key === "Escape") {
+        // Esc cascades: clear wand selection → release region focus →
+        // close studio. Each step is independent so the user can
+        // mash Esc to "back out" through the editing state stack.
+        if (wandSelection) {
+          setWandSelection(null);
+          setWandSelectionArea(0);
+          return;
+        }
+        if (focusRegionId) {
+          setFocusRegionId(null);
+          return;
+        }
+        requestClose();
+        return;
+      }
+      // Tool shortcuts. Single-letter Photoshop bindings.
+      if (!ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        const tool = toolForShortcut(ev.key);
+        if (tool) {
+          // SAM is split-only.
+          if (tool === "sam" && studioMode !== "split") return;
+          ev.preventDefault();
+          setSelectedTool(tool);
+          return;
+        }
+        // Brush size: [ shrinks, ] grows. Roughly 10% steps with a
+        // 1px floor so tiny brushes stay tweakable.
+        if (ev.key === "[") {
+          ev.preventDefault();
+          setBrushSize((s) => Math.max(1, Math.round(s * 0.85)));
+          return;
+        }
+        if (ev.key === "]") {
+          ev.preventDefault();
+          setBrushSize((s) => Math.min(400, Math.max(s + 1, Math.round(s * 1.15))));
+          return;
+        }
+        // X swaps the brush op (Hide ↔ Reveal / Add ↔ Remove). Same
+        // muscle memory as Photoshop's foreground/background swap.
+        if (ev.key === "x" || ev.key === "X") {
+          ev.preventDefault();
+          setBrushOp((op) => (op === "add" ? "remove" : "add"));
+          return;
+        }
+        // + / - zoom (without modifier — Photoshop also accepts
+        // these without Ctrl).
+        if (ev.key === "+" || ev.key === "=") {
+          ev.preventDefault();
+          viewport.zoomIn();
+          return;
+        }
+        if (ev.key === "-" || ev.key === "_") {
+          ev.preventDefault();
+          viewport.zoomOut();
+          return;
+        }
+      }
+      // Cmd/Ctrl modifiers.
+      if (ev.metaKey || ev.ctrlKey) {
+        if (ev.key === "0") {
+          ev.preventDefault();
+          viewport.fit();
+          return;
+        }
+        if (ev.key === "1") {
+          ev.preventDefault();
+          viewport.actualSize();
+          return;
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose]);
+  }, [requestClose, studioMode, viewport, wandSelection, focusRegionId]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -857,6 +1262,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
           {(studioMode === "trim" ? dirty : splitDirty) && (
             <span className="text-yellow-400">· unsaved</span>
+          )}
+          {/* Focus chip — only visible in split mode while a region is
+              soloed. Click to release focus from anywhere in the
+              header. */}
+          {studioMode === "split" && focusRegionId && (
+            <button
+              type="button"
+              onClick={() => setFocusRegionId(null)}
+              title="포커스 해제 — 모든 region 다시 표시 (Esc 도 가능)"
+              className="ml-1 rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-2 py-0.5 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/20"
+            >
+              ◉ Focus: {regionEntries.find((r) => r.id === focusRegionId)?.name || "region"} ✕
+            </button>
           )}
           {/* Top mode toggle (E.2). Trim = single layer mask
               (existing); split = multi-region named masks for the
@@ -921,460 +1339,625 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           </button>
         </header>
 
-        {/* Sidebar gets 1.5× the original 240px so the regions list /
-            tool controls / SAM panel don't feel cramped. The canvas
-            column still stretches to take whatever's left. */}
-        <div className="grid min-h-0 flex-1 grid-cols-[1fr_360px] overflow-hidden">
-          <div
-            className="flex min-h-0 min-w-0 items-center justify-center p-6"
-            style={previewStyle}
-          >
-            {error ? (
-              <div className="text-sm text-red-400">{error}</div>
-            ) : !ready ? (
-              <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
-            ) : (
-              // The wrapper locks the rendered texture's aspect via
-              // CSS aspect-ratio (set from source dim). Without
-              // this both `max-w-full` and `max-h-full` could
-              // activate together when the modal grew wider —
-              // browser then sized W and H independently and the
-              // canvas content stretched. With aspect-ratio set,
-              // the browser scales uniformly to fit either max
-              // dimension.
+        {/* Body: left toolbox · top options bar · canvas · right
+            sidebar (regions + SAM only). Photoshop-style layout. */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <Toolbox
+            selectedTool={selectedTool}
+            onSelectTool={setSelectedTool}
+            studioMode={studioMode}
+          />
+
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <OptionsBar
+              selectedTool={selectedTool}
+              studioMode={studioMode}
+              brushSize={brushSize}
+              onBrushSize={setBrushSize}
+              brushOp={brushOp}
+              onBrushOp={setBrushOp}
+              brushHardness={brushHardness}
+              onBrushHardness={setBrushHardness}
+              tolerance={tolerance}
+              onTolerance={setTolerance}
+              threshold={threshold}
+              onThreshold={setThreshold}
+              zoom={viewport.zoom}
+              onZoomIn={viewport.zoomIn}
+              onZoomOut={viewport.zoomOut}
+              onFit={viewport.fit}
+              onActualSize={viewport.actualSize}
+            />
+
+            <div className="grid min-h-0 flex-1 grid-cols-[1fr_320px] overflow-hidden">
               <div
-                className="relative max-h-full max-w-full"
-                style={
-                  sourceAspect
-                    ? {
-                        aspectRatio: `${sourceAspect}`,
-                        // height: '100%' lets the browser pick the
-                        // height that fills the parent (subject to
-                        // max-h), then aspect-ratio computes width.
-                        height: "100%",
-                        width: "auto",
-                      }
-                    : undefined
-                }
+                ref={canvasWrapperRef}
+                className="relative flex min-h-0 min-w-0 items-center justify-center overflow-hidden"
+                style={previewStyle}
               >
-                <canvas
-                  ref={previewRef}
-                  onPointerDown={onPointerDown}
-                  onPointerMove={onPointerMove}
-                  onPointerUp={onPointerUp}
-                  onPointerCancel={onPointerUp}
-                  // Right-click in auto mode adds a background point —
-                  // suppress the browser context menu so the click
-                  // event bubbles cleanly to onPointerDown.
-                  onContextMenu={(e) => {
-                    if (studioMode === "split" && mode === "auto") e.preventDefault();
-                  }}
-                  className="block h-full w-full cursor-crosshair touch-none border border-[var(--color-border)]"
+                {error ? (
+                  <div className="text-sm text-red-400">{error}</div>
+                ) : !ready ? (
+                  <div className="text-sm text-[var(--color-fg-dim)]">loading region…</div>
+                ) : (
+                  // The aspect wrapper locks the rendered texture's
+                  // ratio (set from source dim). The transform
+                  // wrapper sits inside it and applies viewport
+                  // zoom/pan — keeping aspect on the outer node
+                  // means CSS still drives the fit-to-screen base
+                  // size, and zoom is purely multiplicative.
+                  <div
+                    className="relative will-change-transform"
+                    style={{
+                      ...(sourceAspect
+                        ? {
+                            aspectRatio: `${sourceAspect}`,
+                            height: "min(100%, 95vh)",
+                            width: "auto",
+                            maxWidth: "100%",
+                          }
+                        : undefined),
+                      transform: `translate(${viewport.panX}px, ${viewport.panY}px) scale(${viewport.zoom})`,
+                      transformOrigin: "center center",
+                    }}
+                  >
+                    <canvas
+                      ref={previewRef}
+                      onPointerDown={onPointerDown}
+                      onPointerMove={onPointerMove}
+                      onPointerUp={onPointerUp}
+                      onPointerCancel={onPointerUp}
+                      onContextMenu={(e) => {
+                        // SAM right-click for background points; Wand
+                        // also wants the menu suppressed so subtract /
+                        // intersect modifiers don't trigger it.
+                        if ((studioMode === "split" && mode === "auto") || selectedTool === "wand")
+                          e.preventDefault();
+                      }}
+                      className={`block h-full w-full touch-none border border-[var(--color-border)] ${cursorClassForTool(selectedTool, viewport.spaceHeld, viewport.isPanning)}`}
+                      style={
+                        // Hide the OS cursor when a brush-like tool is
+                        // active — the BrushCursor overlay replaces
+                        // it. Other tools fall through to the class
+                        // cursor (crosshair / grab / etc.).
+                        isSizedBrushTool(selectedTool) && !viewport.spaceHeld
+                          ? { cursor: "none" }
+                          : undefined
+                      }
+                    />
+                    {/* SAM point overlay (split/auto mode only). */}
+                    {studioMode === "split" &&
+                      mode === "auto" &&
+                      samPoints.length > 0 &&
+                      sourceCanvasRef.current && (
+                        <svg
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 h-full w-full"
+                          viewBox={`0 0 ${sourceCanvasRef.current.width} ${sourceCanvasRef.current.height}`}
+                          preserveAspectRatio="none"
+                        >
+                          {samPoints.map((p, i) => (
+                            <circle
+                              // biome-ignore lint/suspicious/noArrayIndexKey: points are append-only and order-stable
+                              key={i}
+                              cx={p.x}
+                              cy={p.y}
+                              r={Math.max(4, (sourceCanvasRef.current?.width ?? 200) / 200)}
+                              fill={p.label === 1 ? "#22c55e" : "#ef4444"}
+                              stroke="#000"
+                              strokeWidth={1}
+                            />
+                          ))}
+                        </svg>
+                      )}
+                    {/* Wand selection outline — semi-transparent
+                        overlay, no marching ants for now (a true
+                        marching-ants needs a contour walk; the
+                        coloured fill is enough to communicate
+                        what's selected). */}
+                    {wandSelection && sourceCanvasRef.current && (
+                      <WandSelectionOverlay
+                        selection={wandSelection}
+                        sourceWidth={sourceCanvasRef.current.width}
+                        sourceHeight={sourceCanvasRef.current.height}
+                      />
+                    )}
+                  </div>
+                )}
+                {/* Brush cursor overlay — fixed-position circle that
+                    follows the pointer. Sized to match the actual
+                    stroke at the current zoom. */}
+                <BrushCursor
+                  canvasRef={previewRef}
+                  brushSize={brushSize}
+                  enabled={isSizedBrushTool(selectedTool) && !viewport.spaceHeld}
+                  color={selectedTool === "wand" ? "#3b82f6" : undefined}
                 />
-                {/* Sprint 6.2: SAM point overlay. Visible only in
-                    split/auto mode while points are being collected.
-                    Coordinates live in source pixel space; the SVG
-                    viewBox uses source dim (not preview backing —
-                    fullscreen bumps preview backing past source dim
-                    for sharper texture, but the click coords stay
-                    sourced in source pixels). */}
-                {studioMode === "split" &&
-                  mode === "auto" &&
-                  samPoints.length > 0 &&
-                  sourceCanvasRef.current && (
-                    <svg
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-0 h-full w-full"
-                      viewBox={`0 0 ${sourceCanvasRef.current.width} ${sourceCanvasRef.current.height}`}
-                      preserveAspectRatio="none"
-                    >
-                      {samPoints.map((p, i) => (
-                        <circle
-                          // biome-ignore lint/suspicious/noArrayIndexKey: points are append-only and order-stable
-                          key={i}
-                          cx={p.x}
-                          cy={p.y}
-                          r={Math.max(4, (sourceCanvasRef.current?.width ?? 200) / 200)}
-                          fill={p.label === 1 ? "#22c55e" : "#ef4444"}
-                          stroke="#000"
-                          strokeWidth={1}
-                        />
-                      ))}
-                    </svg>
-                  )}
               </div>
-            )}
-          </div>
 
-          <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)] p-4 text-xs">
-            {studioMode === "trim" ? (
-              <>
-                <div className="mb-4">
-                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    alpha threshold
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={255}
-                    value={threshold}
-                    onChange={(e) => setThreshold(Number(e.target.value))}
-                    className="w-full"
+              <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)] p-4 text-xs">
+                {/* Wand selection panel — visible whenever a selection
+                exists, regardless of the active tool. Lets the user
+                Apply / Remove / Deselect from any tool context. */}
+                {wandSelection && (
+                  <WandPanel
+                    area={wandSelectionArea}
+                    studioMode={studioMode}
+                    onApplyAdd={() => applyWandSelection("add", true)}
+                    onApplyRemove={() => applyWandSelection("remove", true)}
+                    onDeselect={() => {
+                      setWandSelection(null);
+                      setWandSelectionArea(0);
+                    }}
                   />
-                  <div className="font-mono text-[var(--color-fg-dim)]">{threshold} / 255</div>
-                  <p className="mt-1 leading-relaxed text-[var(--color-fg-dim)]">
-                    pixels with alpha below this value are treated as masked. raise to wipe out
-                    feathered atlas edges.
-                  </p>
-                </div>
-
-                <div className="mb-4">
-                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    brush
-                  </div>
-                  <div className="mb-2 flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setMode("paint")}
-                      className={`flex-1 rounded border px-2 py-1 ${
-                        mode === "paint"
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                    >
-                      paint
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMode("erase")}
-                      className={`flex-1 rounded border px-2 py-1 ${
-                        mode === "erase"
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                    >
-                      erase
-                    </button>
-                  </div>
-                  <input
-                    type="range"
-                    min={2}
-                    max={200}
-                    value={brushSize}
-                    onChange={(e) => setBrushSize(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="font-mono text-[var(--color-fg-dim)]">{brushSize}px</div>
-                </div>
-
-                <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
-                  <div className="mb-1 uppercase tracking-widest">how</div>
-                  <ul className="space-y-1 list-disc list-inside">
-                    <li>drag to paint a mask area</li>
-                    <li>switch to erase to undo brush strokes</li>
-                    <li>save bakes mask + threshold into a single PNG</li>
-                    <li>esc dismisses without saving</li>
-                  </ul>
-                </div>
-              </>
-            ) : (
-              <>
-                {/* Split-mode sidebar (E.2). Region list with name
+                )}
+                {studioMode === "trim" ? (
+                  <>
+                    <ShortcutsHelp />
+                    <TrimHelp />
+                  </>
+                ) : (
+                  <>
+                    {/* Split-mode sidebar (E.2). Region list with name
                     inputs + color swatch + delete; brush controls
                     below. The selected region receives strokes. */}
-                <div className="mb-3 flex items-center justify-between gap-1">
-                  <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    regions ({regionEntries.length})
-                  </div>
-                  <div className="flex flex-wrap gap-1 justify-end">
-                    {/* Sprint 6.4: seed regions from connected
+                    <div className="mb-3 flex items-center justify-between gap-1">
+                      <div className="uppercase tracking-widest text-[var(--color-fg-dim)]">
+                        regions ({regionEntries.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1 justify-end">
+                        {/* Sprint 6.4: seed regions from connected
                         silhouette components. Useful first step on
                         any multi-island layer — lets the user start
                         from auto-detect and refine instead of
                         painting from scratch. Auto-fires once on
                         first split-mode entry (no click needed). */}
-                    <button
-                      type="button"
-                      onClick={() => autoDetectRegions()}
-                      className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-                      title="re-detect regions from connected silhouettes"
-                    >
-                      auto-detect
-                    </button>
-                    <button
-                      type="button"
-                      onClick={addRegion}
-                      className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)]"
-                      title="add a new region"
-                    >
-                      + add
-                    </button>
-                    {regionEntries.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearAllRegions}
-                        className="rounded border border-red-500/40 px-1.5 py-0.5 text-red-300 hover:bg-red-500/10"
-                        title={`delete all ${regionEntries.length} region${regionEntries.length === 1 ? "" : "s"}`}
-                      >
-                        clear all
-                      </button>
-                    )}
-                  </div>
-                </div>
+                        <button
+                          type="button"
+                          onClick={() => autoDetectRegions()}
+                          className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                          title="re-detect regions from connected silhouettes"
+                        >
+                          auto-detect
+                        </button>
+                        <button
+                          type="button"
+                          onClick={addRegion}
+                          className="rounded border border-[var(--color-accent)] px-1.5 py-0.5 text-[var(--color-accent)]"
+                          title="add a new region"
+                        >
+                          + add
+                        </button>
+                        {regionEntries.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={clearAllRegions}
+                            className="rounded border border-red-500/40 px-1.5 py-0.5 text-red-300 hover:bg-red-500/10"
+                            title={`delete all ${regionEntries.length} region${regionEntries.length === 1 ? "" : "s"}`}
+                          >
+                            clear all
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
-                {regionEntries.length === 0 ? (
-                  <div className="mb-3 rounded border border-dashed border-[var(--color-border)] px-2 py-3 text-center text-[var(--color-fg-dim)]">
-                    no regions yet — click{" "}
-                    <span className="text-[var(--color-fg)]">auto-detect</span> to seed from
-                    silhouette components, or <span className="text-[var(--color-fg)]">+ add</span>{" "}
-                    to start from blank.
-                  </div>
-                ) : (
-                  <ul className="mb-3 flex flex-col gap-1.5">
-                    {regionEntries.map((r) => {
-                      const selected = r.id === selectedRegionId;
-                      return (
-                        <li key={r.id}>
-                          {/* G/6.x: row was a <button> nesting another
+                    {regionEntries.length === 0 ? (
+                      <div className="mb-3 rounded border border-dashed border-[var(--color-border)] px-2 py-3 text-center text-[var(--color-fg-dim)]">
+                        no regions yet — click{" "}
+                        <span className="text-[var(--color-fg)]">auto-detect</span> to seed from
+                        silhouette components, or{" "}
+                        <span className="text-[var(--color-fg)]">+ add</span> to start from blank.
+                      </div>
+                    ) : (
+                      <ul className="mb-3 flex flex-col gap-1.5">
+                        {regionEntries.map((r) => {
+                          const selected = r.id === selectedRegionId;
+                          return (
+                            <li key={r.id}>
+                              {/* G/6.x: row was a <button> nesting another
                               <button> (the delete ✕) which is invalid
                               HTML and triggered a Next.js hydration
                               error. Restructured as a flex row of
                               siblings: a select-tile button, an
                               inline name input, and a delete button —
                               all coplanar so neither nests the other. */}
-                          <div
-                            className={`flex w-full items-stretch rounded border ${
-                              selected ? "bg-[var(--color-accent)]/10" : "bg-transparent"
-                            }`}
-                            style={{ borderColor: r.color }}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setSelectedRegionId(r.id)}
-                              title={selected ? "selected region" : "select this region"}
-                              className="flex shrink-0 items-center gap-1.5 rounded-l px-1.5 hover:bg-[var(--color-accent)]/5"
-                            >
-                              <span
-                                className="h-3 w-3 shrink-0 rounded-sm"
-                                style={{ background: r.color }}
-                              />
-                              {selected && (
-                                <span className="text-[10px] text-[var(--color-accent)]">●</span>
-                              )}
-                            </button>
-                            <input
-                              type="text"
-                              value={r.name}
-                              onChange={(e) => renameRegion(r.id, e.target.value)}
-                              onFocus={() => setSelectedRegionId(r.id)}
-                              placeholder="name (e.g. torso)"
-                              className="min-w-0 flex-1 bg-transparent px-1 py-1 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (typeof window !== "undefined") {
-                                  const ok = window.confirm(
-                                    `region${r.name ? ` "${r.name}"` : ""} 을 삭제하시겠습니까? 이 region 의 paint stroke / SAM mask 가 사라집니다.`,
-                                  );
-                                  if (!ok) return;
-                                }
-                                removeRegion(r.id);
-                              }}
-                              className="flex shrink-0 items-center justify-center rounded-r px-2 text-[var(--color-fg-dim)] hover:bg-red-500/15 hover:text-red-300"
-                              title={`delete region${r.name ? ` "${r.name}"` : ""}`}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+                              <div
+                                className={`flex w-full items-stretch rounded border ${
+                                  selected ? "bg-[var(--color-accent)]/10" : "bg-transparent"
+                                }`}
+                                style={{ borderColor: r.color }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedRegionId(r.id)}
+                                  title={selected ? "selected region" : "select this region"}
+                                  className="flex shrink-0 items-center gap-1.5 rounded-l px-1.5 hover:bg-[var(--color-accent)]/5"
+                                >
+                                  <span
+                                    className="h-3 w-3 shrink-0 rounded-sm"
+                                    style={{ background: r.color }}
+                                  />
+                                  {selected && (
+                                    <span className="text-[10px] text-[var(--color-accent)]">
+                                      ●
+                                    </span>
+                                  )}
+                                </button>
+                                {/* Focus / solo toggle — when on, this
+                                region renders alone on the canvas
+                                AND brush strokes are locked to it. */}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setFocusRegionId((cur) => (cur === r.id ? null : r.id))
+                                  }
+                                  title={
+                                    focusRegionId === r.id
+                                      ? "포커스 해제 — 모든 region 다시 표시"
+                                      : "이 region 만 표시 + 편집 (다른 region 보호)"
+                                  }
+                                  className={`flex shrink-0 items-center justify-center px-1.5 text-[10px] ${
+                                    focusRegionId === r.id
+                                      ? "bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                                  }`}
+                                >
+                                  {focusRegionId === r.id ? "◉" : "○"}
+                                </button>
+                                <input
+                                  type="text"
+                                  value={r.name}
+                                  onChange={(e) => renameRegion(r.id, e.target.value)}
+                                  onFocus={() => setSelectedRegionId(r.id)}
+                                  placeholder="name (e.g. torso)"
+                                  className="min-w-0 flex-1 bg-transparent px-1 py-1 text-[11px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (typeof window !== "undefined") {
+                                      const ok = window.confirm(
+                                        `region${r.name ? ` "${r.name}"` : ""} 을 삭제하시겠습니까? 이 region 의 paint stroke / SAM mask 가 사라집니다.`,
+                                      );
+                                      if (!ok) return;
+                                    }
+                                    removeRegion(r.id);
+                                  }}
+                                  className="flex shrink-0 items-center justify-center rounded-r px-2 text-[var(--color-fg-dim)] hover:bg-red-500/15 hover:text-red-300"
+                                  title={`delete region${r.name ? ` "${r.name}"` : ""}`}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
 
-                <div className="mb-3">
-                  <div className="mb-1 uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    tool
-                  </div>
-                  <div className="mb-2 grid grid-cols-3 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setMode("paint")}
-                      className={`rounded border px-2 py-1 ${
-                        mode === "paint"
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                    >
-                      paint
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMode("erase")}
-                      className={`rounded border px-2 py-1 ${
-                        mode === "erase"
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                    >
-                      erase
-                    </button>
-                    {/* Sprint 6.2: SAM-driven mask. Disabled when no
-                        region is selected (the candidate has nowhere
-                        to land). */}
-                    <button
-                      type="button"
-                      onClick={() => setMode("auto")}
-                      disabled={!selectedRegionId}
-                      title={
-                        selectedRegionId
-                          ? "click foreground / right-click background, then compute"
-                          : "select a region first"
-                      }
-                      className={`rounded border px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40 ${
-                        mode === "auto"
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                      }`}
-                    >
-                      auto
-                    </button>
-                  </div>
-                  {mode !== "auto" && (
-                    <>
-                      <input
-                        type="range"
-                        min={2}
-                        max={200}
-                        value={brushSize}
-                        onChange={(e) => setBrushSize(Number(e.target.value))}
-                        className="w-full"
-                      />
-                      <div className="font-mono text-[var(--color-fg-dim)]">{brushSize}px</div>
-                    </>
-                  )}
-                </div>
+                    {/* Tool / brush size moved to the left Toolbox + top
+                    OptionsBar respectively. The right sidebar in
+                    split mode now focuses on region management +
+                    SAM panel + the HOW guide. */}
 
-                {/* Sprint 6.2: SAM auto-mask panel. Visible while the
+                    {/* Sprint 6.2: SAM auto-mask panel. Visible while the
                     user is in auto sub-mode. Click points list, the
                     compute button, candidate thumbnails to apply. */}
-                {mode === "auto" && (
-                  <div className="mb-3 rounded border border-[var(--color-border)] p-2">
-                    <div className="mb-1 flex items-baseline justify-between text-[var(--color-fg)]">
-                      <span>auto-mask · SAM</span>
-                      <span className="text-[10px] text-[var(--color-fg-dim)]">
-                        L = fg · R = bg
-                      </span>
-                    </div>
-                    <div className="mb-2 text-[10px] text-[var(--color-fg-dim)]">
-                      points: {samPoints.length} (fg {samPoints.filter((p) => p.label === 1).length}{" "}
-                      / bg {samPoints.filter((p) => p.label === 0).length})
-                    </div>
-                    {/* Sprint 6.3: composition mode for candidate
+                    {mode === "auto" && (
+                      <div className="mb-3 rounded border border-[var(--color-border)] p-2">
+                        <div className="mb-1 flex items-baseline justify-between text-[var(--color-fg)]">
+                          <span>auto-mask · SAM</span>
+                          <span className="text-[10px] text-[var(--color-fg-dim)]">
+                            L = fg · R = bg
+                          </span>
+                        </div>
+                        <div className="mb-2 text-[10px] text-[var(--color-fg-dim)]">
+                          points: {samPoints.length} (fg{" "}
+                          {samPoints.filter((p) => p.label === 1).length} / bg{" "}
+                          {samPoints.filter((p) => p.label === 0).length})
+                        </div>
+                        {/* Sprint 6.3: composition mode for candidate
                         apply. add = union (default), intersect =
                         keep only overlap, subtract = remove. */}
-                    <div className="mb-2 grid grid-cols-3 gap-1 text-[10px]">
-                      {(["add", "intersect", "subtract"] as const).map((op) => (
-                        <button
-                          type="button"
-                          key={op}
-                          onClick={() => setSamComposeOp(op)}
-                          title={
-                            op === "add"
-                              ? "candidate's opaque pixels join the region"
-                              : op === "intersect"
-                                ? "region keeps only pixels also in the candidate"
-                                : "candidate's pixels are removed from the region"
-                          }
-                          className={`rounded border px-1.5 py-0.5 ${
-                            samComposeOp === op
-                              ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                              : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-                          }`}
-                        >
-                          {op}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="mb-2 flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void computeSamMasks();
-                        }}
-                        disabled={
-                          samRunning ||
-                          samPoints.length === 0 ||
-                          !samPoints.some((p) => p.label === 1)
-                        }
-                        className="flex-1 rounded border border-[var(--color-accent)] px-2 py-1 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {samRunning ? "computing…" : "compute mask"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={resetSamPoints}
-                        disabled={samPoints.length === 0 && samCandidates === null}
-                        className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] disabled:cursor-not-allowed disabled:opacity-40 hover:text-[var(--color-fg)]"
-                      >
-                        reset
-                      </button>
-                    </div>
-                    {samError && (
-                      <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
-                        {samError}
-                      </div>
-                    )}
-                    {samCandidates && samCandidates.length > 0 && (
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {samCandidates.map((c, i) => (
+                        <div className="mb-2 grid grid-cols-3 gap-1 text-[10px]">
+                          {(["add", "intersect", "subtract"] as const).map((op) => (
+                            <button
+                              type="button"
+                              key={op}
+                              onClick={() => setSamComposeOp(op)}
+                              title={
+                                op === "add"
+                                  ? "candidate's opaque pixels join the region"
+                                  : op === "intersect"
+                                    ? "region keeps only pixels also in the candidate"
+                                    : "candidate's pixels are removed from the region"
+                              }
+                              className={`rounded border px-1.5 py-0.5 ${
+                                samComposeOp === op
+                                  ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                                  : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+                              }`}
+                            >
+                              {op}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mb-2 flex gap-1">
                           <button
                             type="button"
-                            // biome-ignore lint/suspicious/noArrayIndexKey: candidates array is order-stable per compute call
-                            key={i}
                             onClick={() => {
-                              void applySamCandidate(c);
+                              void computeSamMasks();
                             }}
-                            title="apply to selected region"
-                            className="overflow-hidden rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]"
+                            disabled={
+                              samRunning ||
+                              samPoints.length === 0 ||
+                              !samPoints.some((p) => p.label === 1)
+                            }
+                            className="flex-1 rounded border border-[var(--color-accent)] px-2 py-1 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            {/* biome-ignore lint/performance/noImgElement: blob URL preview */}
-                            <img
-                              src={URL.createObjectURL(c.maskBlob)}
-                              alt={`candidate ${i + 1}`}
-                              className="block h-auto w-full"
-                            />
+                            {samRunning ? "computing…" : "compute mask"}
                           </button>
-                        ))}
+                          <button
+                            type="button"
+                            onClick={resetSamPoints}
+                            disabled={samPoints.length === 0 && samCandidates === null}
+                            className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] disabled:cursor-not-allowed disabled:opacity-40 hover:text-[var(--color-fg)]"
+                          >
+                            reset
+                          </button>
+                        </div>
+                        {samError && (
+                          <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-1 text-[10px] leading-relaxed text-red-300">
+                            {samError}
+                          </div>
+                        )}
+                        {samCandidates && samCandidates.length > 0 && (
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {samCandidates.map((c, i) => (
+                              <button
+                                type="button"
+                                // biome-ignore lint/suspicious/noArrayIndexKey: candidates array is order-stable per compute call
+                                key={i}
+                                onClick={() => {
+                                  void applySamCandidate(c);
+                                }}
+                                title="apply to selected region"
+                                className="overflow-hidden rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]"
+                              >
+                                {/* biome-ignore lint/performance/noImgElement: blob URL preview */}
+                                <img
+                                  src={URL.createObjectURL(c.maskBlob)}
+                                  alt={`candidate ${i + 1}`}
+                                  className="block h-auto w-full"
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {samCandidates && samCandidates.length === 0 && (
+                          <div className="text-[10px] text-[var(--color-fg-dim)]">
+                            SAM returned no usable masks
+                          </div>
+                        )}
                       </div>
                     )}
-                    {samCandidates && samCandidates.length === 0 && (
-                      <div className="text-[10px] text-[var(--color-fg-dim)]">
-                        SAM returned no usable masks
-                      </div>
-                    )}
-                  </div>
-                )}
 
-                <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
-                  <div className="mb-1 uppercase tracking-widest">how</div>
-                  <ul className="space-y-1 list-disc list-inside">
-                    <li>"+ add" to create a region, name it</li>
-                    <li>click a region to select; brush strokes go into it</li>
-                    <li>paint / erase + brush size apply to the selected region</li>
-                    <li>
-                      <span className="text-[var(--color-fg)]">auto</span>: left-click foreground /
-                      right-click background, then compute → pick a candidate
-                    </li>
-                    <li>save persists the region masks to IDB — GeneratePanel uses these</li>
-                  </ul>
-                </div>
-              </>
-            )}
-          </aside>
+                    <ShortcutsHelp />
+                    <SplitHelp />
+                  </>
+                )}
+              </aside>
+            </div>
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Helpers + small render-only sub-components.
+// ────────────────────────────────────────────────────────────────────
+
+/** Map a Brush/Bucket op to the canvas composite operation. "add"
+ *  paints opaque white into the mask; "remove" erases. Module-level
+ *  so React's exhaustive-deps lint doesn't demand the inner callbacks
+ *  thread it through their dep arrays. */
+function compositeForOp(op: BrushOp): GlobalCompositeOperation {
+  return op === "add" ? "source-over" : "destination-out";
+}
+
+/** Whether the active tool needs the brush-size cursor overlay. */
+function isSizedBrushTool(tool: ToolId): boolean {
+  return tool === "brush" || tool === "eraser" || tool === "bucket" || tool === "wand";
+}
+
+/** Tailwind class for the canvas's CSS cursor when the BrushCursor
+ *  overlay is NOT rendered (move/zoom/hand/sam tools). */
+function cursorClassForTool(tool: ToolId, spaceHeld: boolean, isPanning: boolean): string {
+  if (spaceHeld || tool === "hand") {
+    return isPanning ? "cursor-grabbing" : "cursor-grab";
+  }
+  if (tool === "zoom") return "cursor-zoom-in";
+  if (tool === "move") return "cursor-default";
+  if (tool === "sam") return "cursor-crosshair";
+  // brush / eraser / bucket / wand — overlay handles the visual.
+  return "cursor-crosshair";
+}
+
+/** Tints + shows the wand selection on top of the canvas. The
+ *  selection canvas is opaque-white inside, transparent outside;
+ *  we recolour to a translucent blue so it reads as "selected"
+ *  without obscuring the underlying texture. */
+function WandSelectionOverlay({
+  selection,
+  sourceWidth,
+  sourceHeight,
+}: {
+  selection: HTMLCanvasElement;
+  sourceWidth: number;
+  sourceHeight: number;
+}) {
+  // Render the selection into a recolour canvas once per render; the
+  // selection canvas itself is the parent's state so it doesn't
+  // change between frames unless the user clicks again.
+  const tinted = useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = sourceWidth;
+    c.height = sourceHeight;
+    const ctx = c.getContext("2d");
+    if (!ctx) return c;
+    // 1) the selection mask
+    ctx.drawImage(selection, 0, 0, sourceWidth, sourceHeight);
+    // 2) recolour white→blue, keep alpha
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = "rgba(59, 130, 246, 0.35)";
+    ctx.fillRect(0, 0, sourceWidth, sourceHeight);
+    return c;
+  }, [selection, sourceWidth, sourceHeight]);
+
+  const dataUrl = useMemo(() => tinted.toDataURL("image/png"), [tinted]);
+
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0"
+      style={{
+        backgroundImage: `url(${dataUrl})`,
+        backgroundSize: "100% 100%",
+        backgroundRepeat: "no-repeat",
+      }}
+    />
+  );
+}
+
+/** Floating panel above the regions list, visible whenever a wand
+ *  selection exists. Lets the user apply / remove the selection
+ *  on the active mask, or simply deselect. */
+function WandPanel({
+  area,
+  studioMode,
+  onApplyAdd,
+  onApplyRemove,
+  onDeselect,
+}: {
+  area: number;
+  studioMode: "trim" | "split";
+  onApplyAdd: () => void;
+  onApplyRemove: () => void;
+  onDeselect: () => void;
+}) {
+  const labels =
+    studioMode === "trim"
+      ? { add: "Hide selected", remove: "Reveal selected" }
+      : { add: "Add to region", remove: "Remove from region" };
+  return (
+    <div className="mb-3 rounded border border-blue-500/40 bg-blue-500/5 p-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="font-medium text-blue-300">Selection</span>
+        <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
+          {area.toLocaleString()} px
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-1">
+        <button
+          type="button"
+          onClick={onApplyAdd}
+          className="rounded border border-[var(--color-accent)] px-2 py-1 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+          title="Apply with brush 'add' op"
+        >
+          {labels.add}
+        </button>
+        <button
+          type="button"
+          onClick={onApplyRemove}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+          title="Apply with brush 'remove' op"
+        >
+          {labels.remove}
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={onDeselect}
+        className="mt-1 w-full rounded border border-[var(--color-border)] px-2 py-1 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+        title="Esc"
+      >
+        Deselect (Esc)
+      </button>
+    </div>
+  );
+}
+
+/** Shortcut cheat-sheet — same in both studio modes since the
+ *  Photoshop bindings work universally. Compact two-column grid. */
+function ShortcutsHelp() {
+  const rows: [string, string][] = [
+    ["B / E", "Brush / Eraser"],
+    ["G", "Bucket fill"],
+    ["W", "Magic wand"],
+    ["Z / H", "Zoom / Hand"],
+    ["[ / ]", "Brush size −/+"],
+    ["X", "Swap mode"],
+    ["Space", "Pan (hold)"],
+    ["⌘0 / ⌘1", "Fit / 100%"],
+    ["Esc", "Deselect / close"],
+  ];
+  return (
+    <div className="mb-3 rounded border border-[var(--color-border)] p-2 text-[10px] leading-relaxed text-[var(--color-fg-dim)]">
+      <div className="mb-1 uppercase tracking-widest text-[var(--color-fg)]">Shortcuts</div>
+      <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+        {rows.map(([k, v]) => (
+          <div key={k} className="contents">
+            <span className="font-mono text-[var(--color-accent)]">{k}</span>
+            <span>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TrimHelp() {
+  return (
+    <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
+      <div className="mb-1 uppercase tracking-widest">How (Trim)</div>
+      <ul className="space-y-1 list-disc list-inside">
+        <li>마스크가 칠해진 픽셀이 최종 출력에서 숨겨집니다</li>
+        <li>
+          <span className="text-[var(--color-fg)]">B</span> 브러시로 추가,{" "}
+          <span className="text-[var(--color-fg)]">E</span> 지우개로 복원
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">G</span> 버킷으로 연결된 영역 한 번에 채움
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">W</span> 매직 셀렉터로 영역 선택 후 일괄 적용
+        </li>
+        <li>상단 alpha 슬라이더로 feathered edge 제거</li>
+        <li>save 시 마스크 + threshold 모두 PNG 로 baked</li>
+      </ul>
+    </div>
+  );
+}
+
+function SplitHelp() {
+  return (
+    <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
+      <div className="mb-1 uppercase tracking-widest">How (Split)</div>
+      <ul className="space-y-1 list-disc list-inside">
+        <li>region 클릭 → 선택. 브러시 / 버킷 / 매직 wand 모두 선택된 region 에 작용</li>
+        <li>
+          <span className="text-[var(--color-fg)]">B</span> 추가,{" "}
+          <span className="text-[var(--color-fg)]">E</span> 제거,{" "}
+          <span className="text-[var(--color-fg)]">X</span> 로 모드 전환
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">S</span> = SAM (AI 자동 마스크) — 점 클릭 후
+          compute
+        </li>
+        <li>save 시 region 마스크 IDB 에 저장 — Geny / GeneratePanel 이 사용</li>
+      </ul>
     </div>
   );
 }
