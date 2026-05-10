@@ -3,6 +3,8 @@
 import Link from "next/link";
 import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
+import { AnimationPanel } from "@/components/animation/AnimationPanel";
+import { EditorTabBar, useEditorTab } from "@/components/animation/EditorTabBar";
 import { ExportButton } from "@/components/ExportButton";
 import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
@@ -30,6 +32,11 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [app, setApp] = useState<Application | null>(null);
+  // Phase 8.1 — sidebar swaps between Edit (texture editing — original
+  // panels) and Animation (motion / expression / emotion mapping —
+  // populated through 8.3~8.7) based on the URL `?tab=` query.
+  const activeTab = useEditorTab();
+
   /** Sprint 7.1: discoverability surface. `?` key (Shift+/) toggles
    *  the modal, `?` button in the header opens it. Lists shortcuts
    *  + workflow + per-panel intro so a first-timer doesn't need to
@@ -134,7 +141,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
     <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
       <section className="flex min-h-0 min-w-0 flex-col">
         <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
-          <span className="font-mono text-[var(--color-accent)]">edit</span>
+          <EditorTabBar />
           <span className="ml-3">{headerName}</span>
           <span className="ml-3 text-[var(--color-fg-dim)]">· {headerStatus}</span>
           {puppetRow && (
@@ -209,15 +216,21 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       </section>
 
       <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)]">
-        <ToolsPanel onPlayAnimation={playAnimation} />
-        <ReferencesPanel puppetKey={puppetId} />
-        <VariantsPanel puppetKey={puppetId} adapter={adapter} onApplyVariant={applyVariant} />
-        <LayersPanel
-          adapter={adapter}
-          puppetKey={puppetId}
-          onToggleLayer={toggleLayer}
-          onBulkSet={bulkSetLayerVisibility}
-        />
+        {activeTab === "edit" ? (
+          <>
+            <ToolsPanel onPlayAnimation={playAnimation} />
+            <ReferencesPanel puppetKey={puppetId} />
+            <VariantsPanel puppetKey={puppetId} adapter={adapter} onApplyVariant={applyVariant} />
+            <LayersPanel
+              adapter={adapter}
+              puppetKey={puppetId}
+              onToggleLayer={toggleLayer}
+              onBulkSet={bulkSetLayerVisibility}
+            />
+          </>
+        ) : (
+          <AnimationPanel puppetKey={puppetId} adapter={adapter} />
+        )}
       </aside>
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />

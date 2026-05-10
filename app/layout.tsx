@@ -27,10 +27,7 @@ export default function RootLayout({
             before failing — afterInteractive guarantees the download
             starts right after the page becomes interactive, well within
             that window even on a built-in Hiyori auto-load. */}
-        <Script
-          src={assetUrl("/runtime/live2dcubismcore.min.js")}
-          strategy="afterInteractive"
-        />
+        <Script src={assetUrl("/runtime/live2dcubismcore.min.js")} strategy="afterInteractive" />
         {children}
       </body>
     </html>

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
+import { AnimationPanel } from "@/components/animation/AnimationPanel";
+import { EditorTabBar, useEditorTab } from "@/components/animation/EditorTabBar";
 import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
 import { OnboardingBanner } from "@/components/OnboardingBanner";
@@ -28,6 +30,9 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Phase 8.1 — sidebar swaps between Edit (texture) and Animation
+  // (motion / expression mapping) based on `?tab=` query.
+  const activeTab = useEditorTab();
 
   const { toggleLayer, bulkSetLayerVisibility, applyVariant, playAnimation, reset, undo, redo } =
     usePuppetMutations(adapter);
@@ -72,7 +77,8 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
     <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
       <section className="flex min-h-0 min-w-0 flex-col">
         <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
-          <span className="font-mono text-[var(--color-accent)]">edit · builtin</span>
+          <EditorTabBar />
+          <span className="ml-3 font-mono text-[var(--color-fg-dim)]">builtin</span>
           <span className="ml-3">{sample.name}</span>
           <span className="ml-3 text-[var(--color-fg-dim)]">
             · {sample.runtime}
@@ -131,19 +137,25 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
       </section>
 
       <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)]">
-        <ToolsPanel onPlayAnimation={playAnimation} />
-        <ReferencesPanel puppetKey={`builtin:${key}`} />
-        <VariantsPanel
-          puppetKey={`builtin:${key}`}
-          adapter={adapter}
-          onApplyVariant={applyVariant}
-        />
-        <LayersPanel
-          adapter={adapter}
-          puppetKey={`builtin:${key}`}
-          onToggleLayer={toggleLayer}
-          onBulkSet={bulkSetLayerVisibility}
-        />
+        {activeTab === "edit" ? (
+          <>
+            <ToolsPanel onPlayAnimation={playAnimation} />
+            <ReferencesPanel puppetKey={`builtin:${key}`} />
+            <VariantsPanel
+              puppetKey={`builtin:${key}`}
+              adapter={adapter}
+              onApplyVariant={applyVariant}
+            />
+            <LayersPanel
+              adapter={adapter}
+              puppetKey={`builtin:${key}`}
+              onToggleLayer={toggleLayer}
+              onBulkSet={bulkSetLayerVisibility}
+            />
+          </>
+        ) : (
+          <AnimationPanel puppetKey={`builtin:${key}`} adapter={adapter} />
+        )}
       </aside>
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
