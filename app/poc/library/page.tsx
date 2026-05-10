@@ -65,11 +65,13 @@ export default function LibraryPage() {
   return (
     <main className="flex h-full flex-col overflow-hidden bg-[var(--color-bg)]">
       <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
-        <span className="font-mono text-[var(--color-accent)]">PoC · Asset Library</span>
+        <span className="font-mono text-[var(--color-accent)]">Library</span>
         <span className="ml-3">
           {puppets == null
-            ? "loading…"
-            : `${puppets.length} puppet${puppets.length === 1 ? "" : "s"} saved in IndexedDB`}
+            ? "불러오는 중…"
+            : puppets.length === 0
+              ? "저장된 puppet 없음"
+              : `${puppets.length}개 puppet 저장됨 (IndexedDB)`}
         </span>
         <a
           href="/poc/upload"
@@ -83,13 +85,17 @@ export default function LibraryPage() {
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {puppets && puppets.length === 0 && (
           <div className="mx-auto max-w-2xl rounded border border-dashed border-[var(--color-border)] bg-[var(--color-panel)] p-12 text-center text-sm text-[var(--color-fg-dim)]">
-            <div className="mb-2 text-[var(--color-fg)]">No puppets saved yet.</div>
+            <div className="mb-2 text-[var(--color-fg)]">아직 저장된 puppet 이 없습니다.</div>
             <div>
-              Drop a Spine or Cubism bundle on the{" "}
+              Spine 또는 Cubism 번들을{" "}
               <a href="/poc/upload" className="text-[var(--color-accent)] underline">
-                upload page
+                업로드 페이지
               </a>{" "}
-              and it'll appear here.
+              에 드롭하면 여기에 나타납니다.{" "}
+              <a href="/" className="text-[var(--color-accent)] underline">
+                홈
+              </a>{" "}
+              의 built-in 샘플로 먼저 둘러봐도 좋습니다.
             </div>
           </div>
         )}

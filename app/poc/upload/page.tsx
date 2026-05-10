@@ -143,7 +143,7 @@ export default function UploadPocPage() {
     <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
       <section className="flex min-h-0 min-w-0 flex-col">
         <header className="shrink-0 border-b border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-fg-dim)]">
-          <span className="font-mono text-[var(--color-accent)]">PoC · Upload</span>
+          <span className="font-mono text-[var(--color-accent)]">Upload</span>
           <span className="ml-3">{headerStatus}</span>
           {saveStatus !== "idle" && (
             <span

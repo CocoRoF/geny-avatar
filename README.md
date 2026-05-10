@@ -16,15 +16,24 @@ pnpm install
 pnpm dev          # http://localhost:3000
 ```
 
+## 주요 기능
+
+- **Dual runtime upload** — Spine 3.8/4.x `.skel` + atlas, Cubism 4/5 `.model3.json` + moc3 zip 드롭 → IndexedDB 저장 → 라이브 미리보기
+- **Layer / Variant 패널** — 슬롯·파트별 visibility 토글, 변형(skin) 저장/전환
+- **Decompose Studio** — alpha component 자동 검출 + brush 마스킹 + SAM 자동 세그먼트 (split mode 에서 region 직접 정의)
+- **AI texture generation** — gpt-image-2 multi-image edits API (focus mode region별 프롬프트, Reference 이미지 첨부, per-region revert / history)
+- **Export / Import** — `*.geny-avatar.zip` 라운드트립 (avatar.json + bundle + overrides + LICENSE.md)
+- **Help / Onboarding** — `?` 키 단축 modal + 첫 진입 배너
+
 ## 스택
 
 - Next.js 15 (App Router) + React 19 + TypeScript
-- Pixi.js v8 (예정 — Phase 0 PoC에서 도입)
-- Spine 런타임: `@esotericsoftware/spine-pixi-v8` (예정)
-- Live2D 런타임: `untitled-pixi-live2d-engine` + Cubism Core (예정)
-- Tailwind CSS v4
-- Biome (lint/format)
-- pnpm 10
+- Pixi.js v8 (렌더 엔진)
+- Spine 런타임: `@esotericsoftware/spine-pixi-v8`
+- Live2D 런타임: `untitled-pixi-live2d-engine` + Cubism Core
+- AI: OpenAI gpt-image-2 (`/v1/images/edits`), SAM (Replicate) for segmentation
+- 영구화: Dexie (IndexedDB v9)
+- Tailwind CSS v4 / Biome / pnpm 10
 
 ## 디렉터리
 
@@ -45,11 +54,12 @@ geny-avatar/
 
 ## 현재 상태
 
-**Phase 0** — Spike & Adapter Interface Lock. 다음:
-- spine-pixi-v8 PoC
-- untitled-pixi-live2d-engine PoC
-- 두 런타임 동시 마운트 검증 (T-rt1)
-- 어댑터 인터페이스 1차 안 확정
+**Phase 7 — Polish & V1 Release** 진행 중. Phase 0~6 완료 (dual runtime / upload / decompose / AI generation / variant export / SAM 통합 / per-region revert·history). 7.1 Help modal + 7.2 onboarding + 7.3 한국어화 + 7.4 attribution 완료. 다음:
+
+- 7.5 README + landing copy 정비 (이 PR)
+- 7.6 첫 페인트 1.5s 목표 성능 최적화
+
+자세한 시간순 기록은 [`docs/progress/INDEX.md`](docs/progress/INDEX.md).
 
 ## 라이선스
 

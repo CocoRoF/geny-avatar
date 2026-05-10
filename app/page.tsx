@@ -12,50 +12,50 @@ const phases: Phase[] = [
   {
     id: "P0",
     title: "Spike & Adapter Interface Lock",
-    status: "active",
+    status: "done",
     blurb: "Spine + Cubism PoC, 어댑터 인터페이스 확정, 동시 마운트 검증",
   },
   {
     id: "P1",
     title: "Dual Runtime + Upload",
-    status: "pending",
+    status: "done",
     blurb: "두 어댑터 동시 구현, 드래그-드롭 업로드 day-1, 레이어 토글",
   },
   {
     id: "P2",
     title: "Atlas & Decompose Studio",
-    status: "pending",
+    status: "done",
     blurb: "region 슬라이싱, mesh silhouette, 알파/브러시 마스킹",
   },
   {
     id: "P3",
     title: "AI Texture Generation",
-    status: "pending",
-    blurb: "Replicate 통합, SDXL inpaint + canny ControlNet 워크플로",
+    status: "done",
+    blurb: "OpenAI gpt-image-2 multi-image edits, references 첨부, region 합성",
   },
   {
     id: "P4",
     title: "Variant System & Export",
-    status: "pending",
-    blurb: "스킨/변형 모델, ZIP 라운드트립",
+    status: "done",
+    blurb: "스킨/변형 모델, *.geny-avatar.zip 라운드트립",
   },
   {
     id: "P5",
     title: "AI Quality Push",
-    status: "pending",
-    blurb: "IP-Adapter + 사용자 LoRA, 자체 ComfyUI",
+    status: "done",
+    blurb: "Refine prompt, focus mode region 별 prompt, per-region revert·history",
   },
   {
     id: "P6",
     title: "Decompose Pro",
-    status: "pending",
-    blurb: "SAM 자동 마스크, 마스킹 UX 개선",
+    status: "done",
+    blurb: "SAM 자동 마스크, brush/SAM 합성 (union/intersect/subtract), fullscreen",
   },
   {
     id: "P7",
     title: "Polish & V1",
-    status: "pending",
-    blurb: "성능, 온보딩, V1 시연 가능 상태",
+    status: "active",
+    blurb: "Help modal · onboarding · 한국어화 · attribution · 성능 — V1 시연 가능 상태",
   },
 ];
 
@@ -85,13 +85,16 @@ export default function Home() {
     <>
       <main className="mx-auto max-w-4xl px-8 py-16">
         <header className="mb-16">
-          <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">v0.0.1 · phase 0</div>
+          <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">
+            v0.1.0 · phase 7 (polish & V1)
+          </div>
           <h1 className="mb-3 text-4xl font-semibold tracking-tight">geny-avatar</h1>
           <p className="text-lg text-[var(--color-fg-dim)]">
-            Web-based 2D Live Avatar editor with AI-driven texture generation.
+            Cubism / Spine puppet 을 브라우저에서 열고, 레이어를 분해하고, 생성형 AI 로 텍스처를
+            교체합니다.
           </p>
           <p className="mt-1 text-sm text-[var(--color-fg-dim)]">
-            Cubism · Spine · Next.js · Pixi v8 · SDXL inpaint
+            Cubism · Spine · Next.js · Pixi v8 · OpenAI gpt-image-2 · SAM
           </p>
         </header>
 
@@ -122,11 +125,15 @@ export default function Home() {
             ))}
           </div>
           <p className="mt-3 text-xs text-[var(--color-fg-dim)]">
-            본인 puppet은{" "}
+            본인 puppet 은{" "}
             <a href="/poc/upload" className="text-[var(--color-accent)] underline">
-              /poc/upload
-            </a>
-            에 드롭하면 라이브러리에 저장 후 같은 에디터로 진입.
+              업로드
+            </a>{" "}
+            → 자동 저장 → 같은 에디터로 진입. 저장된 puppet 은{" "}
+            <a href="/poc/library" className="text-[var(--color-accent)] underline">
+              라이브러리
+            </a>{" "}
+            에서 다시 열 수 있습니다.
           </p>
         </section>
 
@@ -179,9 +186,30 @@ export default function Home() {
 
         <section className="mt-16">
           <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-[var(--color-fg-dim)]">
-            Phase 0 PoC
+            Debug / 데모 페이지
           </h2>
           <div className="grid gap-2 sm:grid-cols-3">
+            <a
+              href="/poc/upload"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
+              <div className="mt-1 text-sm">puppet 드롭 → 라이브러리 저장</div>
+            </a>
+            <a
+              href="/poc/library"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
+              <div className="mt-1 text-sm">저장된 puppet 목록</div>
+            </a>
+            <a
+              href="/poc/dual"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
+            >
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
+              <div className="mt-1 text-sm">두 런타임 동시 마운트 검증</div>
+            </a>
             <a
               href="/poc/spine"
               className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
@@ -197,42 +225,19 @@ export default function Home() {
               <div className="mt-1 text-sm">Hiyori + part toggle</div>
             </a>
             <a
-              href="/poc/dual"
+              href="/poc/sam-debug"
               className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
             >
-              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/dual</div>
-              <div className="mt-1 text-sm">T-rt1 — 두 런타임 동시 마운트</div>
-            </a>
-            <a
-              href="/poc/upload-debug"
-              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-            >
-              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload-debug</div>
-              <div className="mt-1 text-sm">parseBundle 결과 뷰어 (sprint 1.3a)</div>
-            </a>
-            <a
-              href="/poc/upload"
-              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-            >
-              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/upload</div>
-              <div className="mt-1 text-sm">드롭→로드→미리보기 + 자동 저장 (1.3b/1.3c)</div>
-            </a>
-            <a
-              href="/poc/library"
-              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3 hover:border-[var(--color-accent)]"
-            >
-              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/library</div>
-              <div className="mt-1 text-sm">
-                저장된 puppet 목록 (sprint 1.3c) — 카드 클릭 시 /edit/[id]로
-              </div>
+              <div className="font-mono text-xs text-[var(--color-accent)]">/poc/sam-debug</div>
+              <div className="mt-1 text-sm">SAM 점→마스크 단독 호출</div>
             </a>
           </div>
           <p className="mt-4 text-xs text-[var(--color-fg-dim)]">
             본 에디터는{" "}
             <code className="rounded bg-[var(--color-panel)] px-1.5 py-0.5 font-mono">
               /edit/[avatarId]
-            </code>{" "}
-            (sprint 1.4a). 라이브러리 카드 클릭으로 진입.
+            </code>
+            . 라이브러리 카드를 클릭하거나 위 built-in 샘플로 진입할 수 있습니다.
           </p>
         </section>
 
