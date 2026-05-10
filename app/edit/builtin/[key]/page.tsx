@@ -3,6 +3,7 @@
 import { use, useEffect, useState } from "react";
 import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
+import { OnboardingBanner } from "@/components/OnboardingBanner";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
@@ -118,6 +119,8 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
             ?
           </button>
         </header>
+
+        <OnboardingBanner onOpenHelp={() => setHelpOpen(true)} />
 
         <PuppetCanvas
           input={sample.loadInput}

@@ -100,6 +100,7 @@
 | 2026-05-10 | [84 generate_panel_parity_upgrades](2026-05-10_84_generate_panel_parity_upgrades.md) | gen polish | 완료 — GeneratePanel 4가지 동시 업그레이드. (1) 모달 `h-[90vh] w-[min(92vw,1200px)]` → `h-[95vh] w-[min(96vw,1800px)]` + sidebar 320→480px. (2) `requestClose` guard: in-flight 면 alert reject, unapplied result 면 confirm. 3 path 모두. (3) `originalSourceCanvasRef` (no-texture extraction) + `onRevertFocusedRegion` 으로 특정 region 만 pristine 복귀, atlas 즉시 갱신. (4) `AIJobRow.regionSignature?` 추가, apply 시 focused region sig 기록, `visibleHistory` 가 focus mode 면 그 region 만 필터 |
 | 2026-05-10 | [85 phase7_kickoff](2026-05-10_85_phase7_kickoff.md) | 7.0 | 진행중 — Phase 7 (Polish & V1 Release) sub-sprint 분할. 7.1 Help modal / 7.2 Onboarding hint / 7.3 에러 한국어화 / 7.4 라이선스 attribution / 7.5 README + landing / 7.6 성능 최적화 |
 | 2026-05-10 | [86 sprint_7_1_help_modal](2026-05-10_86_sprint_7_1_help_modal.md) | 7.1 | 완료 — discoverability 1차 진입점. 신규 `HelpModal` 컴포넌트 (workflow / shortcuts / panels / modals / tips 5 section). editor 두 page (`/edit/[id]` + `/edit/builtin/[key]`) 헤더에 `?` 버튼 + `?` 키 토글 wiring |
+| 2026-05-10 | [87 sprint_7_2_onboarding](2026-05-10_87_sprint_7_2_onboarding.md) | 7.2 | 완료 — 첫 editor 진입 시 캔버스 위 onboarding 배너 (3 step 한 줄 안내 + "전체 안내 (?)" + "got it"). localStorage versioned key 로 영구 dismiss. HelpModal 에 "show onboarding again" 버튼으로 reset 가능 |
 
 ## 운영 규칙
 

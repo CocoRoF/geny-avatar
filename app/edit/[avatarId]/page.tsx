@@ -5,6 +5,7 @@ import { use, useEffect, useState } from "react";
 import { ExportButton } from "@/components/ExportButton";
 import { HelpModal } from "@/components/HelpModal";
 import { LayersPanel } from "@/components/LayersPanel";
+import { OnboardingBanner } from "@/components/OnboardingBanner";
 import { PuppetCanvas } from "@/components/PuppetCanvas";
 import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
@@ -185,6 +186,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             ?
           </button>
         </header>
+
+        <OnboardingBanner onOpenHelp={() => setHelpOpen(true)} />
 
         <PuppetCanvas
           input={input}

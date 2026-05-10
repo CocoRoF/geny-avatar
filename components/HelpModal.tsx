@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { resetOnboardingDismissed } from "@/components/OnboardingBanner";
 
 type Props = {
   open: boolean;
@@ -182,7 +183,7 @@ export function HelpModal({ open, onClose }: Props) {
           </section>
 
           {/* Tips */}
-          <section>
+          <section className="mb-5">
             <h2 className="mb-2 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
               tips
             </h2>
@@ -201,6 +202,29 @@ export function HelpModal({ open, onClose }: Props) {
               </li>
               <li>저장 안 된 generated 결과 있을 때 close 시도 → 항상 confirm</li>
             </ul>
+          </section>
+
+          {/* Onboarding reset */}
+          <section>
+            <h2 className="mb-2 text-xs uppercase tracking-widest text-[var(--color-fg-dim)]">
+              onboarding
+            </h2>
+            <p className="mb-2 text-[var(--color-fg-dim)]">
+              처음 editor 진입 시 짧은 안내 배너가 캔버스 위에 뜸. 한 번 dismiss 하면 다시 안
+              뜨지만, 필요할 때 아래 버튼으로 복구 가능.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                resetOnboardingDismissed();
+                if (typeof window !== "undefined") {
+                  window.alert("Onboarding 배너를 다음 editor 진입 시 다시 보여줍니다.");
+                }
+              }}
+              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            >
+              show onboarding again
+            </button>
           </section>
         </div>
       </div>
