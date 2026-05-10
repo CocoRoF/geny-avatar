@@ -114,6 +114,14 @@ export class Live2DAdapter implements AvatarAdapter {
    *  back into the textureId that the export baker keys footprints by. */
   private textureIdByPageIndex = new Map<number, TextureId>();
 
+  /** URL of the model3.json the adapter is currently driving — handed
+   *  in via load(input.model3). Phase 8.2 (animation tab) needs this
+   *  to re-parse the manifest for motion / expression / hit-area
+   *  metadata; the engine does its own parse but doesn't expose the
+   *  result through a stable API. Cached as a class field instead of
+   *  an extra fetch round trip on every meta read. */
+  private model3Url: string | null = null;
+
   /**
    * Cubism part groups pulled out of cdi3.json `Groups` (Target="Part").
    * Keyed by group name → list of part IDs declared in that group.
@@ -142,6 +150,7 @@ export class Live2DAdapter implements AvatarAdapter {
     if (input.kind !== "live2d") {
       throw new Error(`Live2DAdapter cannot load input kind ${input.kind}`);
     }
+    this.model3Url = input.model3;
 
     await this.waitForCubismCore();
 
@@ -589,6 +598,16 @@ export class Live2DAdapter implements AvatarAdapter {
 
   getDisplayObject(): Container | null {
     return this.model;
+  }
+
+  /**
+   * URL of the model3.json manifest currently driving this adapter.
+   * Returns null before load() runs. Phase 8.2 (animation tab) reads
+   * this to fetch + parse the manifest's motion / expression /
+   * hit-area metadata for the editor sidebar.
+   */
+  getModelManifestUrl(): string | null {
+    return this.model3Url;
   }
 
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
