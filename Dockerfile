@@ -16,7 +16,7 @@
 # ── Stage 1: deps ────────────────────────────────────────────────────
 # Resolve and download dependencies once. Cached as long as
 # package.json + pnpm-lock.yaml don't change.
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
@@ -31,7 +31,7 @@ RUN pnpm install --frozen-lockfile
 # build runs — setting them only on the runner stage is too late. Pass
 # via `docker build --build-arg` (or compose's `build.args`) when an
 # integration deployment needs a non-default value.
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
@@ -44,9 +44,16 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 # ── Stage 3: runner ──────────────────────────────────────────────────
-# Minimal image: just Node 20 + the standalone bundle. Runs as a non-
+# Minimal image: just Node 22 + the standalone bundle. Runs as a non-
 # root user. Listens on PORT (default 3000) on all interfaces.
-FROM node:20-alpine AS runner
+#
+# Why Node 22 and not 20: Pixi.js v8 reads `globalThis.navigator` at
+# module init for feature detection. `navigator` was added to Node's
+# global scope in v21 — Node 20 lacks it, so SSR / static prerender of
+# any page that pulls Pixi (e.g. /poc/spine) crashes with
+# "ReferenceError: navigator is not defined". Node 22 LTS is the
+# minimum that ships globalThis.navigator out of the box.
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
