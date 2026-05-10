@@ -116,8 +116,6 @@ export function AnimationPanel({ puppetKey, adapter, app }: Props) {
       {ready && meta && adapter && app ? (
         <div key={puppetKey ?? "no-key"} className="flex flex-col gap-4">
           <DisplaySection
-            adapter={adapter}
-            app={app}
             meta={meta}
             initial={{
               kScale: config.display.kScale,

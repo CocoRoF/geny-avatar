@@ -1,15 +1,11 @@
 "use client";
 
-import type { Application } from "pixi.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
-import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import type { CubismMeta } from "@/lib/avatar/cubismMeta";
+import { useViewportStore } from "@/lib/store/viewport";
 
-/** Defaults match Geny's model_registry shape so the values exported
- *  in 8.8 line up with the existing live2d-models entries. */
 const DEFAULTS = {
-  kScale: 0.7,
+  kScale: 1.0,
   xShift: 0,
   yShift: 0,
 };
@@ -27,29 +23,31 @@ export type DisplayConfig = {
 };
 
 type Props = {
-  adapter: AvatarAdapter;
-  app: Application;
   meta: CubismMeta;
-  /** Initial values (from IDB once 8.7 lands; for 8.3 starts at defaults
-   *  on every mount). */
+  /** Initial values from IDB (Phase 8.7). Lazy useState; the parent
+   *  re-mounts via key={puppetKey} when the puppet changes. */
   initial?: Partial<DisplayConfig>;
-  /** Notified on every slider movement so a parent (or 8.7's IDB write
-   *  hook) can persist. Called with the *full* config. */
+  /** Notified on every change. Parent persists to IDB + bubble for
+   *  export. */
   onChange?: (cfg: DisplayConfig) => void;
 };
 
 /**
- * Phase 8.3 — Display section of the Animation tab.
+ * Phase 8.3 + post-Phase-8 viewport rework — Display section.
  *
- * kScale + X/Y shift sliders drive the puppet's transform live. The
- * sliders multiply / offset on top of PuppetCanvas's fit-to-canvas
- * baseline (recomputed here from the puppet's native size + the
- * current screen). Idle motion group dropdown is a passive picker for
- * now — actually triggering playback lands in 8.4.
+ * The slider state is intentionally additive on top of PuppetCanvas's
+ * pan/zoom: the user can wheel-zoom into the canvas to inspect detail
+ * AND independently dial in kScale, since they represent different
+ * intents (viewing convenience vs. what Geny will use at runtime).
  *
- * Local-state-only this sprint; IDB persistence joins in 8.7.
+ * We don't touch the Pixi display directly anymore — PuppetCanvas
+ * subscribes to `useViewportStore.intrinsic` and recomposes the
+ * transform on every change. Same goes for shift sliders.
  */
-export function DisplaySection({ adapter, app, meta, initial, onChange }: Props) {
+export function DisplaySection({ meta, initial, onChange }: Props) {
+  const setIntrinsic = useViewportStore((s) => s.setIntrinsic);
+  const resetUserView = useViewportStore((s) => s.resetUserView);
+
   const [cfg, setCfg] = useState<DisplayConfig>(() => {
     const idleFromMeta =
       meta.motionGroups.find((g) => /^idle$/i.test(g.name))?.name ??
@@ -64,31 +62,21 @@ export function DisplaySection({ adapter, app, meta, initial, onChange }: Props)
   });
 
   // Latest onChange in a ref so the apply effect doesn't churn the
-  // dependency list when the parent passes an inline callback.
+  // dep list when the parent passes an inline callback.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // Apply kScale + shift to the live display whenever cfg changes.
-  // baseFactor is recomputed from the current pixi app.screen × the
-  // adapter's native model size, mirroring PuppetCanvas's fit math.
+  // Push the puppet-intrinsic transform into the viewport store on
+  // every cfg change. PuppetCanvas's subscriber picks it up and
+  // recomputes scale + position.
   useEffect(() => {
-    if (adapter.runtime !== "live2d") return;
-    const display = adapter.getDisplayObject();
-    if (!display) return;
-
-    const native = (adapter as Live2DAdapter).getNativeSize?.();
-    const baseW = native?.width ?? 800;
-    const baseH = native?.height ?? 1200;
-    const screen = app.screen;
-    const baseFactor = Math.min((screen.width * 0.9) / baseW, (screen.height * 0.9) / baseH);
-
-    // biome-ignore lint/suspicious/noExplicitAny: pixi display surface
-    const d = display as any;
-    d.scale?.set?.(baseFactor * cfg.kScale);
-    d.position?.set?.(screen.width / 2 + cfg.initialXshift, screen.height / 2 + cfg.initialYshift);
-
+    setIntrinsic({
+      kScale: cfg.kScale,
+      shiftX: cfg.initialXshift,
+      shiftY: cfg.initialYshift,
+    });
     onChangeRef.current?.(cfg);
-  }, [adapter, app, cfg]);
+  }, [cfg, setIntrinsic]);
 
   const update = useCallback(<K extends keyof DisplayConfig>(key: K, value: DisplayConfig[K]) => {
     setCfg((prev) => ({ ...prev, [key]: value }));
@@ -101,7 +89,8 @@ export function DisplaySection({ adapter, app, meta, initial, onChange }: Props)
       initialXshift: DEFAULTS.xShift,
       initialYshift: DEFAULTS.yShift,
     }));
-  }, []);
+    resetUserView();
+  }, [resetUserView]);
 
   return (
     <section className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-3">
@@ -109,14 +98,24 @@ export function DisplaySection({ adapter, app, meta, initial, onChange }: Props)
         <h3 className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
           display
         </h3>
-        <button
-          type="button"
-          onClick={reset}
-          className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-          title="kScale / shift 디폴트로 복귀"
-        >
-          reset
-        </button>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={resetUserView}
+            className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title="확대 / 이동만 초기화 (kScale/shift 유지)"
+          >
+            fit
+          </button>
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title="kScale / shift / 확대 / 이동 모두 디폴트로"
+          >
+            reset
+          </button>
+        </div>
       </div>
 
       <Slider
@@ -166,6 +165,11 @@ export function DisplaySection({ adapter, app, meta, initial, onChange }: Props)
           </label>
         )}
       </div>
+
+      <p className="mt-3 text-[10px] text-[var(--color-fg-dim)] opacity-60">
+        canvas 에서 드래그 = 이동, 휠 = 커서 기준 확대/축소 (양쪽 탭 모두). kScale/shift 는 Geny 에
+        export 되는 puppet 의 기본값이고, 확대/이동은 편집 시 보기 편의입니다.
+      </p>
     </section>
   );
 }

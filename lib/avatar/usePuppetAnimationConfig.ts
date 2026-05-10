@@ -14,7 +14,10 @@ export type AnimationConfigValue = Omit<PuppetAnimationConfigRow, "puppetKey" | 
 
 const DEFAULTS: AnimationConfigValue = {
   display: {
-    kScale: 0.7,
+    // 1.0 means "what the editor shows at fit-to-canvas". The user
+    // can dial it down for tighter VTuber thumbnails; the value
+    // exported to Geny is what they see in the editor's canvas.
+    kScale: 1.0,
     initialXshift: 0,
     initialYshift: 0,
   },
