@@ -1,15 +1,14 @@
 /**
- * POST /api/send-to-geny
+ * POST /api/send-to-geny — DEPRECATED.
  *
- * Geny integration ingress. When the avatar-editor service is running
- * inside Geny's docker compose stack, the ExportButton's "send to Geny"
- * action POSTs the baked model zip here and we drop it into the shared
- * volume that Geny's backend reads from.
- *
- * - Standalone hobby use: this route is unreachable in practice (the UI
- *   button is hidden when NEXT_PUBLIC_GENY_HOST !== "true") but the route
- *   itself stays available — if someone calls it without the env var
- *   set, we 503 with a clear error so misconfigurations are visible.
+ * Superseded by `POST /api/library/sync`, which forwards directly to
+ * Geny's `/api/vtuber/library/sync` endpoint. The new flow is fully
+ * automatic (driven by IndexedDB write hooks in `lib/sync/genySync`)
+ * so the legacy "Send to Geny" button is gone. This route stays around
+ * in case anything still pokes it programmatically — it keeps the
+ * shared-volume drop semantics, but the recommended path is the
+ * library sync endpoint. Safe to delete in a follow-up cleanup once
+ * the migration is verified end-to-end.
  *
  * Body (multipart/form-data):
  *   zip       File    The baked model ZIP from buildModelZip().

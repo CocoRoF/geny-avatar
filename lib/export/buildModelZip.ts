@@ -188,6 +188,14 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
     exporter: `geny-avatar/${row.runtime}`,
     exportedAt: Date.now(),
     puppet: {
+      // `id` is the IndexedDB primary key (e.g., "avt_xxxxxxxx") and is
+      // stable across re-exports of the same puppet. Geny uses it to
+      // dedupe: a sync push for a puppet whose id is already in the
+      // model registry replaces the previous entry instead of appending
+      // "(Editor 2)" / "(Editor 3)" copies. Without this id, the only
+      // dedupe key would be the user-visible name, which collides for
+      // multiple puppets that happen to share a name.
+      id: row.id,
       name: row.name,
       runtime: row.runtime,
       version: row.version,

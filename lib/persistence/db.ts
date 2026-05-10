@@ -432,6 +432,32 @@ function db(): GenyAvatarDB {
   return _db;
 }
 
+// ----- Geny library auto-sync triggers -----
+//
+// These run after IndexedDB writes that affect a puppet's exported
+// state — they kick `lib/sync/genySync` so Geny's model registry stays
+// in lock-step with what the user sees in their library. Dynamic
+// imports avoid the circular-init concern (genySync transitively
+// imports loadPuppet from this module). All triggers are no-ops in
+// stand-alone mode (NEXT_PUBLIC_GENY_HOST !== "true") because the
+// sync module short-circuits there.
+function _triggerSyncPush(puppetId: string): void {
+  if (typeof window === "undefined") return; // SSR safety
+  void import("../sync/genySync")
+    .then(({ schedulePuppetSync }) => schedulePuppetSync(puppetId))
+    .catch((err) => {
+      console.warn(`[db] sync push trigger failed for ${puppetId}:`, err);
+    });
+}
+function _triggerSyncRemove(puppetId: string): void {
+  if (typeof window === "undefined") return;
+  void import("../sync/genySync")
+    .then(({ removePuppetFromGeny }) => removePuppetFromGeny(puppetId))
+    .catch((err) => {
+      console.warn(`[db] sync remove trigger failed for ${puppetId}:`, err);
+    });
+}
+
 // ----- public API -----
 
 export type SavePuppetInput = {
@@ -470,6 +496,7 @@ export async function savePuppet(input: SavePuppetInput): Promise<PuppetId> {
     }
   });
 
+  _triggerSyncPush(id);
   return id;
 }
 
@@ -501,6 +528,7 @@ export async function deletePuppet(id: PuppetId): Promise<void> {
     await db().puppets.delete(id);
     await db().puppetFiles.where("puppetId").equals(id).delete();
   });
+  _triggerSyncRemove(id);
 }
 
 /** Update fields on an existing puppet (e.g. origin note edited later). */
@@ -509,6 +537,7 @@ export async function updatePuppet(
   patch: Partial<Pick<PuppetRow, "name" | "origin" | "thumbnailBlob">>,
 ): Promise<void> {
   await db().puppets.update(id, { ...patch, updatedAt: Date.now() });
+  _triggerSyncPush(id);
 }
 
 // ----- AI jobs (Sprint 3.4) -----
@@ -582,6 +611,7 @@ export async function saveVariant(input: SaveVariantInput): Promise<VariantRowId
     createdAt: now,
     updatedAt: now,
   });
+  _triggerSyncPush(input.puppetKey);
   return id;
 }
 
@@ -602,11 +632,15 @@ export async function updateVariant(
   id: VariantRowId,
   patch: Partial<Pick<VariantRow, "name" | "description" | "visibility">>,
 ): Promise<void> {
+  const before = await db().variants.get(id);
   await db().variants.update(id, { ...patch, updatedAt: Date.now() });
+  if (before?.puppetKey) _triggerSyncPush(before.puppetKey);
 }
 
 export async function deleteVariant(id: VariantRowId): Promise<void> {
+  const before = await db().variants.get(id);
   await db().variants.delete(id);
+  if (before?.puppetKey) _triggerSyncPush(before.puppetKey);
 }
 
 // ----- Layer overrides (Sprint 4.5) -----
@@ -639,6 +673,7 @@ export async function saveLayerOverride(
     blob: input.blob,
     updatedAt: Date.now(),
   });
+  _triggerSyncPush(input.puppetKey);
   return id;
 }
 
@@ -651,6 +686,7 @@ export async function deleteLayerOverride(
     .layerOverrides.where("[puppetKey+layerExternalId+kind]")
     .equals([puppetKey, layerExternalId, kind])
     .delete();
+  _triggerSyncPush(puppetKey);
 }
 
 /** All overrides of a given kind for one puppet, used for hydrate-on-load. */
@@ -861,8 +897,10 @@ export async function savePuppetAnimationConfig(
     ...input,
     updatedAt: Date.now(),
   });
+  _triggerSyncPush(input.puppetKey);
 }
 
 export async function deletePuppetAnimationConfig(puppetKey: string): Promise<void> {
   await db().puppetAnimationConfig.delete(puppetKey);
+  _triggerSyncPush(puppetKey);
 }

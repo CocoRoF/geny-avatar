@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { Application } from "pixi.js";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { AnimationPanel } from "@/components/animation/AnimationPanel";
 import { EditorTabBar, useEditorTab } from "@/components/animation/EditorTabBar";
 import { ExportButton } from "@/components/ExportButton";
@@ -15,11 +15,13 @@ import { ToolsPanel } from "@/components/ToolsPanel";
 import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
+import type { Avatar } from "@/lib/avatar/types";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPersistence";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
 import { loadPuppet, type PuppetId, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
+import { registerActiveBaker, schedulePuppetSync } from "@/lib/sync/genySync";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -32,6 +34,10 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
   const [app, setApp] = useState<Application | null>(null);
+  // Captured from PuppetCanvas onReady. Needed by the Geny sync baker
+  // (see registerActiveBaker effect below) — buildModelZip walks the
+  // Avatar graph to map TextureId → bundle path.
+  const [avatar, setAvatar] = useState<Avatar | null>(null);
   // Phase 8.1 — sidebar swaps between Edit (texture editing — original
   // panels) and Animation (motion / expression / emotion mapping —
   // populated through 8.3~8.7) based on the URL `?tab=` query.
@@ -126,7 +132,57 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   const canUndo = useEditorStore((s) => s.past.length > 0);
   const canRedo = useEditorStore((s) => s.future.length > 0);
   const layers = useEditorStore(selectLayers);
+  const visibility = useEditorStore((s) => s.visibilityOverrides);
+  const layerMasks = useEditorStore((s) => s.layerMasks);
+  const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
   useLayerOverridesPersistence(adapter ? puppetId : null, layers);
+
+  // ── Geny library auto-sync ───────────────────────────────────────
+  // Register the active baker so IDB writes (variants / overrides /
+  // animation config) push fresh baked zips to Geny. The baker reads
+  // from refs so it always sees the latest editor state without
+  // re-registering on every keystroke. Unregisters on unmount.
+  const editorStateRef = useRef({
+    adapter,
+    avatar,
+    visibility,
+    layerMasks,
+    layerTextureOverrides,
+  });
+  editorStateRef.current = {
+    adapter,
+    avatar,
+    visibility,
+    layerMasks,
+    layerTextureOverrides,
+  };
+  useEffect(() => {
+    const unregister = registerActiveBaker(async (id) => {
+      if (id !== puppetId) return null;
+      const s = editorStateRef.current;
+      if (!s.adapter || !s.avatar) return null;
+      const { buildModelZip } = await import("@/lib/export/buildModelZip");
+      const result = await buildModelZip({
+        puppetId,
+        adapter: s.adapter,
+        avatar: s.avatar,
+        visibility: s.visibility,
+        masks: s.layerMasks,
+        textures: s.layerTextureOverrides,
+      });
+      return { zip: result.zip, filename: result.filename };
+    });
+    return unregister;
+  }, [puppetId]);
+
+  // Initial catch-up sync once the puppet is fully loaded. Library-page
+  // uploads / renames don't sync directly (the baker isn't available
+  // there), so the first time the user opens a puppet here we push it
+  // to Geny so the editor library and Geny's registry line up.
+  useEffect(() => {
+    if (!adapter || !avatar) return;
+    schedulePuppetSync(puppetId);
+  }, [puppetId, adapter, avatar]);
 
   const headerName = puppetRow?.name ?? puppetId.slice(-6);
   const headerStatus = loadError
@@ -136,6 +192,9 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       : !adapter
         ? "loading puppet…"
         : "ready";
+  // Surface whether Geny library auto-sync is wired so users know their
+  // saves are mirrored. Pure UI affordance — sync runs regardless.
+  const isGenyMode = process.env.NEXT_PUBLIC_GENY_HOST === "true";
 
   return (
     <main className="grid h-full grid-cols-[1fr_320px] overflow-hidden bg-[var(--color-bg)]">
@@ -148,6 +207,14 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             <span className="ml-3 text-[var(--color-fg-dim)]">
               · {puppetRow.runtime}
               {puppetRow.version ? ` ${puppetRow.version}` : ""}
+            </span>
+          )}
+          {isGenyMode && (
+            <span
+              className="ml-3 text-[var(--color-fg-dim)]"
+              title="라이브러리에 저장되는 즉시 Geny에 자동 동기화됩니다"
+            >
+              · sync: Geny ↔ Library
             </span>
           )}
           <button
@@ -199,7 +266,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
 
         <PuppetCanvas
           input={input}
-          onReady={(_avatar, a, pixiApp) => {
+          onReady={(av, a, pixiApp) => {
+            setAvatar(av);
             setAdapter(a);
             setApp(pixiApp);
           }}
