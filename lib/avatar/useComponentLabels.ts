@@ -12,9 +12,8 @@ import { loadComponentLabels, saveComponentLabels } from "../persistence/db";
  * Saving is debounced so a stream of keystrokes (e.g. typing "torso")
  * collapses into a single IDB write a moment after the user stops.
  *
- * `puppetKey === null` (the /poc/upload case before autoSave fires)
- * disables persistence — the labels live only in memory for that
- * panel session.
+ * `puppetKey === null` is a transient guard — when null, persistence
+ * is disabled and labels live only in memory for that panel session.
  */
 export function useComponentLabels(puppetKey: string | null, layerExternalId: string) {
   const [labels, setLabels] = useState<Record<string, string>>({});

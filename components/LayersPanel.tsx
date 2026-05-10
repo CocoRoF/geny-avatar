@@ -28,8 +28,9 @@ type Props = {
   adapter: AvatarAdapter | null;
   /** Stable identifier for the currently-loaded puppet — IDB PuppetId
    *  for uploaded puppets, `"builtin:${sampleKey}"` for built-in samples,
-   *  or `null` when no IDB binding exists yet (e.g. /poc/upload before
-   *  autoSave completes). When null, AI job history isn't persisted. */
+   *  or `null` when no IDB binding exists yet (transient — the editor
+   *  routes always resolve a key before mounting these panels in the
+   *  current flow). When null, AI job history isn't persisted. */
   puppetKey: string | null;
   /** Called when the user clicks a layer row. Caller is responsible for
    *  updating the store and the adapter together. */

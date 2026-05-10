@@ -20,8 +20,9 @@ import {
  * canvases until the user saves), and the resulting blob array is
  * handed to `save()` once.
  *
- * `puppetKey === null` (the /poc/upload case before autoSave fires)
- * disables persistence entirely — `regions` stays `[]`.
+ * `puppetKey === null` is a transient guard (current editor routes
+ * always resolve a key before mounting consumers) — when null, the
+ * hook disables persistence entirely and `regions` stays `[]`.
  */
 export function useRegionMasks(puppetKey: string | null, layerExternalId: string) {
   const [regions, setRegions] = useState<RegionMaskEntry[]>([]);

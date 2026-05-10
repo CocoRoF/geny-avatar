@@ -1253,8 +1253,9 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
       setLayerTextureOverride(layer.id, processed);
 
       // Persist the apply'd job to IDB for this layer's history.
-      // `puppetKey === null` happens for /poc/upload before autoSave
-      // settles — we just skip persistence in that case.
+      // `puppetKey === null` is a transient guard kept for safety —
+      // current editor routes always resolve a key before mounting
+      // this panel, but skipping persistence is the right fallback.
       if (puppetKey) {
         try {
           // Tag the row with the focused region's bbox signature so

@@ -17,9 +17,9 @@ import type { Layer, LayerId, NativeVariant, NativeVariantSource, VariantApplyDa
  * / delete actions, and re-syncs the list after every mutation so the
  * panel reflects truth without prop drilling.
  *
- * `puppetKey === null` (e.g. /poc/upload before the first autoSave)
- * disables persistence — the hook returns an empty list and rejects all
- * mutations. The same scheme as AI history.
+ * `puppetKey === null` is a transient guard — when null, the hook
+ * returns an empty list and rejects all mutations. The same scheme as
+ * AI history.
  *
  * Variants store visibility against `Layer.externalId` (runtime-stable),
  * not `Layer.id` (regenerated per load). `apply` is responsible for the

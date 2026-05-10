@@ -18,9 +18,9 @@ import {
  * regenerations stay tonally consistent without a custom LoRA.
  *
  * The hook follows the same shape as `useVariants` — list + actions +
- * `null` puppetKey disables persistence (used while /poc/upload is
- * still pre-autoSave). Only Sprint 5.1's CRUD is here; the actual
- * generate-time wiring lands in 5.2.
+ * `null` puppetKey disables persistence (transient guard; the editor
+ * routes always resolve a key in the current flow). Only Sprint 5.1's
+ * CRUD is here; the actual generate-time wiring lands in 5.2.
  */
 export function useReferences(puppetKey: string | null) {
   const [references, setReferences] = useState<ReferenceRow[]>([]);

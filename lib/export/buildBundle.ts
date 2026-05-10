@@ -241,7 +241,7 @@ function renderLicenseMd(input: {
   lines.push("---");
   lines.push("");
   lines.push(
-    "Re-import via the geny-avatar upload page (`/poc/upload`); the dropzone auto-detects this format.",
+    "Re-import by dropping this zip onto the geny-avatar landing page; the dropzone auto-detects this format.",
   );
   return lines.join("\n");
 }

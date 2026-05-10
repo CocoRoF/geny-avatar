@@ -105,6 +105,7 @@
 | 2026-05-10 | [89 sprint_7_4_attribution](2026-05-10_89_sprint_7_4_attribution.md) | 7.4 | 완료 — 외부 SDK / 모델 라이선스 surface. 신규 `AttributionFooter` (Spine / Cubism / Pixi.js / OpenAI 4행) → landing + library 하단. `/poc/library` 카드 origin select 옆 `<details>` "i" → 6 source 별 한국어 라이선스 안내. README "## 라이선스" 섹션 표 4행으로 확장 |
 | 2026-05-10 | [90 sprint_7_5_readme_landing](2026-05-10_90_sprint_7_5_readme_landing.md) | 7.5 | 완료 — README + landing copy 를 Phase 7 현실에 맞게 동기화. README 스택 `(예정)` 라벨 제거 + "주요 기능" 섹션 추가 + 현재 상태 → Phase 7. landing 헤더 v0.1.0/phase 7, roadmap P0~P6 done · P7 active, "Phase 0 PoC" → "Debug / 데모 페이지" 6 카드 재정렬. `/poc/library` + `/poc/upload` 헤더 chip 의 PoC 잔재 정리, 빈 상태 한국어화 |
 | 2026-05-10 | [91 sprint_7_6_perf](2026-05-10_91_sprint_7_6_perf.md) | 7.6 | 완료 — 첫 페인트 perf 정리. `LayersPanel` 의 `DecomposeStudio`+`GeneratePanel` 정적 import → `next/dynamic`+ssr:false (4000+ LOC chunk split). `ExportButton` 의 `buildExportZip`/`buildModelZip` → 핸들러 안 `await import` (fflate 28KB defer). Cubism Core script `beforeInteractive` → `afterInteractive`. `/edit/[avatarId]` First Load 360 → 338 KB (−22 KB). Phase 7 종료 |
+| 2026-05-10 | [92 root_uxconsolidation](2026-05-10_92_root_uxconsolidation.md) | post-7 | 완료 — Library + Upload + 내장 샘플 진입을 `/` 한 페이지로 통합. server `/` 전면 client 재작성 (dropzone + parseBundle/restore + IDB list + per-card origin/license/delete). `/poc/upload`+`/poc/library` 라우트 삭제. editor 헤더 `← library` 링크와 stale `/poc/upload` jsdoc 참조 정리. drop → autoSave → router.push(/edit/<id>) 한 흐름 |
 
 ## 운영 규칙
 

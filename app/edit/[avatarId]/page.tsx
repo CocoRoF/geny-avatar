@@ -172,7 +172,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             <ExportButton puppetId={puppetId} adapter={adapter} />
           </span>
           <a
-            href="/poc/library"
+            href="/"
             className="ml-3 rounded border border-[var(--color-border)] px-2 py-0.5 hover:text-[var(--color-fg)]"
           >
             ← library
