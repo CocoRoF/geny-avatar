@@ -2,12 +2,20 @@
 
 import { useMemo, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { apiUrl } from "@/lib/basePath";
 import type { PuppetId } from "@/lib/persistence/db";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
 
 // 7.6 perf: defer-load fflate + the zip builders until the user actually
 // clicks save / export. The builders pull fflate (~28KB) and a chunk of
 // our own bake/atlas helpers — none of which is needed for first paint.
+
+// A.3 (Geny integration): when geny-avatar is being run inside the Geny
+// docker compose stack, this env var is set to "true" by the avatar-
+// editor service env. It enables the third "send to Geny" button which
+// writes the baked model zip into the shared /exports volume so Geny's
+// backend can import it on the other end.
+const IS_IN_GENY = process.env.NEXT_PUBLIC_GENY_HOST === "true";
 
 type Props = {
   /** IDB id of the puppet being edited. `null` for builtin samples or
@@ -47,8 +55,9 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
   const avatar = useEditorStore((s) => s.avatar);
-  const [savingMode, setSavingMode] = useState<"none" | "save" | "model">("none");
+  const [savingMode, setSavingMode] = useState<"none" | "save" | "model" | "send">("none");
   const [error, setError] = useState<string | null>(null);
+  const [sendStatus, setSendStatus] = useState<string | null>(null);
 
   const disabled = puppetId === null || savingMode !== "none";
   const modelDisabled = disabled || adapter === null || avatar === null;
@@ -156,6 +165,49 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
     }
   }
 
+  // Same baked-model build as `handleExportModel`, but POST the result
+  // to the geny-avatar API route that drops it into the shared volume
+  // mounted from Geny's docker compose. Geny's backend then sees it
+  // appear in /data/baked-imports/ and offers it to install.
+  async function handleSendToGeny() {
+    if (!puppetId || !adapter || !avatar) return;
+    setSavingMode("send");
+    setError(null);
+    setSendStatus(null);
+    try {
+      const { buildModelZip } = await import("@/lib/export/buildModelZip");
+      const result = await buildModelZip({
+        puppetId,
+        adapter,
+        avatar,
+        visibility,
+        masks: layerMasks,
+        textures: layerTextureOverrides,
+      });
+      if (result.warnings.length > 0) {
+        console.warn("[export:send] warnings", result.warnings);
+      }
+      const form = new FormData();
+      form.append("zip", result.zip, result.filename);
+      form.append("filename", result.filename);
+      const r = await fetch(apiUrl("/api/send-to-geny"), { method: "POST", body: form });
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        throw new Error(`Geny 전송 실패 (HTTP ${r.status}): ${body || "no body"}`);
+      }
+      const json = (await r.json()) as { savedAs?: string };
+      setSendStatus(`Geny 로 보냈습니다: ${json.savedAs ?? result.filename}`);
+      console.info(
+        `[export:send] ${result.filename} · ${result.fileCount} files · ${(result.bytes / 1024).toFixed(0)} KB · saved=${json.savedAs ?? "?"}`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      console.error("[export:send] failed", e);
+    } finally {
+      setSavingMode("none");
+    }
+  }
+
   const stagedSummary = formatStagedSummary(
     bakedHideCount,
     bakedAlreadyHiddenCount,
@@ -183,6 +235,21 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
       >
         {savingMode === "model" ? "baking…" : "export model"}
       </button>
+      {IS_IN_GENY && (
+        <button
+          type="button"
+          onClick={() => void handleSendToGeny()}
+          disabled={modelDisabled}
+          title={
+            !puppetId || !adapter || !avatar
+              ? "Geny 로 보내려면 puppet 이 라이브러리에 저장되고 로딩이 끝나야 합니다"
+              : "Geny 의 VTuber 라이브러리로 baked 모델을 보냅니다 (공유 volume 경유)"
+          }
+          className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {savingMode === "send" ? "sending…" : "send to Geny"}
+        </button>
+      )}
       {!disabled && stagedSummary && (
         <span
           className="rounded border border-[var(--color-border)] px-1 font-mono text-[10px] text-[var(--color-fg-dim)]"
@@ -191,6 +258,7 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
           {stagedSummary}
         </span>
       )}
+      {sendStatus && <span className="text-[10px] text-[var(--color-accent)]">{sendStatus}</span>}
       {error && <span className="text-[10px] text-red-400">{error}</span>}
     </span>
   );
