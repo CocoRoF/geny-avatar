@@ -5,6 +5,7 @@ import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import { useCubismMeta } from "@/lib/avatar/cubismMeta";
 import { DisplaySection } from "./DisplaySection";
+import { ExpressionsSection } from "./ExpressionsSection";
 import { MotionsSection } from "./MotionsSection";
 
 type Props = {
@@ -61,9 +62,8 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
   }
 
   // Counts surfaced in the placeholder section titles for sprints
-  // not yet implemented (8.5 expressions, 8.6 hit areas). Display +
-  // motions sections own their own counts.
-  const expressionCount = meta?.expressions.length ?? 0;
+  // not yet implemented (8.6 hit areas). The other sections own their
+  // own counts inside their components.
   const hitAreaCount = meta?.hitAreas.length ?? 0;
 
   return (
@@ -89,28 +89,13 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
           <p className="opacity-50">…</p>
         </Section>
       )}
-      <Section title={`expressions${meta ? ` (${expressionCount})` : ""}`}>
-        {meta ? (
-          expressionCount === 0 ? (
-            <p className="opacity-60">이 puppet 은 expression 이 정의되어 있지 않습니다.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1">
-              {meta.expressions.map((e) => (
-                <li
-                  key={e.name}
-                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px]"
-                  title={e.file}
-                >
-                  {e.name}
-                </li>
-              ))}
-            </ul>
-          )
-        ) : (
+      {meta && adapter ? (
+        <ExpressionsSection adapter={adapter as Live2DAdapter} meta={meta} />
+      ) : (
+        <Section title="expressions">
           <p className="opacity-50">…</p>
-        )}
-        <p className="mt-2 text-[10px] opacity-70">▶ 미리보기 + emotion 매핑은 8.5</p>
-      </Section>
+        </Section>
+      )}
       <Section title={`hit areas${meta ? ` (${hitAreaCount})` : ""}`}>
         {meta ? (
           hitAreaCount === 0 ? (
