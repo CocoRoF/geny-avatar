@@ -6,6 +6,7 @@ import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import { useCubismMeta } from "@/lib/avatar/cubismMeta";
 import { DisplaySection } from "./DisplaySection";
 import { ExpressionsSection } from "./ExpressionsSection";
+import { HitAreasSection } from "./HitAreasSection";
 import { MotionsSection } from "./MotionsSection";
 
 type Props = {
@@ -61,10 +62,10 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
     );
   }
 
-  // Counts surfaced in the placeholder section titles for sprints
-  // not yet implemented (8.6 hit areas). The other sections own their
-  // own counts inside their components.
-  const hitAreaCount = meta?.hitAreas.length ?? 0;
+  // 8.6 — hide hit-areas section entirely when the puppet defines
+  // none (Hiyori, ellen_joe, etc.). The cubism manifest spec allows
+  // an empty list and most puppets ship that way.
+  const hasHitAreas = !!meta && meta.hitAreas.length > 0;
 
   return (
     <div className="flex h-full flex-col gap-4 p-4 text-xs text-[var(--color-fg-dim)]">
@@ -96,27 +97,9 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
           <p className="opacity-50">…</p>
         </Section>
       )}
-      <Section title={`hit areas${meta ? ` (${hitAreaCount})` : ""}`}>
-        {meta ? (
-          hitAreaCount === 0 ? (
-            <p className="opacity-60">이 puppet 은 HitArea 가 정의되어 있지 않습니다.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1">
-              {meta.hitAreas.map((h) => (
-                <li
-                  key={h.name}
-                  className="rounded border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px]"
-                >
-                  {h.name}
-                </li>
-              ))}
-            </ul>
-          )
-        ) : (
-          <p className="opacity-50">…</p>
-        )}
-        <p className="mt-2 text-[10px] opacity-70">tap motion 매핑은 8.6</p>
-      </Section>
+      {hasHitAreas && meta && adapter && (
+        <HitAreasSection adapter={adapter as Live2DAdapter} meta={meta} />
+      )}
     </div>
   );
 }
