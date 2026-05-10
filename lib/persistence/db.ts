@@ -228,6 +228,36 @@ export type RegionMasksRow = {
 };
 
 /**
+ * Phase 8.7 — per-puppet animation/display config.
+ *
+ * One row per puppet (PuppetId or `builtin:<key>`). Holds the four
+ * pieces of metadata the editor's Animation tab edits and that
+ * Geny's model_registry consumes:
+ *
+ *   - display tuning (kScale + initial X/Y shift)
+ *   - idle motion group name
+ *   - emotionMap: GoEmotion → expression NAME (translated to INDEX
+ *     at export time in 8.8)
+ *   - tapMotions: hit area → { motion group, index }
+ *
+ * Single-row-per-puppet store keyed by puppetKey, mirroring the
+ * `puppetSessions` shape. No compound indexes — each puppet's row
+ * is read whole.
+ */
+export type PuppetAnimationConfigRow = {
+  puppetKey: string;
+  display: {
+    kScale: number;
+    initialXshift: number;
+    initialYshift: number;
+  };
+  idleMotionGroupName: string;
+  emotionMap: Record<string, string>;
+  tapMotions: Record<string, { group: string; index: number }>;
+  updatedAt: number;
+};
+
+/**
  * Sprint E.1 — per-component naming for multi-region layers.
  *
  * One row per (puppetKey, layerExternalId). The `labels` map keys
@@ -258,6 +288,7 @@ class GenyAvatarDB extends Dexie {
   puppetReferences!: EntityTable<ReferenceRow, "id">;
   componentLabels!: EntityTable<ComponentLabelsRow, "id">;
   regionMasks!: EntityTable<RegionMasksRow, "id">;
+  puppetAnimationConfig!: EntityTable<PuppetAnimationConfigRow, "puppetKey">;
 
   constructor() {
     super("geny-avatar");
@@ -369,6 +400,22 @@ class GenyAvatarDB extends Dexie {
       puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
       componentLabels: "id, puppetKey, [puppetKey+layerExternalId]",
       regionMasks: "id, puppetKey, [puppetKey+layerExternalId]",
+    });
+    // v10: + puppetAnimationConfig (Phase 8.7 — display tuning,
+    // emotionMap, tapMotions, idle group). One row per puppet keyed
+    // by puppetKey (PuppetId or "builtin:<key>"). The Animation
+    // tab's four sections all read/write through this single row.
+    this.version(10).stores({
+      puppets: "id, runtime, updatedAt",
+      puppetFiles: "++id, puppetId, [puppetId+path]",
+      aiJobs: "id, puppetKey, layerExternalId, createdAt, [puppetKey+layerExternalId+createdAt]",
+      variants: "id, puppetKey, updatedAt, [puppetKey+updatedAt]",
+      layerOverrides: "id, puppetKey, [puppetKey+layerExternalId+kind], [puppetKey+kind]",
+      puppetSessions: "puppetKey, updatedAt",
+      puppetReferences: "id, puppetKey, [puppetKey+createdAt]",
+      componentLabels: "id, puppetKey, [puppetKey+layerExternalId]",
+      regionMasks: "id, puppetKey, [puppetKey+layerExternalId]",
+      puppetAnimationConfig: "puppetKey, updatedAt",
     });
   }
 }
@@ -796,4 +843,26 @@ export async function deleteRegionMasks(puppetKey: string, layerExternalId: stri
 
 export async function deleteAllRegionMasksForPuppet(puppetKey: string): Promise<void> {
   await db().regionMasks.where("puppetKey").equals(puppetKey).delete();
+}
+
+// ── Puppet animation config (Phase 8.7) ─────────────────────────────
+
+export async function loadPuppetAnimationConfig(
+  puppetKey: string,
+): Promise<PuppetAnimationConfigRow | null> {
+  const row = await db().puppetAnimationConfig.get(puppetKey);
+  return row ?? null;
+}
+
+export async function savePuppetAnimationConfig(
+  input: Omit<PuppetAnimationConfigRow, "updatedAt">,
+): Promise<void> {
+  await db().puppetAnimationConfig.put({
+    ...input,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function deletePuppetAnimationConfig(puppetKey: string): Promise<void> {
+  await db().puppetAnimationConfig.delete(puppetKey);
 }
