@@ -28,9 +28,25 @@
 import { type Zippable, zipSync } from "fflate";
 import type { AvatarAdapter } from "../adapters/AvatarAdapter";
 import type { Avatar, Layer, LayerId } from "../avatar/types";
-import { loadPuppet, type PuppetId } from "../persistence/db";
+import { loadPuppet, loadPuppetAnimationConfig, type PuppetId } from "../persistence/db";
 import type { BundleEntry } from "../upload/types";
 import { type BakedAtlasPage, bakeAtlasPages } from "./bakeAtlas";
+
+/** Sidecar JSON file emitted at the zip root. Geny's install endpoint
+ *  reads this to learn the puppet's runtime + (8.8+) animation config.
+ *
+ *  Schema versions:
+ *    1 — original (Phase A): puppet block only, no animationConfig.
+ *        Geny defaults the kScale/emotionMap/tapMotions on import.
+ *    2 — Phase 8.8: + animationConfig. emotionMap is keyed by
+ *        expression NAME for stability across model edits; Geny's
+ *        install (Phase G) translates to INDEX by parsing model3.json.
+ *
+ *  Geny that doesn't yet understand v2 falls back to defaults (the
+ *  C.3 install path doesn't fail on extra fields), so emitting v2
+ *  here is forward-compatible. */
+export const AVATAR_EDITOR_SCHEMA_VERSION = 2 as const;
+export const AVATAR_EDITOR_SIDECAR_FILE = "avatar-editor.json";
 
 export type BuildModelZipInput = {
   puppetId: PuppetId;
@@ -156,6 +172,38 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
   for (const extra of extraFiles) {
     zippable[extra.path] = extra.bytes;
   }
+
+  // Phase 8.8 — sidecar metadata file at zip root. Geny's install
+  // peeks this for runtime / display / emotion mapping. Best-effort:
+  // failure to read animation config never blocks the export, just
+  // emits a v1-style metadata block (puppet info only).
+  let animationConfig: Awaited<ReturnType<typeof loadPuppetAnimationConfig>> = null;
+  try {
+    animationConfig = await loadPuppetAnimationConfig(input.puppetId);
+  } catch (e) {
+    warnings.push(`animation config load failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const sidecar: Record<string, unknown> = {
+    schemaVersion: AVATAR_EDITOR_SCHEMA_VERSION,
+    exporter: `geny-avatar/${row.runtime}`,
+    exportedAt: Date.now(),
+    puppet: {
+      name: row.name,
+      runtime: row.runtime,
+      version: row.version,
+    },
+  };
+  if (animationConfig) {
+    sidecar.animationConfig = {
+      display: animationConfig.display,
+      idleMotionGroupName: animationConfig.idleMotionGroupName,
+      emotionMap: animationConfig.emotionMap,
+      tapMotions: animationConfig.tapMotions,
+    };
+  }
+  zippable[AVATAR_EDITOR_SIDECAR_FILE] = new TextEncoder().encode(
+    `${JSON.stringify(sidecar, null, 2)}\n`,
+  );
 
   const zipBytes = zipSync(zippable, { level: 6 });
   const zipBlob = new Blob([new Uint8Array(zipBytes).buffer], { type: "application/zip" });
