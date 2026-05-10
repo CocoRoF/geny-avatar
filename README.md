@@ -22,7 +22,8 @@ pnpm dev          # http://localhost:3000
 - **Layer / Variant 패널** — 슬롯·파트별 visibility 토글, 변형(skin) 저장/전환
 - **Decompose Studio** — alpha component 자동 검출 + brush 마스킹 + SAM 자동 세그먼트 (split mode 에서 region 직접 정의)
 - **AI texture generation** — gpt-image-2 multi-image edits API (focus mode region별 프롬프트, Reference 이미지 첨부, per-region revert / history)
-- **Export / Import** — `*.geny-avatar.zip` 라운드트립 (avatar.json + bundle + overrides + LICENSE.md)
+- **Animation tab** — Cubism puppet 의 motion / expression 미리보기, kScale·shift 라이브 슬라이더, 8 GoEmotions × expression 매핑, hit area → tap motion 매핑. IDB 영속 + Geny export 시 자동 동봉.
+- **Export / Import** — `*.geny-avatar.zip` 라운드트립 (avatar.json + bundle + overrides + LICENSE.md). Baked model zip 은 `avatar-editor.json` sidecar (schemaVersion 2) 로 animation config 전달.
 - **Help / Onboarding** — `?` 키 단축 modal + 첫 진입 배너
 
 ## 스택
