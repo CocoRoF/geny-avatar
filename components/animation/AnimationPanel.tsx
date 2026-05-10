@@ -2,8 +2,10 @@
 
 import type { Application } from "pixi.js";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import { useCubismMeta } from "@/lib/avatar/cubismMeta";
 import { DisplaySection } from "./DisplaySection";
+import { MotionsSection } from "./MotionsSection";
 
 type Props = {
   /** Same scheme as the other panels — PuppetId or `builtin:<key>`,
@@ -58,11 +60,9 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
     );
   }
 
-  // Counts visible per section so users can see at a glance whether
-  // the puppet has any motions / expressions / hit areas before the
-  // detailed UI lands in 8.3~8.6.
-  const motionGroupCount = meta?.motionGroups.length ?? 0;
-  const motionEntryCount = meta?.motionGroups.reduce((sum, g) => sum + g.entries.length, 0) ?? 0;
+  // Counts surfaced in the placeholder section titles for sprints
+  // not yet implemented (8.5 expressions, 8.6 hit areas). Display +
+  // motions sections own their own counts.
   const expressionCount = meta?.expressions.length ?? 0;
   const hitAreaCount = meta?.hitAreas.length ?? 0;
 
@@ -82,27 +82,13 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
           <p className="opacity-50">manifest 분석 중…</p>
         </Section>
       )}
-      <Section
-        title={`motions${meta ? ` (${motionGroupCount} groups, ${motionEntryCount} entries)` : ""}`}
-      >
-        {meta ? (
-          motionGroupCount === 0 ? (
-            <p className="opacity-60">이 puppet 은 motion 이 정의되어 있지 않습니다.</p>
-          ) : (
-            <ul className="space-y-1">
-              {meta.motionGroups.map((g) => (
-                <li key={g.name} className="font-mono text-[11px]">
-                  <span className="text-[var(--color-accent)]">{g.name}</span>
-                  <span className="ml-2 opacity-60">{g.entries.length} entries</span>
-                </li>
-              ))}
-            </ul>
-          )
-        ) : (
+      {meta && adapter ? (
+        <MotionsSection adapter={adapter as Live2DAdapter} meta={meta} />
+      ) : (
+        <Section title="motions">
           <p className="opacity-50">…</p>
-        )}
-        <p className="mt-2 text-[10px] opacity-70">▶ 미리보기 + idle 선택은 8.4</p>
-      </Section>
+        </Section>
+      )}
       <Section title={`expressions${meta ? ` (${expressionCount})` : ""}`}>
         {meta ? (
           expressionCount === 0 ? (

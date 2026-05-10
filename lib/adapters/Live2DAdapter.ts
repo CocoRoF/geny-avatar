@@ -662,6 +662,47 @@ export class Live2DAdapter implements AvatarAdapter {
     }
   }
 
+  /**
+   * Phase 8.4 — trigger a specific motion entry (group + index) for
+   * the editor's Animation tab preview. Built on the same engine
+   * `model.motion(group, index, priority)` API the Cubism runtime
+   * exposes; passing index lets the user pick which file in a group
+   * plays, not just the random default.
+   *
+   * Priority FORCE=3 ensures back-to-back ▶ taps cancel the prior
+   * motion instead of queueing — what users expect from a preview.
+   * Returns true on success so the UI can flash a "playing" state.
+   */
+  playMotion(group: string, index?: number, opts?: { priority?: number }): boolean {
+    if (!this.model) return false;
+    const priority = opts?.priority ?? 3; // PRIORITY_FORCE in Cubism Framework
+    try {
+      this.model.motion?.(group, index, priority);
+      return true;
+    } catch (e) {
+      console.warn(`[Live2DAdapter] playMotion failed group=${group} index=${index}`, e);
+      return false;
+    }
+  }
+
+  /**
+   * Phase 8.5 — apply a named expression (set of parameter overrides
+   * defined in expressions/<name>.exp3.json). Engine API mirrors
+   * `model.expression(name)`. Pass `null` to clear back to neutral.
+   */
+  setExpression(name: string | null): boolean {
+    if (!this.model) return false;
+    try {
+      // Pass undefined when clearing — pixi-live2d-display treats no-arg
+      // as "reset to default expression".
+      this.model.expression?.(name ?? undefined);
+      return true;
+    } catch (e) {
+      console.warn(`[Live2DAdapter] setExpression failed name=${name}`, e);
+      return false;
+    }
+  }
+
   setParameter(paramId: string, value: number): void {
     this.coreModel?.setParameterValueById?.(paramId, value);
   }
