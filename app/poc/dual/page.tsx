@@ -4,16 +4,17 @@ import { Application, Container } from "pixi.js";
 import { useEffect, useRef, useState } from "react";
 import { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import { SpineAdapter } from "@/lib/adapters/SpineAdapter";
+import { assetUrl } from "@/lib/basePath";
 
 const SPINE_INPUT = {
   kind: "spine" as const,
-  skeleton: "/samples/spineboy/spineboy-pro.skel",
-  atlas: "/samples/spineboy/spineboy-pma.atlas",
+  skeleton: assetUrl("/samples/spineboy/spineboy-pro.skel"),
+  atlas: assetUrl("/samples/spineboy/spineboy-pma.atlas"),
   aliasPrefix: "poc-dual-spine",
 };
 const CUBISM_INPUT = {
   kind: "live2d" as const,
-  model3: "/samples/hiyori/Hiyori.model3.json",
+  model3: assetUrl("/samples/hiyori/Hiyori.model3.json"),
 };
 
 type Status = "pending" | "ok" | "error";

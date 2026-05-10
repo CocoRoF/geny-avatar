@@ -26,3 +26,21 @@ export const BASE_PATH: string = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export function apiUrl(path: string): string {
   return `${BASE_PATH}${path}`;
 }
+
+/**
+ * Build an absolute-from-root URL for a public asset (anything under
+ * `public/`, including the runtime/ Cubism Core script and the
+ * samples/ bundles). Same prefix logic as `apiUrl()` — separated so
+ * call sites read self-documentingly.
+ *
+ * Why we need this even though Next.js has `assetPrefix`:
+ * `assetPrefix` only applies to Next.js's own `/_next/...` chunks.
+ * Plain `<Script src="/runtime/...">` and hand-written paths in our
+ * code are NOT auto-prefixed — they 404 under reverse-proxy mounts
+ * unless we prepend BASE_PATH ourselves.
+ *
+ * @param path Path starting with "/" (e.g. `/runtime/live2dcubismcore.min.js`).
+ */
+export function assetUrl(path: string): string {
+  return `${BASE_PATH}${path}`;
+}

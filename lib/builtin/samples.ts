@@ -9,6 +9,7 @@
 
 import type { AdapterLoadInput } from "../adapters/AvatarAdapter";
 import type { AvatarSourceRuntime } from "../avatar/types";
+import { assetUrl } from "../basePath";
 
 export type BuiltinSample = {
   /** stable url-safe key, used in /edit/builtin/<key> */
@@ -32,7 +33,7 @@ export const BUILTIN_SAMPLES: BuiltinSample[] = [
     blurb: "Live2D 공식 샘플 — 24 parts, 9 idle motions",
     loadInput: {
       kind: "live2d",
-      model3: "/samples/hiyori/Hiyori.model3.json",
+      model3: assetUrl("/samples/hiyori/Hiyori.model3.json"),
     },
   },
   {
@@ -43,8 +44,8 @@ export const BUILTIN_SAMPLES: BuiltinSample[] = [
     blurb: "Esoteric 공식 샘플 — 52 slots, 11 animations",
     loadInput: {
       kind: "spine",
-      skeleton: "/samples/spineboy/spineboy-pro.skel",
-      atlas: "/samples/spineboy/spineboy-pma.atlas",
+      skeleton: assetUrl("/samples/spineboy/spineboy-pro.skel"),
+      atlas: assetUrl("/samples/spineboy/spineboy-pma.atlas"),
       aliasPrefix: "builtin-spineboy",
     },
   },

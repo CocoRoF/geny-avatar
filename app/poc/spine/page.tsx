@@ -4,11 +4,12 @@ import { useMemo, useState } from "react";
 import type { AdapterLoadInput } from "@/lib/adapters/AvatarAdapter";
 import type { LayerId } from "@/lib/avatar/types";
 import { usePuppet } from "@/lib/avatar/usePuppet";
+import { assetUrl } from "@/lib/basePath";
 
 const INPUT: AdapterLoadInput = {
   kind: "spine",
-  skeleton: "/samples/spineboy/spineboy-pro.skel",
-  atlas: "/samples/spineboy/spineboy-pma.atlas",
+  skeleton: assetUrl("/samples/spineboy/spineboy-pro.skel"),
+  atlas: assetUrl("/samples/spineboy/spineboy-pma.atlas"),
   aliasPrefix: "poc-spine",
 };
 

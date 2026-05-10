@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { assetUrl } from "@/lib/basePath";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -26,7 +27,10 @@ export default function RootLayout({
             before failing — afterInteractive guarantees the download
             starts right after the page becomes interactive, well within
             that window even on a built-in Hiyori auto-load. */}
-        <Script src="/runtime/live2dcubismcore.min.js" strategy="afterInteractive" />
+        <Script
+          src={assetUrl("/runtime/live2dcubismcore.min.js")}
+          strategy="afterInteractive"
+        />
         {children}
       </body>
     </html>

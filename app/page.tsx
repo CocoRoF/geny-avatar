@@ -156,7 +156,7 @@ export default function Home() {
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-12 sm:px-8 sm:py-16">
         <header className="mb-10">
           <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">
-            v0.2.2 · Geny-integratable
+            v0.2.3 · Geny-integratable
           </div>
           <h1 className="mb-3 text-4xl font-semibold tracking-tight">geny-avatar</h1>
           <p className="max-w-2xl text-lg text-[var(--color-fg-dim)]">

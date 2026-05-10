@@ -5,10 +5,11 @@ import type { AdapterLoadInput } from "@/lib/adapters/AvatarAdapter";
 import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
 import type { LayerId } from "@/lib/avatar/types";
 import { usePuppet } from "@/lib/avatar/usePuppet";
+import { assetUrl } from "@/lib/basePath";
 
 const INPUT: AdapterLoadInput = {
   kind: "live2d",
-  model3: "/samples/hiyori/Hiyori.model3.json",
+  model3: assetUrl("/samples/hiyori/Hiyori.model3.json"),
 };
 
 type LayerVisible = { id: LayerId; visible: boolean };
