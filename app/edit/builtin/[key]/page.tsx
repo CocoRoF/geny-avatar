@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { Application } from "pixi.js";
 import { use, useEffect, useState } from "react";
 import { AnimationPanel } from "@/components/animation/AnimationPanel";
 import { EditorTabBar, useEditorTab } from "@/components/animation/EditorTabBar";
@@ -28,6 +29,7 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
   const sample = findBuiltin(key);
 
   const [adapter, setAdapter] = useState<AvatarAdapter | null>(null);
+  const [app, setApp] = useState<Application | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   // Phase 8.1 — sidebar swaps between Edit (texture) and Animation
@@ -131,7 +133,10 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
 
         <PuppetCanvas
           input={sample.loadInput}
-          onReady={(_avatar, a) => setAdapter(a)}
+          onReady={(_avatar, a, pixiApp) => {
+            setAdapter(a);
+            setApp(pixiApp);
+          }}
           onError={(e) => setError(e)}
         />
       </section>
@@ -154,7 +159,7 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
             />
           </>
         ) : (
-          <AnimationPanel puppetKey={`builtin:${key}`} adapter={adapter} />
+          <AnimationPanel puppetKey={`builtin:${key}`} adapter={adapter} app={app} />
         )}
       </aside>
 

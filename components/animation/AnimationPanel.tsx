@@ -1,7 +1,9 @@
 "use client";
 
+import type { Application } from "pixi.js";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { useCubismMeta } from "@/lib/avatar/cubismMeta";
+import { DisplaySection } from "./DisplaySection";
 
 type Props = {
   /** Same scheme as the other panels — PuppetId or `builtin:<key>`,
@@ -12,6 +14,9 @@ type Props = {
    *  model3.json (Sprint 8.2) and to trigger motion / expression
    *  previews from the UI (Sprint 8.4 / 8.5). */
   adapter: AvatarAdapter | null;
+  /** Pixi Application — needed by 8.3 (Display section) to compute
+   *  the fit-to-screen base factor when applying user kScale / shift. */
+  app: Application | null;
 };
 
 /**
@@ -28,7 +33,7 @@ type Props = {
  *   - 8.7  IDB persistence (puppetAnimationConfig store)
  *   - 8.8  buildModelZip schemaVersion v1 → v2
  */
-export function AnimationPanel({ puppetKey: _puppetKey, adapter }: Props) {
+export function AnimationPanel({ puppetKey: _puppetKey, adapter, app }: Props) {
   const isLive2D = !!adapter && adapter.runtime === "live2d";
   // Phase 8.2 — pull motion / expression / hit-area metadata off the
   // adapter's model3.json. Returns nulls until the adapter resolves.
@@ -70,10 +75,13 @@ export function AnimationPanel({ puppetKey: _puppetKey, adapter }: Props) {
       )}
       {loading && <p className="text-[10px] opacity-60">manifest 분석 중…</p>}
 
-      <Section title="display">
-        <p>kScale · X/Y shift · idle motion group 선택</p>
-        <p className="mt-1 text-[10px] opacity-70">8.3 — 다음 sprint</p>
-      </Section>
+      {meta && adapter && app ? (
+        <DisplaySection adapter={adapter} app={app} meta={meta} />
+      ) : (
+        <Section title="display">
+          <p className="opacity-50">manifest 분석 중…</p>
+        </Section>
+      )}
       <Section
         title={`motions${meta ? ` (${motionGroupCount} groups, ${motionEntryCount} entries)` : ""}`}
       >

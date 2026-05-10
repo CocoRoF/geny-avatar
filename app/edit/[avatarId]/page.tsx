@@ -229,7 +229,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             />
           </>
         ) : (
-          <AnimationPanel puppetKey={puppetId} adapter={adapter} />
+          <AnimationPanel puppetKey={puppetId} adapter={adapter} app={app} />
         )}
       </aside>
 
