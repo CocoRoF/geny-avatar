@@ -110,6 +110,7 @@
 | 2026-05-10 | [94 phaseA_2_basepath](2026-05-10_94_phaseA_2_basepath.md) | A.2 | 완료 — `NEXT_PUBLIC_BASE_PATH` env 기반 `basePath`+`assetPrefix` 동적화 (env unset 이면 root mount 그대로). 신규 `lib/basePath.ts` 의 `apiUrl()` 헬퍼로 6개 hardcoded `/api/...` fetch (`lib/ai/client.ts`, `lib/ai/sam/client.ts`) wrap. 5개 navigational `<a href>` → `<Link>` (basePath 자동 prepend + client nav 보너스). `NEXT_PUBLIC_BASE_PATH=/avatar-editor` 빌드 시 `.next/standalone/server.js` 안에 prefix 정상 inline 확인 |
 | 2026-05-10 | [95 phaseA_3_send_to_geny](2026-05-10_95_phaseA_3_send_to_geny.md) | A.3 | 완료 — ExportButton 에 4번째 버튼 "send to Geny" (`NEXT_PUBLIC_GENY_HOST==="true"` 일 때만). `buildModelZip()` 결과를 multipart 로 신규 `/api/send-to-geny` 로 POST → route 가 `GENY_BAKED_EXPORTS_DIR` (디폴트 `/exports`) 에 timestamped 파일명으로 fs.writeFile. filename sanitize + 503 fallback. 단독 사용 무손상 (버튼 hidden, route 도 503 안내) |
 | 2026-05-10 | [96 phaseA_4_readme](2026-05-10_96_phaseA_4_readme.md) | A.4 | 완료 — README 에 "Geny 통합 (선택)" 섹션 추가 + "현재 상태" 갱신. 3개 환경 변수 표 (`NEXT_PUBLIC_BASE_PATH` / `NEXT_PUBLIC_GENY_HOST` / `GENY_BAKED_EXPORTS_DIR`) + 빌드 모드 3종 (단독/Geny/Docker) + Geny plan 문서로 외부 링크. 단독 hobby 사용은 무손상 강조 |
+| 2026-05-10 | [97 phaseA_5_v020_tag](2026-05-10_97_phaseA_5_v020_tag.md) | A.5 | 완료 — Phase A 종결 tag. package.json `0.0.1`→`0.2.0`, landing chip `v0.2.0 · Geny-integratable`, annotated git tag `v0.2.0` push. Geny submodule 의 pin target. Phase A (Dockerfile · basePath · send-to-Geny · README · tag) 5 sprint 종합 — 단독 hobby 무손상 + Geny 통합 준비 완료 |
 
 ## 운영 규칙
 
