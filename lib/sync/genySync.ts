@@ -160,9 +160,13 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
     const resp = await fetch(`/api/library/${encodeURIComponent(puppetId)}`, {
       method: "DELETE",
     });
-    if (resp.status === 404) {
-      // Idempotent — already gone.
-      return { status: "ok" };
+    // Geny's library_delete is idempotent — always 200 with a body
+    // describing what was actually removed (registry entry + any
+    // matching inbox / installed zips). 5xx still bubbles up as a
+    // warning so operators see proxy / backend issues; 503 from the
+    // proxy means the deploy isn't in Geny mode (no-op skip).
+    if (resp.status === 503) {
+      return { status: "skipped", reason: "geny proxy returned 503" };
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
