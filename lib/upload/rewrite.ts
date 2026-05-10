@@ -113,6 +113,18 @@ export async function rewriteLive2DManifest(
     }
     out.Motions = newGroups;
   }
+  // Expressions: same shape as Motions entries — `{Name, File}`. Engine
+  // resolves the File against the manifest URL when setExpression() fires,
+  // so blob: URL manifests need these rewritten too. Without this, the
+  // editor's Animation tab ▶ preview silently no-ops on uploaded puppets.
+  if (Array.isArray(refs.Expressions)) {
+    out.Expressions = refs.Expressions.map((e: unknown, i: number) => {
+      if (e && typeof e === "object" && "File" in e && typeof e.File === "string") {
+        return { ...e, File: resolveOne(`expression[${i}]`, e.File) };
+      }
+      return e;
+    });
+  }
 
   const rewritten = { ...parsed, FileReferences: out };
   return new Blob([JSON.stringify(rewritten)], { type: "application/json" });
