@@ -175,6 +175,15 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
       console.warn(`[geny-sync] remove failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}` };
     }
+    // Clear the catch-up bookkeeping for this puppet so a re-upload
+    // with the same name doesn't think it's already synced.
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(`geny-sync:lastPushedAt:${puppetId}`);
+      }
+    } catch {
+      // ignore
+    }
     return { status: "ok" };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -242,6 +251,16 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
       model?: { name?: string };
       status?: string;
     };
+    // Record the successful push so the library-page catch-up effect
+    // doesn't re-push this puppet on the next page load. Best-effort —
+    // localStorage failures (private mode, quota) don't break sync.
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(`geny-sync:lastPushedAt:${puppetId}`, String(Date.now()));
+      }
+    } catch {
+      // ignore
+    }
     return { status: "ok", modelName: body.model?.name, bytes: baked.zip.size };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

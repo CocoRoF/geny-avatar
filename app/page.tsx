@@ -16,6 +16,7 @@ import {
   savePuppet,
   updatePuppet,
 } from "@/lib/persistence/db";
+import { syncPuppetNow } from "@/lib/sync/genySync";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -75,6 +76,61 @@ export default function Home() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // ── Geny catch-up sync ─────────────────────────────────────────
+  // After the library list loads, walk each puppet and push any
+  // that haven't been synced since their last `updatedAt`. Per-
+  // puppet "last pushed at" lives in localStorage so a single fresh
+  // upload doesn't re-push every other puppet too — Geny dedupes
+  // by puppet.id anyway, but we'd rather not eat 75MB of upload on
+  // every page load. Runs sequentially so 5 puppets don't all bake
+  // + post at once. Best-effort: errors log to console and we move
+  // to the next puppet.
+  //
+  // Why this exists: the IDB write hooks in db.ts only fire when
+  // *new* writes happen. Puppets uploaded before the sync code was
+  // deployed never trigger the hook, so they would otherwise stay
+  // invisible in Geny until the user did some new edit on them.
+  // This catch-up effect closes that gap by treating "first sight"
+  // of an unsynced puppet on the library page as the sync trigger.
+  useEffect(() => {
+    if (!puppets || puppets.length === 0) return;
+    if (typeof window === "undefined") return;
+    if (process.env.NEXT_PUBLIC_GENY_HOST !== "true") return;
+    let cancelled = false;
+    (async () => {
+      for (const p of puppets) {
+        if (cancelled) return;
+        const lastKey = `geny-sync:lastPushedAt:${p.id}`;
+        const lastRaw = localStorage.getItem(lastKey);
+        const last = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
+        if (Number.isFinite(last) && last >= p.updatedAt) continue;
+        try {
+          const result = await syncPuppetNow(p.id);
+          if (cancelled) return;
+          if (result.status === "ok") {
+            localStorage.setItem(lastKey, String(p.updatedAt));
+            console.debug(
+              `[geny-sync:catchup] pushed ${p.name} (id=${p.id}) → ${result.modelName ?? "?"}`,
+            );
+          } else if (result.status === "skipped") {
+            // Geny mode off / proxy 503 / etc. No retry — next page
+            // load will try again. Don't write lastPushedAt so we
+            // re-attempt next time.
+            console.debug(`[geny-sync:catchup] skipped ${p.id}: ${result.reason}`);
+            return; // bail out of the whole loop; assume Geny offline
+          } else {
+            console.warn(`[geny-sync:catchup] ${p.id} failed: ${result.error}`);
+          }
+        } catch (err) {
+          console.warn(`[geny-sync:catchup] ${p.id} threw:`, err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [puppets]);
 
   // Hand off the just-dropped File[] to either restore-zip or parse-
   // bundle, save to IDB, and navigate to the editor. Everything else
