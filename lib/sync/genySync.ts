@@ -49,6 +49,7 @@
  *   - removePuppetFromGeny(id)      — fire-and-forget delete.
  */
 
+import { apiUrl } from "../basePath";
 import type { PuppetId } from "../persistence/db";
 import { buildPassthroughZip } from "./passthroughBake";
 
@@ -159,7 +160,7 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
   }
   cancelPuppetSync(puppetId);
   try {
-    const resp = await fetch(`/api/library/${encodeURIComponent(puppetId)}`, {
+    const resp = await fetch(apiUrl(`/api/library/${encodeURIComponent(puppetId)}`), {
       method: "DELETE",
     });
     // Geny's library_delete is idempotent — always 200 with a body
@@ -238,7 +239,7 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
   fd.append("zip", new File([baked.zip], baked.filename, { type: "application/zip" }));
 
   try {
-    const resp = await fetch("/api/library/sync", { method: "POST", body: fd });
+    const resp = await fetch(apiUrl("/api/library/sync"), { method: "POST", body: fd });
     if (resp.status === 503) {
       return { status: "skipped", reason: "geny proxy returned 503" };
     }
