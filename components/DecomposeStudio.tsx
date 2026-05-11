@@ -108,6 +108,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  layer texture override. */
   const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
+  /** State-tracked mirror of `previewRef.current`. Some child
+   *  components (BrushCursor) need to know when the preview canvas
+   *  actually mounts so they can attach pointer listeners; a
+   *  RefObject's stable identity won't trigger their useEffect, but
+   *  state changes will. The callback ref below keeps both in sync. */
+  const [previewEl, setPreviewEl] = useState<HTMLCanvasElement | null>(null);
+  const setPreviewRef = useCallback((el: HTMLCanvasElement | null) => {
+    previewRef.current = el;
+    setPreviewEl(el);
+  }, []);
+  /** Source canvas dimensions exposed to children that need them
+   *  for scaling math. Bumped when the layer changes. */
+  const [sourceDim, setSourceDim] = useState<{ width: number; height: number } | null>(null);
   /** Wrapper that the CSS zoom/pan transform is applied to. Pan +
    *  wheel zoom listeners attach here so the user can scroll past
    *  the canvas's edge to pan into empty space without losing the
@@ -289,6 +302,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setReady(false);
     setError(null);
     setDirty(false);
+    setSourceDim(null);
     if (!adapter || !layer.texture) {
       setError("이 레이어에는 텍스처 영역이 없습니다");
       return;
@@ -313,6 +327,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       // sourceAspect doc).
       if (extracted.canvas.width > 0 && extracted.canvas.height > 0) {
         setSourceAspect(extracted.canvas.width / extracted.canvas.height);
+        setSourceDim({ width: extracted.canvas.width, height: extracted.canvas.height });
       }
 
       // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked.
@@ -1838,7 +1853,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     }}
                   >
                     <canvas
-                      ref={previewRef}
+                      ref={setPreviewRef}
                       onPointerDown={onPointerDown}
                       onPointerMove={onPointerMove}
                       onPointerUp={onPointerUp}
@@ -1903,12 +1918,14 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                 )}
                 {/* Brush cursor overlay — fixed-position circle that
                     follows the pointer. Sized to match the actual
-                    stroke at the current zoom. */}
+                    stroke at the current zoom. Listeners attach
+                    reliably because the canvas element is passed via
+                    state (callback-ref pattern), not a stable ref. */}
                 <BrushCursor
-                  canvasRef={previewRef}
+                  canvas={previewEl}
                   brushSize={brushSize}
+                  sourceWidth={sourceDim?.width ?? 0}
                   enabled={isSizedBrushTool(selectedTool) && !viewport.spaceHeld}
-                  color={selectedTool === "wand" ? "#3b82f6" : undefined}
                 />
                 {/* Floating wand action bar — visible whenever a
                     selection exists. Above the canvas so the user
@@ -2287,13 +2304,21 @@ function samplePixelHex(canvas: HTMLCanvasElement, sx: number, sy: number): stri
   return `#${toHex(data[0])}${toHex(data[1])}${toHex(data[2])}`;
 }
 
-/** Whether the active tool needs the brush-size cursor overlay. */
+/** Whether the active tool wants the brush-size ring overlay. Only
+ *  brush + eraser have a meaningful "size" to telegraph; bucket and
+ *  wand are single-click tools whose effective radius is the
+ *  click-pixel + tolerance/connectivity rules, not a brush size.
+ *  Rendering a brush ring around them was a UX trap — the ring
+ *  implied paint behaviour and obscured the actual cursor. */
 function isSizedBrushTool(tool: ToolId): boolean {
-  return tool === "brush" || tool === "eraser" || tool === "bucket" || tool === "wand";
+  return tool === "brush" || tool === "eraser";
 }
 
 /** Tailwind class for the canvas's CSS cursor when the BrushCursor
- *  overlay is NOT rendered (move/zoom/hand/sam tools). */
+ *  overlay is NOT rendered. For brush + eraser the inline style
+ *  separately hides the OS cursor (cursor: none) and the overlay
+ *  takes over; every other tool falls through to a meaningful OS
+ *  cursor here. */
 function cursorClassForTool(tool: ToolId, spaceHeld: boolean, isPanning: boolean): string {
   if (spaceHeld || tool === "hand") {
     return isPanning ? "cursor-grabbing" : "cursor-grab";
@@ -2302,7 +2327,9 @@ function cursorClassForTool(tool: ToolId, spaceHeld: boolean, isPanning: boolean
   if (tool === "move") return "cursor-default";
   if (tool === "sam") return "cursor-crosshair";
   if (tool === "eyedropper") return "cursor-crosshair";
-  // brush / eraser / bucket / wand — overlay handles the visual.
+  if (tool === "bucket") return "cursor-crosshair";
+  if (tool === "wand") return "cursor-crosshair";
+  // brush / eraser — overlay handles the visual.
   return "cursor-crosshair";
 }
 
