@@ -9,21 +9,27 @@
  * keys — Geny dedupes by them, so re-syncs replace the prior entry
  * in place.
  *
- * Why this pulls baking through an indirection (`registerActiveBaker`)
- * instead of letting genySync call `buildModelZip` directly:
+ * Two zip-building paths:
  *
- *   - `buildModelZip` needs the *live* runtime state (the Pixi adapter,
- *     the parsed `Avatar` graph, plus the editor-store maps for
- *     visibility/masks/textures). These only exist while the user is
- *     in the editor — they aren't in IndexedDB.
- *   - The sync triggers fire from `lib/persistence/db.ts` write paths,
- *     which run in editor *and* library-page contexts. We can't
- *     reconstruct the runtime state from the library page.
- *   - So the editor page registers a baker callback for its current
- *     puppet on mount; sync triggers call this callback to get a
- *     fresh baked zip. Triggers fired while no baker is registered
- *     (e.g. a library-page rename) skip cleanly — the puppet will
- *     sync the next time the user opens it in the editor.
+ *   1. **Active baker** — `buildModelZip` from the editor. Needs
+ *      the live Pixi adapter, parsed Avatar graph, and editor-store
+ *      maps for visibility / masks / texture overrides. Produces a
+ *      runtime-ready baked zip (atlas pages composited, model
+ *      patches applied). The editor page registers its baker on
+ *      mount via `registerActiveBaker`.
+ *
+ *   2. **Passthrough** — `buildPassthroughZip` from raw IDB
+ *      entries + sidecar. No runtime state needed. Used whenever
+ *      the active baker isn't available — typically right after a
+ *      library-page upload, or when the editor is open on a
+ *      different puppet. The user sees the puppet in Geny
+ *      immediately; if they later open it in the editor and tweak
+ *      anything, the active baker re-pushes with the bake applied
+ *      and Geny's library_delete-by-puppet-id flow keeps things
+ *      tidy.
+ *
+ * Either way the resulting zip goes through the same
+ * `POST /api/library/sync` endpoint and Geny dedupes by puppet.id.
  *
  * Constraints driving the design:
  *   - geny-avatar must keep working when Geny is offline. All sync
@@ -44,15 +50,14 @@
  */
 
 import type { PuppetId } from "../persistence/db";
+import { buildPassthroughZip } from "./passthroughBake";
 
 const DEFAULT_DEBOUNCE_MS = 600;
 
 /** Bake one puppet into a zip ready for Geny ingest. The active baker
  *  returns null when it can't bake the requested puppet — typically
  *  because the editor is currently displaying a different puppet. */
-export type ActiveBaker = (
-  puppetId: PuppetId,
-) => Promise<{ zip: Blob; filename: string } | null>;
+export type ActiveBaker = (puppetId: PuppetId) => Promise<{ zip: Blob; filename: string } | null>;
 
 interface PendingPush {
   timer: ReturnType<typeof setTimeout> | null;
@@ -94,10 +99,7 @@ export function registerActiveBaker(baker: ActiveBaker): () => void {
  * Geny mode is off, this is a cheap no-op so callers can wire it
  * unconditionally into IndexedDB write paths.
  */
-export function schedulePuppetSync(
-  puppetId: PuppetId,
-  opts: { debounceMs?: number } = {},
-): void {
+export function schedulePuppetSync(puppetId: PuppetId, opts: { debounceMs?: number } = {}): void {
   if (!isGenyHost()) return;
   if (typeof window === "undefined") return; // SSR safety
 
@@ -170,9 +172,7 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      console.warn(
-        `[geny-sync] remove failed status=${resp.status} body=${text.slice(0, 300)}`,
-      );
+      console.warn(`[geny-sync] remove failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}` };
     }
     return { status: "ok" };
@@ -183,34 +183,46 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
   }
 }
 
-/** Internal: ask the active baker for a zip and POST it. Skips when no
- *  baker is registered (e.g., user is on the library page and not
- *  editing) — the puppet will sync the next time it's opened. */
+/** Internal: produce a zip for the puppet (prefer the active baker
+ *  for a properly-baked output, fall back to a passthrough bundle
+ *  of raw IDB entries + sidecar when no baker is available) and
+ *  POST it. The fallback path means a freshly-uploaded puppet
+ *  appears in Geny immediately, without the user having to open the
+ *  editor first. Re-opening the editor later re-pushes with full
+ *  bake, transparently replacing the passthrough entry. */
 async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
+  let baked: { zip: Blob; filename: string } | null = null;
   const baker = _activeBaker;
-  if (!baker) {
-    return {
-      status: "skipped",
-      reason: "no active baker (open the puppet in the editor to sync)",
-    };
+
+  if (baker) {
+    try {
+      baked = await baker(puppetId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Don't bail on the whole sync — fall through to the passthrough
+      // path so the puppet still lands in Geny even if the baker hit
+      // an edge case (missing adapter, mid-mount race, etc.).
+      console.warn(`[geny-sync] baker threw for ${puppetId}: ${msg} (falling back to passthrough)`);
+      baked = null;
+    }
   }
 
-  let baked: { zip: Blob; filename: string } | null;
-  try {
-    baked = await baker(puppetId);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[geny-sync] baker threw for ${puppetId}: ${msg}`);
-    return { status: "error", error: msg };
-  }
   if (!baked) {
-    // Baker can't service this puppet right now (most often because
-    // the editor is showing a different puppet). Try again later when
-    // the editor catches up.
-    return {
-      status: "skipped",
-      reason: "active baker declined this puppet (different puppet open?)",
-    };
+    // No baker (typical on the library page after a fresh upload),
+    // baker declined (different puppet open), or baker threw. Build
+    // a passthrough zip from raw IDB entries so Geny gets the
+    // pristine bundle right away.
+    try {
+      const pass = await buildPassthroughZip(puppetId);
+      if (!pass) {
+        return { status: "error", error: `puppet ${puppetId} not found in library` };
+      }
+      baked = { zip: pass.zip, filename: pass.filename };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[geny-sync] passthrough failed for ${puppetId}: ${msg}`);
+      return { status: "error", error: msg };
+    }
   }
 
   const fd = new FormData();
@@ -223,9 +235,7 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      console.warn(
-        `[geny-sync] push failed status=${resp.status} body=${text.slice(0, 300)}`,
-      );
+      console.warn(`[geny-sync] push failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}: ${text.slice(0, 200)}` };
     }
     const body = (await resp.json()) as {
