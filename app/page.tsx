@@ -207,6 +207,21 @@ export default function Home() {
     }
   }
 
+  // Rename a puppet in the library. Bumps `updatedAt` (via
+  // updatePuppet), which both invalidates the catch-up sync cache
+  // and fires the IDB-write hook → debounced push to Geny. The
+  // backend's library_sync uses the new name as the display-name
+  // base, so the user sees the renamed puppet pick up the new
+  // label on the next sync.
+  async function onRename(id: PuppetId, newName: string) {
+    try {
+      await updatePuppet(id, { name: newName });
+      await refresh();
+    } catch (e) {
+      setLibraryError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-[var(--color-bg)]">
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-12 sm:px-8 sm:py-16">
@@ -302,6 +317,7 @@ export default function Home() {
                   puppet={p}
                   onDelete={() => onDelete(p.id)}
                   onOriginChange={(s) => onOriginChange(p.id, s)}
+                  onRename={(n) => onRename(p.id, n)}
                 />
               ))}
             </ul>
@@ -327,10 +343,12 @@ function LibraryCard({
   puppet,
   onDelete,
   onOriginChange,
+  onRename,
 }: {
   puppet: PuppetRow;
   onDelete: () => void;
   onOriginChange: (source: AssetOriginNote["source"]) => void;
+  onRename: (newName: string) => void;
 }) {
   return (
     <li className="flex flex-col rounded border border-[var(--color-border)] bg-[var(--color-panel)]">
@@ -350,7 +368,7 @@ function LibraryCard({
             {puppet.id.slice(-6)}
           </span>
         </div>
-        <div className="mb-2 truncate text-base font-medium">{puppet.name}</div>
+        <RenameRow currentName={puppet.name} onRename={onRename} />
         <div className="text-xs text-[var(--color-fg-dim)]">
           {puppet.fileCount} files · {humanBytes(puppet.totalSize)}
         </div>
@@ -405,6 +423,95 @@ function LibraryCard({
         </button>
       </div>
     </li>
+  );
+}
+
+/**
+ * Inline rename row — shows the puppet name and switches to an
+ * <input> when the user clicks the small ✎ button. Submits on
+ * Enter / blur, cancels on Esc. The whole row stops Link
+ * navigation propagation so editing inside the card doesn't
+ * accidentally route to the editor page.
+ */
+function RenameRow({
+  currentName,
+  onRename,
+}: {
+  currentName: string;
+  onRename: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentName);
+
+  function commit() {
+    const trimmed = draft.trim();
+    setEditing(false);
+    if (!trimmed || trimmed === currentName) {
+      setDraft(currentName);
+      return;
+    }
+    onRename(trimmed);
+  }
+  function cancel() {
+    setDraft(currentName);
+    setEditing(false);
+  }
+
+  // Wrapper swallows the click so the parent <Link> doesn't fire
+  // when the user just wants to focus the rename input. Same for
+  // keydown — the Link can't capture key events but stopPropagation
+  // here also guards against keyboard navigation flowing back into
+  // any global shortcut hook.
+  function swallowClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function swallowKey(e: React.KeyboardEvent) {
+    e.stopPropagation();
+  }
+
+  if (editing) {
+    return (
+      // biome-ignore lint/a11y/noStaticElementInteractions: container exists solely to prevent the parent <Link> from firing when the user edits the name inside; the input itself is the interactive target.
+      <div className="mb-2 flex items-center gap-1" onClick={swallowClick} onKeyDown={swallowKey}>
+        <input
+          type="text"
+          value={draft}
+          // biome-ignore lint/a11y/noAutofocus: rename entered via explicit click on the edit button; autoFocus is the expected UX so the user can type immediately.
+          autoFocus
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          className="min-w-0 flex-1 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1.5 py-0.5 text-base font-medium text-[var(--color-fg)] focus:outline-none"
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="mb-2 flex items-center gap-1.5">
+      <span className="min-w-0 flex-1 truncate text-base font-medium">{currentName}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDraft(currentName);
+          setEditing(true);
+        }}
+        title="Rename"
+        className="shrink-0 rounded border border-transparent px-1 text-[10px] text-[var(--color-fg-dim)] hover:border-[var(--color-border)] hover:text-[var(--color-fg)]"
+      >
+        ✎
+      </button>
+    </div>
   );
 }
 
