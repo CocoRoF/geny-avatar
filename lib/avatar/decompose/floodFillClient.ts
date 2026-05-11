@@ -23,7 +23,7 @@
  * spamming wand clicks; today's design is fine for a click + drag.
  */
 
-import type { FloodResponse, SampleMode } from "./floodFillWorker";
+import type { FloodResponse, SampleMode } from "./floodFillWorker.types";
 
 export interface FloodArgs {
   source: HTMLCanvasElement;
@@ -66,13 +66,15 @@ const _latestByOwner = new Map<string, number>();
 
 function getWorker(): Worker {
   if (_worker) return _worker;
-  // The `?worker` query is the Next.js / webpack convention for
-  // importing the module as a Worker constructor. We use the inline
-  // form so the worker bundles into the editor and doesn't need an
-  // extra HTTP fetch on first wand click.
-  // The @ts-expect-error is for the bundler-specific URL pattern that
-  // TypeScript doesn't model natively.
-  const url = new URL("./floodFillWorker.ts", import.meta.url);
+  // Webpack 5 / Next.js detects `new URL("./x.js", import.meta.url)`
+  // and emits the referenced file as a worker chunk under
+  // _next/static/media/. We keep the worker as plain JS (not TS) so
+  // the emitted asset gets a `.js` extension — Next.js's static
+  // server maps `.ts` to MIME `video/mp2t` (the MPEG-TS streaming
+  // format that shares the extension), and strict module-script
+  // loaders refuse it. A `.js` worker comes back as
+  // `application/javascript` and instantiates correctly.
+  const url = new URL("./floodFillWorker.js", import.meta.url);
   _worker = new Worker(url, { type: "module" });
   _worker.onmessage = (ev: MessageEvent<FloodResponse>) => {
     const entry = _pending.get(ev.data.id);
