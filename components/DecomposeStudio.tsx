@@ -149,10 +149,6 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  sub-pixel positioning. One engine for the panel's lifetime;
    *  beginStroke / addSample / endStroke cycle per pointer drag. */
   const strokeEngineRef = useRef<StrokeEngine | null>(null);
-  /** Cached bounding rect of the preview canvas. Updated by a
-   *  ResizeObserver so the hot pointermove path doesn't have to call
-   *  getBoundingClientRect() (which forces a layout flush). */
-  const cachedRectRef = useRef<DOMRectReadOnly | null>(null);
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -469,8 +465,16 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
 
   // Set up the compositor + ResizeObserver for the preview canvas.
   // Resize the preview backing so it matches the layout dim *× DPR*
-  // — the compositor handles up-scaling internally. The cached rect
-  // (cachedRectRef) skips per-pointermove getBoundingClientRect.
+  // — the compositor handles up-scaling internally.
+  //
+  // NOTE: we no longer cache the canvas bounding rect. ResizeObserver
+  // fires on *layout* changes, but the viewport zoom + pan applies a
+  // CSS transform on the wrapper which doesn't change layout —
+  // a cached rect goes stale during zoom/pan and pointer coords land
+  // in the wrong place. Browsers cache getBoundingClientRect()
+  // internally when no layout invalidation has happened (which is
+  // the case during a brush stroke — only canvas content changes),
+  // so calling it on every pointermove is essentially free.
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview || !ready) return;
@@ -480,7 +484,6 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const rect = entry.contentRect;
-        cachedRectRef.current = preview.getBoundingClientRect();
         // Resize the compositor's backing to the layout size × DPR
         // so the up-scaled trim composite stays sharp at deep zoom
         // without falling back to a blurry bilinear stretch.
@@ -491,7 +494,6 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       }
     });
     ro.observe(preview);
-    cachedRectRef.current = preview.getBoundingClientRect();
     return () => ro.disconnect();
   }, [ready, fullscreen]);
 
@@ -604,15 +606,20 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
 
   // ── Pointer → source-pixel conversion (hot path) ─────────────────
   //
-  // The cached preview rect updates on resize / scroll; pointermove
-  // hits this thousands of times per stroke so we never want to
-  // re-invoke getBoundingClientRect from here (forces a sync layout
-  // flush).
+  // Reads getBoundingClientRect() directly every call. We tried
+  // caching this via ResizeObserver, but RO only fires on *layout*
+  // changes and the viewport zoom + pan uses a CSS transform on the
+  // wrapper (no layout change) — so cached rects went stale during
+  // zoom/pan and click coords landed in the wrong source pixel.
+  // Modern browsers cache getBoundingClientRect() internally as long
+  // as no layout invalidation has happened, which is the case during
+  // a brush stroke (only canvas content changes), so direct calls
+  // are essentially free here.
   const clientToSrc = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
     const preview = previewRef.current;
     const source = sourceCanvasRef.current;
     if (!preview || !source) return { x: 0, y: 0 };
-    const rect = cachedRectRef.current ?? preview.getBoundingClientRect();
+    const rect = preview.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
     return {
       x: ((clientX - rect.left) / rect.width) * source.width,
