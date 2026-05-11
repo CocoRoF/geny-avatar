@@ -460,7 +460,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       focusRegionId,
       selectedRegionId,
     });
-    c.invalidate();
+    // Paint mode renders synchronously: the user is direct-manipulating
+    // texture pixels and any latency between stamping and visual
+    // feedback feels like a broken brush. The rAF coalescing the
+    // compositor does for trim/split is unnecessary here because paint
+    // mode's frag shader is a single texture sample (cheap) and the
+    // user wants to SEE every dab the moment it lands. Trim and split
+    // keep rAF coalescing because their compositor paths are heavier
+    // (region tints, threshold cache).
+    if (studioMode === "paint") {
+      c.renderSync();
+    } else {
+      c.invalidate();
+    }
   }, [regionEntries, studioMode, threshold, focusRegionId, selectedRegionId]);
 
   // Set up the compositor + ResizeObserver for the preview canvas.
