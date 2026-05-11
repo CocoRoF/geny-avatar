@@ -107,8 +107,30 @@ function compositeTexture(
   ctx.save();
   // Triangle clip prevents the new pixels from spilling onto atlas
   // neighbors when the layer's footprint is non-rectangular (Cubism
-  // mesh, Spine MeshAttachment).
-  if (trianglePath) ctx.clip(trianglePath);
+  // mesh, Spine MeshAttachment). When the adapter can't produce
+  // triangles, fall back to the rectangular rect — without any
+  // clip the wipe below would erase the whole atlas page.
+  if (trianglePath) {
+    ctx.clip(trianglePath);
+  } else {
+    const rectPath = new Path2D();
+    rectPath.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.clip(rectPath);
+  }
+  // Wipe pristine atlas pixels inside the clip BEFORE drawing the
+  // override blob. Without this, source-over below preserves
+  // pristine pixels anywhere the blob has alpha=0 — which is
+  // exactly what happens when the user uses the eraser in paint
+  // mode: dabs become transparent holes in the saved PNG, but the
+  // page-side composite would still show the original pristine
+  // texture through them, so erase appeared to do nothing.
+  // Clearing first means the blob's pixels are 100% authoritative
+  // inside the clip: opaque pixels replace pristine, transparent
+  // pixels leave alpha=0. Other layers' atlas content (outside
+  // the clip) stays untouched.
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "rgba(0,0,0,1)";
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.globalCompositeOperation = "source-over";
   if (rotated) {
     // The texture blob is upright; the atlas region is packed 90deg
