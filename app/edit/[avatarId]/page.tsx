@@ -14,6 +14,7 @@ import { ReferencesPanel } from "@/components/ReferencesPanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { VariantsPanel } from "@/components/VariantsPanel";
 import type { AdapterLoadInput, AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
+import { registerActiveBaker, schedulePuppetPublish } from "@/lib/autoPublish/libraryPublisher";
 import { captureThumbnail } from "@/lib/avatar/captureThumbnail";
 import type { Avatar } from "@/lib/avatar/types";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
@@ -21,7 +22,6 @@ import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPers
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
 import { loadPuppet, type PuppetId, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
-import { registerActiveBaker, schedulePuppetSync } from "@/lib/sync/genySync";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -181,7 +181,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
   // to Geny so the editor library and Geny's registry line up.
   useEffect(() => {
     if (!adapter || !avatar) return;
-    schedulePuppetSync(puppetId);
+    schedulePuppetPublish(puppetId);
   }, [puppetId, adapter, avatar]);
 
   const headerName = puppetRow?.name ?? puppetId.slice(-6);

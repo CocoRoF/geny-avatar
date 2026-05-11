@@ -3,7 +3,7 @@
  *
  * Superseded by `POST /api/library/sync`, which forwards directly to
  * Geny's `/api/vtuber/library/sync` endpoint. The new flow is fully
- * automatic (driven by IndexedDB write hooks in `lib/sync/genySync`)
+ * automatic (driven by IndexedDB write hooks in `lib/autoPublish/libraryPublisher`)
  * so the legacy "Send to Geny" button is gone. This route stays around
  * in case anything still pokes it programmatically — it keeps the
  * shared-volume drop semantics, but the recommended path is the

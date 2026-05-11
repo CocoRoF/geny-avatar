@@ -1,43 +1,64 @@
 /**
  * DELETE /api/library/[puppetId]
  *
- * Server-side proxy for the library remove flow. Mirrors the sync POST
- * route — forwards `DELETE /api/vtuber/library/{puppet_id}` to Geny's
- * backend. Used when the user deletes a puppet from geny-avatar's
- * library so the same id is dropped from Geny's model registry.
+ * Unlink the puppet's published zip from the auto-publish output
+ * directory. The downstream consumer's watcher notices the file
+ * disappear on the next scan and drops its registry entry — no
+ * HTTP coupling.
  *
- * Response 200: forwards Geny's removal summary.
- * Response 404: forwards "no entry with this id"; safe to ignore on
- *               the caller side (idempotent).
- * Response 503: Geny mode not configured.
+ * Cleans up two locations:
+ *   - `<output>/<puppet_id>.zip` — the live published copy
+ *   - `<output>/installed/<puppet_id>.zip` — legacy archive copy
+ *     left behind by manual installs from before auto-publish (still
+ *     unlinks if present so the watcher doesn't keep the entry alive
+ *     via the archive).
+ *
+ * Idempotent: always returns 200, body lists which files were
+ * actually removed.
  */
 
+import { stat, unlink } from "node:fs/promises";
+import path from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function genyBackendUrl(): string | null {
-  return process.env.GENY_BACKEND_URL?.trim() || null;
+function outputDir(): string | null {
+  return process.env.GENY_BAKED_EXPORTS_DIR?.trim() || null;
+}
+
+function slugify(s: string, max = 48): string {
+  const cleaned = s.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return (cleaned || "puppet").slice(0, max);
+}
+
+async function tryUnlink(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+  } catch {
+    return false;
+  }
+  try {
+    await unlink(p);
+    return true;
+  } catch (e) {
+    console.warn(`[auto-publish] unlink failed for ${p}:`, e);
+    return false;
+  }
 }
 
 export async function DELETE(
   _req: NextRequest,
   ctx: { params: Promise<{ puppetId: string }> },
 ): Promise<NextResponse> {
-  if (process.env.NEXT_PUBLIC_GENY_HOST !== "true") {
+  const dir = outputDir();
+  if (!dir) {
     return NextResponse.json(
       {
         error:
-          "Geny 통합 모드가 아닙니다 (NEXT_PUBLIC_GENY_HOST!=='true'). 단독 모드에서는 sync delete가 비활성화됩니다.",
+          "auto-publish 가 구성되지 않았습니다 (GENY_BAKED_EXPORTS_DIR 미설정). 단독 모드에서는 sync delete 가 비활성화됩니다.",
       },
-      { status: 503 },
-    );
-  }
-  const backend = genyBackendUrl();
-  if (!backend) {
-    return NextResponse.json(
-      { error: "GENY_BACKEND_URL 환경변수가 설정되지 않았습니다." },
       { status: 503 },
     );
   }
@@ -47,24 +68,19 @@ export async function DELETE(
     return NextResponse.json({ error: "puppetId is required" }, { status: 400 });
   }
 
-  const target = `${backend.replace(/\/$/, "")}/api/vtuber/library/${encodeURIComponent(puppetId)}`;
-  let resp: Response;
-  try {
-    resp = await fetch(target, { method: "DELETE" });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`[library-delete] proxy fetch failed → ${target}: ${msg}`);
-    return NextResponse.json(
-      { error: `Geny 백엔드에 연결 실패: ${msg}` },
-      { status: 502 },
-    );
+  const filename = `${slugify(puppetId)}.zip`;
+  const removed: string[] = [];
+
+  for (const candidate of [path.join(dir, filename), path.join(dir, "installed", filename)]) {
+    if (await tryUnlink(candidate)) {
+      removed.push(candidate);
+    }
   }
 
-  let body: unknown;
-  try {
-    body = await resp.json();
-  } catch {
-    body = { error: `Geny 응답 파싱 실패 (status=${resp.status})` };
-  }
-  return NextResponse.json(body, { status: resp.status });
+  console.info(`[auto-publish] removed ${removed.length} file(s) for puppetId=${puppetId}`);
+  return NextResponse.json({
+    status: "ok",
+    puppetId,
+    removed,
+  });
 }

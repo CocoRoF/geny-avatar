@@ -1,13 +1,16 @@
 /**
- * Geny library auto-sync.
+ * Library auto-publish.
  *
- * Treats geny-avatar's IndexedDB library as the source of truth for
- * Geny's model registry: any time the user saves something in the
- * editor, we (debounced) re-bake the model zip and push it to Geny via
- * `POST /api/library/sync`. Puppet deletions fire a matching
- * `DELETE /api/library/{id}`. Puppet IDs are the IndexedDB primary
- * keys — Geny dedupes by them, so re-syncs replace the prior entry
- * in place.
+ * Whenever the IndexedDB library is written to (new upload, rename,
+ * variant save, layer override, animation config) we — debounced —
+ * bake a model zip for the changed puppet and POST it to a generic
+ * `/api/library/sync` route. That route writes the zip to a
+ * configured output directory (in deployed builds the docker volume
+ * shared with Geny; in stand-alone hobby use it's just a folder on
+ * disk). A matching `DELETE /api/library/{id}` unlinks the zip on
+ * puppet delete. No HTTP coupling with any specific consumer —
+ * Geny just happens to mount the same volume and mirror its
+ * contents into its model registry.
  *
  * Two zip-building paths:
  *
@@ -22,31 +25,33 @@
  *      entries + sidecar. No runtime state needed. Used whenever
  *      the active baker isn't available — typically right after a
  *      library-page upload, or when the editor is open on a
- *      different puppet. The user sees the puppet in Geny
- *      immediately; if they later open it in the editor and tweak
- *      anything, the active baker re-pushes with the bake applied
- *      and Geny's library_delete-by-puppet-id flow keeps things
- *      tidy.
+ *      different puppet. The downstream consumer sees the puppet
+ *      immediately; if the user later opens it in the editor and
+ *      tweaks anything, the active baker re-pushes with the bake
+ *      applied and the consumer's puppet-id-based dedup keeps
+ *      things tidy.
  *
  * Either way the resulting zip goes through the same
- * `POST /api/library/sync` endpoint and Geny dedupes by puppet.id.
+ * `POST /api/library/sync` route and downstream dedupes by
+ * `puppet.id` from `avatar-editor.json`.
  *
- * Constraints driving the design:
- *   - geny-avatar must keep working when Geny is offline. All sync
- *     calls are best-effort: failure logs to console but never throws
- *     to the caller.
+ * Constraints:
+ *   - geny-avatar must keep working in stand-alone mode (no consumer
+ *     volume mounted). All publish calls are best-effort: failures
+ *     log to console but never throw to the caller.
  *   - Save bursts (multiple variant tweaks in quick succession) collapse
  *     into a single push via a per-puppet debounce timer.
- *   - Stand-alone (non-Geny) deployments skip sync entirely; the
- *     server-side proxy returns 503 and we honor that as a no-op.
+ *   - Builds without `NEXT_PUBLIC_AUTO_PUBLISH` skip the route call
+ *     entirely; the route itself short-circuits when its target dir
+ *     isn't configured.
  *
  * Public API:
- *   - registerActiveBaker(baker)    — editor calls this on mount; the
- *                                      returned function unregisters.
- *   - schedulePuppetSync(id, opts?) — debounced push (default ~600ms).
- *   - cancelPuppetSync(id)          — drop a pending push.
- *   - syncPuppetNow(id)             — immediate, awaitable.
- *   - removePuppetFromGeny(id)      — fire-and-forget delete.
+ *   - registerActiveBaker(baker)       — editor calls this on mount;
+ *                                         returns an unregister fn.
+ *   - schedulePuppetPublish(id, opts?) — debounced push (~600ms).
+ *   - cancelPuppetPublish(id)          — drop a pending push.
+ *   - publishPuppetNow(id)             — immediate, awaitable.
+ *   - removePuppetFromLibrary(id)      — fire-and-forget delete.
  */
 
 import { apiUrl } from "../basePath";
@@ -74,10 +79,17 @@ export type SyncResult =
 const _pending = new Map<PuppetId, PendingPush>();
 let _activeBaker: ActiveBaker | null = null;
 
-/** Whether the current build advertises Geny integration. */
-function isGenyHost(): boolean {
+/** Whether the current build has auto-publish wired. Both env names
+ *  are honoured for backward compat: `NEXT_PUBLIC_AUTO_PUBLISH` is
+ *  the new generic name, `NEXT_PUBLIC_GENY_HOST` is the legacy flag
+ *  from before this feature was generalised away from Geny-specific
+ *  naming. Existing deploy compose files set the latter; new
+ *  consumers can use either. */
+function isPublishEnabled(): boolean {
   if (typeof process === "undefined") return false;
-  return process.env.NEXT_PUBLIC_GENY_HOST === "true";
+  return (
+    process.env.NEXT_PUBLIC_AUTO_PUBLISH === "true" || process.env.NEXT_PUBLIC_GENY_HOST === "true"
+  );
 }
 
 /**
@@ -100,8 +112,11 @@ export function registerActiveBaker(baker: ActiveBaker): () => void {
  * Geny mode is off, this is a cheap no-op so callers can wire it
  * unconditionally into IndexedDB write paths.
  */
-export function schedulePuppetSync(puppetId: PuppetId, opts: { debounceMs?: number } = {}): void {
-  if (!isGenyHost()) return;
+export function schedulePuppetPublish(
+  puppetId: PuppetId,
+  opts: { debounceMs?: number } = {},
+): void {
+  if (!isPublishEnabled()) return;
   if (typeof window === "undefined") return; // SSR safety
 
   const debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
@@ -115,7 +130,7 @@ export function schedulePuppetSync(puppetId: PuppetId, opts: { debounceMs?: numb
   existing.generation = generation;
   existing.timer = setTimeout(() => {
     existing.timer = null;
-    existing.inflight = _bakeAndPush(puppetId).catch((err) => ({
+    existing.inflight = _bakeAndPublish(puppetId).catch((err) => ({
       status: "error" as const,
       error: err instanceof Error ? err.message : String(err),
     }));
@@ -130,7 +145,7 @@ export function schedulePuppetSync(puppetId: PuppetId, opts: { debounceMs?: numb
 }
 
 /** Cancel a pending debounced push (used during deletion). */
-export function cancelPuppetSync(puppetId: PuppetId): void {
+export function cancelPuppetPublish(puppetId: PuppetId): void {
   const pending = _pending.get(puppetId);
   if (pending?.timer) {
     clearTimeout(pending.timer);
@@ -142,23 +157,23 @@ export function cancelPuppetSync(puppetId: PuppetId): void {
  * Synchronously trigger an awaitable push (no debounce). Use for
  * explicit "sync now" actions or for tests.
  */
-export async function syncPuppetNow(puppetId: PuppetId): Promise<SyncResult> {
-  if (!isGenyHost()) {
-    return { status: "skipped", reason: "geny mode not enabled" };
+export async function publishPuppetNow(puppetId: PuppetId): Promise<SyncResult> {
+  if (!isPublishEnabled()) {
+    return { status: "skipped", reason: "auto-publish disabled" };
   }
-  cancelPuppetSync(puppetId);
-  return _bakeAndPush(puppetId);
+  cancelPuppetPublish(puppetId);
+  return _bakeAndPublish(puppetId);
 }
 
 /**
  * Tell Geny to drop its registry entry for this puppet. Fire-and-
  * forget: failures only surface as console warnings.
  */
-export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResult> {
-  if (!isGenyHost()) {
-    return { status: "skipped", reason: "geny mode not enabled" };
+export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<SyncResult> {
+  if (!isPublishEnabled()) {
+    return { status: "skipped", reason: "auto-publish disabled" };
   }
-  cancelPuppetSync(puppetId);
+  cancelPuppetPublish(puppetId);
   try {
     const resp = await fetch(apiUrl(`/api/library/${encodeURIComponent(puppetId)}`), {
       method: "DELETE",
@@ -169,18 +184,18 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
     // warning so operators see proxy / backend issues; 503 from the
     // proxy means the deploy isn't in Geny mode (no-op skip).
     if (resp.status === 503) {
-      return { status: "skipped", reason: "geny proxy returned 503" };
+      return { status: "skipped", reason: "publish target unconfigured (503)" };
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      console.warn(`[geny-sync] remove failed status=${resp.status} body=${text.slice(0, 300)}`);
+      console.warn(`[auto-publish] remove failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}` };
     }
     // Clear the catch-up bookkeeping for this puppet so a re-upload
     // with the same name doesn't think it's already synced.
     try {
       if (typeof window !== "undefined") {
-        window.localStorage.removeItem(`geny-sync:lastPushedAt:${puppetId}`);
+        window.localStorage.removeItem(`auto-publish:lastPushedAt:${puppetId}`);
       }
     } catch {
       // ignore
@@ -188,7 +203,7 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
     return { status: "ok" };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[geny-sync] remove threw for ${puppetId}: ${msg}`);
+    console.warn(`[auto-publish] remove threw for ${puppetId}: ${msg}`);
     return { status: "error", error: msg };
   }
 }
@@ -200,7 +215,7 @@ export async function removePuppetFromGeny(puppetId: PuppetId): Promise<SyncResu
  *  appears in Geny immediately, without the user having to open the
  *  editor first. Re-opening the editor later re-pushes with full
  *  bake, transparently replacing the passthrough entry. */
-async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
+async function _bakeAndPublish(puppetId: PuppetId): Promise<SyncResult> {
   let baked: { zip: Blob; filename: string } | null = null;
   const baker = _activeBaker;
 
@@ -212,7 +227,9 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
       // Don't bail on the whole sync — fall through to the passthrough
       // path so the puppet still lands in Geny even if the baker hit
       // an edge case (missing adapter, mid-mount race, etc.).
-      console.warn(`[geny-sync] baker threw for ${puppetId}: ${msg} (falling back to passthrough)`);
+      console.warn(
+        `[auto-publish] baker threw for ${puppetId}: ${msg} (falling back to passthrough)`,
+      );
       baked = null;
     }
   }
@@ -230,7 +247,7 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
       baked = { zip: pass.zip, filename: pass.filename };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[geny-sync] passthrough failed for ${puppetId}: ${msg}`);
+      console.warn(`[auto-publish] passthrough failed for ${puppetId}: ${msg}`);
       return { status: "error", error: msg };
     }
   }
@@ -241,11 +258,11 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
   try {
     const resp = await fetch(apiUrl("/api/library/sync"), { method: "POST", body: fd });
     if (resp.status === 503) {
-      return { status: "skipped", reason: "geny proxy returned 503" };
+      return { status: "skipped", reason: "publish target unconfigured (503)" };
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      console.warn(`[geny-sync] push failed status=${resp.status} body=${text.slice(0, 300)}`);
+      console.warn(`[auto-publish] push failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}: ${text.slice(0, 200)}` };
     }
     const body = (await resp.json()) as {
@@ -257,7 +274,7 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
     // localStorage failures (private mode, quota) don't break sync.
     try {
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(`geny-sync:lastPushedAt:${puppetId}`, String(Date.now()));
+        window.localStorage.setItem(`auto-publish:lastPushedAt:${puppetId}`, String(Date.now()));
       }
     } catch {
       // ignore
@@ -265,7 +282,7 @@ async function _bakeAndPush(puppetId: PuppetId): Promise<SyncResult> {
     return { status: "ok", modelName: body.model?.name, bytes: baked.zip.size };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[geny-sync] push threw for ${puppetId}: ${msg}`);
+    console.warn(`[auto-publish] push threw for ${puppetId}: ${msg}`);
     return { status: "error", error: msg };
   }
 }

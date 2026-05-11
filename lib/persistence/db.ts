@@ -435,7 +435,7 @@ function db(): GenyAvatarDB {
 // ----- Geny library auto-sync triggers -----
 //
 // These run after IndexedDB writes that affect a puppet's exported
-// state — they kick `lib/sync/genySync` so Geny's model registry stays
+// state — they kick `lib/autoPublish/libraryPublisher` so Geny's model registry stays
 // in lock-step with what the user sees in their library. Dynamic
 // imports avoid the circular-init concern (genySync transitively
 // imports loadPuppet from this module). All triggers are no-ops in
@@ -443,16 +443,16 @@ function db(): GenyAvatarDB {
 // sync module short-circuits there.
 function _triggerSyncPush(puppetId: string): void {
   if (typeof window === "undefined") return; // SSR safety
-  void import("../sync/genySync")
-    .then(({ schedulePuppetSync }) => schedulePuppetSync(puppetId))
+  void import("../autoPublish/libraryPublisher")
+    .then(({ schedulePuppetPublish }) => schedulePuppetPublish(puppetId))
     .catch((err) => {
       console.warn(`[db] sync push trigger failed for ${puppetId}:`, err);
     });
 }
 function _triggerSyncRemove(puppetId: string): void {
   if (typeof window === "undefined") return;
-  void import("../sync/genySync")
-    .then(({ removePuppetFromGeny }) => removePuppetFromGeny(puppetId))
+  void import("../autoPublish/libraryPublisher")
+    .then(({ removePuppetFromLibrary }) => removePuppetFromLibrary(puppetId))
     .catch((err) => {
       console.warn(`[db] sync remove trigger failed for ${puppetId}:`, err);
     });

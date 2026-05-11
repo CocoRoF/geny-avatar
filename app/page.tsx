@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AttributionFooter } from "@/components/AttributionFooter";
 import { UploadDropzone } from "@/components/UploadDropzone";
+import { publishPuppetNow } from "@/lib/autoPublish/libraryPublisher";
 import type { AssetOriginNote } from "@/lib/avatar/types";
 import { BUILTIN_SAMPLES } from "@/lib/builtin/samples";
 import { tryRestoreGenyAvatarZip } from "@/lib/import/restoreBundle";
@@ -16,7 +17,6 @@ import {
   savePuppet,
   updatePuppet,
 } from "@/lib/persistence/db";
-import { syncPuppetNow } from "@/lib/sync/genySync";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
@@ -101,29 +101,29 @@ export default function Home() {
     (async () => {
       for (const p of puppets) {
         if (cancelled) return;
-        const lastKey = `geny-sync:lastPushedAt:${p.id}`;
+        const lastKey = `auto-publish:lastPushedAt:${p.id}`;
         const lastRaw = localStorage.getItem(lastKey);
         const last = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
         if (Number.isFinite(last) && last >= p.updatedAt) continue;
         try {
-          const result = await syncPuppetNow(p.id);
+          const result = await publishPuppetNow(p.id);
           if (cancelled) return;
           if (result.status === "ok") {
             localStorage.setItem(lastKey, String(p.updatedAt));
             console.debug(
-              `[geny-sync:catchup] pushed ${p.name} (id=${p.id}) → ${result.modelName ?? "?"}`,
+              `[auto-publish:catchup] pushed ${p.name} (id=${p.id}) → ${result.modelName ?? "?"}`,
             );
           } else if (result.status === "skipped") {
             // Geny mode off / proxy 503 / etc. No retry — next page
             // load will try again. Don't write lastPushedAt so we
             // re-attempt next time.
-            console.debug(`[geny-sync:catchup] skipped ${p.id}: ${result.reason}`);
+            console.debug(`[auto-publish:catchup] skipped ${p.id}: ${result.reason}`);
             return; // bail out of the whole loop; assume Geny offline
           } else {
-            console.warn(`[geny-sync:catchup] ${p.id} failed: ${result.error}`);
+            console.warn(`[auto-publish:catchup] ${p.id} failed: ${result.error}`);
           }
         } catch (err) {
-          console.warn(`[geny-sync:catchup] ${p.id} threw:`, err);
+          console.warn(`[auto-publish:catchup] ${p.id} threw:`, err);
         }
       }
     })();
