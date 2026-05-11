@@ -7,6 +7,7 @@ import { AttributionFooter } from "@/components/AttributionFooter";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { publishPuppetNow } from "@/lib/autoPublish/libraryPublisher";
 import type { AssetOriginNote } from "@/lib/avatar/types";
+import { apiUrl } from "@/lib/basePath";
 import { BUILTIN_SAMPLES } from "@/lib/builtin/samples";
 import { tryRestoreGenyAvatarZip } from "@/lib/import/restoreBundle";
 import {
@@ -42,6 +43,16 @@ const ORIGIN_LICENSE_NOTES: Record<AssetOriginNote["source"], string> = {
   "self-made": "본인 제작 자산. 원하는 라이선스로 자유롭게 배포 가능.",
 };
 
+/** Snapshot of a single baked zip currently on the shared output
+ *  volume. The library page maintains a map keyed by puppet id so
+ *  each card can render a `[Baked]` badge with the publish time. */
+type BakedEntry = {
+  puppetId: string;
+  filename: string;
+  sizeBytes: number;
+  modifiedIso: string;
+};
+
 /**
  * Workspace selector / landing. Three things merged into one page so
  * the user doesn't have to bounce between routes:
@@ -64,6 +75,11 @@ export default function Home() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Map of puppetId → on-disk bake metadata. `null` while we haven't
+  // queried the route yet (initial state), `Map` with content once
+  // the GET /api/library/baked response is in. Used to drive the
+  // [Baked] badge on each library card.
+  const [bakedMap, setBakedMap] = useState<Map<string, BakedEntry> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -73,9 +89,36 @@ export default function Home() {
     }
   }, []);
 
+  // Pull the current set of baked zips from the output directory.
+  // Cheap (one readdir + N stat) so we can call this after every
+  // publish / delete / catch-up to keep the badge fresh. 503 means
+  // the build is stand-alone (no output dir configured); we treat
+  // that as "no bakes", not an error.
+  const refreshBaked = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    try {
+      const res = await fetch(apiUrl("/api/library/baked"), { cache: "no-store" });
+      if (res.status === 503) {
+        setBakedMap(new Map());
+        return;
+      }
+      if (!res.ok) {
+        console.warn(`[library:baked] HTTP ${res.status}`);
+        return;
+      }
+      const body = (await res.json()) as { baked?: BakedEntry[] };
+      const map = new Map<string, BakedEntry>();
+      for (const b of body.baked ?? []) map.set(b.puppetId, b);
+      setBakedMap(map);
+    } catch (err) {
+      console.warn("[library:baked] fetch failed:", err);
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    refreshBaked();
+  }, [refresh, refreshBaked]);
 
   // ── Geny catch-up sync ─────────────────────────────────────────
   // After the library list loads, walk each puppet and push any
@@ -99,6 +142,7 @@ export default function Home() {
     if (process.env.NEXT_PUBLIC_GENY_HOST !== "true") return;
     let cancelled = false;
     (async () => {
+      let publishedAny = false;
       for (const p of puppets) {
         if (cancelled) return;
         const lastKey = `auto-publish:lastPushedAt:${p.id}`;
@@ -110,15 +154,19 @@ export default function Home() {
           if (cancelled) return;
           if (result.status === "ok") {
             localStorage.setItem(lastKey, String(p.updatedAt));
-            console.debug(
-              `[auto-publish:catchup] pushed ${p.name} (id=${p.id}) → ${result.modelName ?? "?"}`,
+            publishedAny = true;
+            console.info(
+              `[auto-publish:catchup] published "${p.name}" (id=${p.id}) → ` +
+                `${result.savedAs ?? "<unknown>"} ` +
+                `(${result.bytes != null ? `${(result.bytes / 1024 / 1024).toFixed(1)} MB` : "?"})`,
             );
           } else if (result.status === "skipped") {
-            // Geny mode off / proxy 503 / etc. No retry — next page
-            // load will try again. Don't write lastPushedAt so we
-            // re-attempt next time.
-            console.debug(`[auto-publish:catchup] skipped ${p.id}: ${result.reason}`);
-            return; // bail out of the whole loop; assume Geny offline
+            // auto-publish disabled (stand-alone build) / proxy 503 /
+            // etc. Don't write lastPushedAt so a deploy fix gets
+            // picked up next page load. Bail the whole loop —
+            // assume the target stays unreachable for this session.
+            console.info(`[auto-publish:catchup] skipped ${p.id}: ${result.reason}`);
+            return;
           } else {
             console.warn(`[auto-publish:catchup] ${p.id} failed: ${result.error}`);
           }
@@ -126,11 +174,15 @@ export default function Home() {
           console.warn(`[auto-publish:catchup] ${p.id} threw:`, err);
         }
       }
+      // Pull the fresh baked list so the [Baked] badge reflects what
+      // we just published. Skipped if nothing changed to avoid a
+      // redundant readdir on every page mount.
+      if (publishedAny && !cancelled) await refreshBaked();
     })();
     return () => {
       cancelled = true;
     };
-  }, [puppets]);
+  }, [puppets, refreshBaked]);
 
   // Hand off the just-dropped File[] to either restore-zip or parse-
   // bundle, save to IDB, and navigate to the editor. Everything else
@@ -193,6 +245,9 @@ export default function Home() {
     try {
       await deletePuppet(id);
       await refresh();
+      // The delete hook fires removePuppetFromLibrary which unlinks
+      // the baked zip; give the badge a chance to drop. Cheap call.
+      await refreshBaked();
     } catch (e) {
       setLibraryError(e instanceof Error ? e.message : String(e));
     }
@@ -217,6 +272,13 @@ export default function Home() {
     try {
       await updatePuppet(id, { name: newName });
       await refresh();
+      // The rename bumps updatedAt and triggers a debounced publish
+      // (db.ts hook). Give the bake a moment to land, then refresh
+      // the badge — keeps the [Baked] timestamp in step with the
+      // user's just-saved change without polling.
+      setTimeout(() => {
+        void refreshBaked();
+      }, 1200);
     } catch (e) {
       setLibraryError(e instanceof Error ? e.message : String(e));
     }
@@ -315,6 +377,8 @@ export default function Home() {
                 <LibraryCard
                   key={p.id}
                   puppet={p}
+                  baked={bakedMap?.get(p.id) ?? null}
+                  bakedLoaded={bakedMap !== null}
                   onDelete={() => onDelete(p.id)}
                   onOriginChange={(s) => onOriginChange(p.id, s)}
                   onRename={(n) => onRename(p.id, n)}
@@ -341,11 +405,15 @@ export default function Home() {
 
 function LibraryCard({
   puppet,
+  baked,
+  bakedLoaded,
   onDelete,
   onOriginChange,
   onRename,
 }: {
   puppet: PuppetRow;
+  baked: BakedEntry | null;
+  bakedLoaded: boolean;
   onDelete: () => void;
   onOriginChange: (source: AssetOriginNote["source"]) => void;
   onRename: (newName: string) => void;
@@ -364,6 +432,7 @@ function LibraryCard({
           {puppet.version && (
             <span className="font-mono text-xs text-[var(--color-fg-dim)]">{puppet.version}</span>
           )}
+          <BakedBadge baked={baked} bakedLoaded={bakedLoaded} />
           <span className="ml-auto font-mono text-xs text-[var(--color-fg-dim)]">
             {puppet.id.slice(-6)}
           </span>
@@ -512,6 +581,41 @@ function RenameRow({
         ✎
       </button>
     </div>
+  );
+}
+
+/**
+ * Visual indicator that this puppet currently has a baked zip
+ * present in the shared output volume. Three states:
+ *
+ *   - `bakedLoaded === false` → still fetching the baked list; render
+ *     nothing (avoids a flash of "not baked" on first paint).
+ *   - `baked === null` → not currently exposed on disk. The card
+ *     shows no badge — this is the resting state for stand-alone
+ *     builds and freshly-saved puppets that haven't been debounced
+ *     out yet.
+ *   - `baked` populated → green [Baked] chip with a relative-time
+ *     tooltip showing exactly when the zip was last written. Hover
+ *     surfaces the on-disk filename for operators debugging the
+ *     output directory.
+ *
+ * The badge is `title`-only, not a link — it intentionally doesn't
+ * expose where the zip lives, because the downstream consumer is
+ * the system owner's choice (Geny in our deploys, or any other
+ * volume mirror) and geny-avatar shouldn't bake that assumption in.
+ */
+function BakedBadge({ baked, bakedLoaded }: { baked: BakedEntry | null; bakedLoaded: boolean }) {
+  if (!bakedLoaded) return null;
+  if (!baked) return null;
+  const when = formatRelative(new Date(baked.modifiedIso).getTime());
+  const tooltip = `Baked file: ${baked.filename} · ${humanBytes(baked.sizeBytes)} · ${when}`;
+  return (
+    <span
+      title={tooltip}
+      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-400"
+    >
+      Baked · {when}
+    </span>
   );
 }
 

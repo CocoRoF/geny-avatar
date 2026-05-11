@@ -68,13 +68,21 @@ export type ActiveBaker = (puppetId: PuppetId) => Promise<{ zip: Blob; filename:
 interface PendingPush {
   timer: ReturnType<typeof setTimeout> | null;
   generation: number;
-  inflight: Promise<SyncResult> | null;
+  inflight: Promise<PublishResult> | null;
 }
 
-export type SyncResult =
-  | { status: "ok"; modelName?: string; bytes?: number }
+/** Outcome of a publish attempt. "ok" carries the on-disk filename
+ *  the route reported (so callers can log a concrete artifact);
+ *  "skipped" means the publish was a deliberate no-op (auto-publish
+ *  disabled, target dir not configured); "error" wraps any failure. */
+export type PublishResult =
+  | { status: "ok"; savedAs?: string; bytes?: number; puppetId?: string }
   | { status: "skipped"; reason: string }
   | { status: "error"; error: string };
+
+/** Back-compat alias — older imports referenced `SyncResult` before
+ *  the publisher was generalised away from sync-only semantics. */
+export type SyncResult = PublishResult;
 
 const _pending = new Map<PuppetId, PendingPush>();
 let _activeBaker: ActiveBaker | null = null;
@@ -157,7 +165,7 @@ export function cancelPuppetPublish(puppetId: PuppetId): void {
  * Synchronously trigger an awaitable push (no debounce). Use for
  * explicit "sync now" actions or for tests.
  */
-export async function publishPuppetNow(puppetId: PuppetId): Promise<SyncResult> {
+export async function publishPuppetNow(puppetId: PuppetId): Promise<PublishResult> {
   if (!isPublishEnabled()) {
     return { status: "skipped", reason: "auto-publish disabled" };
   }
@@ -169,7 +177,7 @@ export async function publishPuppetNow(puppetId: PuppetId): Promise<SyncResult> 
  * Tell Geny to drop its registry entry for this puppet. Fire-and-
  * forget: failures only surface as console warnings.
  */
-export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<SyncResult> {
+export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<PublishResult> {
   if (!isPublishEnabled()) {
     return { status: "skipped", reason: "auto-publish disabled" };
   }
@@ -192,7 +200,7 @@ export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<SyncR
       return { status: "error", error: `HTTP ${resp.status}` };
     }
     // Clear the catch-up bookkeeping for this puppet so a re-upload
-    // with the same name doesn't think it's already synced.
+    // with the same name doesn't think it's already published.
     try {
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(`auto-publish:lastPushedAt:${puppetId}`);
@@ -200,7 +208,8 @@ export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<SyncR
     } catch {
       // ignore
     }
-    return { status: "ok" };
+    console.info(`[auto-publish] unpublished ${puppetId}`);
+    return { status: "ok", puppetId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[auto-publish] remove threw for ${puppetId}: ${msg}`);
@@ -215,7 +224,7 @@ export async function removePuppetFromLibrary(puppetId: PuppetId): Promise<SyncR
  *  appears in Geny immediately, without the user having to open the
  *  editor first. Re-opening the editor later re-pushes with full
  *  bake, transparently replacing the passthrough entry. */
-async function _bakeAndPublish(puppetId: PuppetId): Promise<SyncResult> {
+async function _bakeAndPublish(puppetId: PuppetId): Promise<PublishResult> {
   let baked: { zip: Blob; filename: string } | null = null;
   const baker = _activeBaker;
 
@@ -265,13 +274,20 @@ async function _bakeAndPublish(puppetId: PuppetId): Promise<SyncResult> {
       console.warn(`[auto-publish] push failed status=${resp.status} body=${text.slice(0, 300)}`);
       return { status: "error", error: `HTTP ${resp.status}: ${text.slice(0, 200)}` };
     }
+    // POST /api/library/sync returns { savedAs, bytes, puppetId } —
+    // the on-disk filename the route wrote, the byte count it
+    // actually persisted, and the puppet id it peeked from the
+    // sidecar. We surface savedAs so the catch-up / debounce logs
+    // can show a concrete artifact instead of "ok".
     const body = (await resp.json()) as {
-      model?: { name?: string };
-      status?: string;
+      savedAs?: string;
+      bytes?: number;
+      puppetId?: string;
     };
-    // Record the successful push so the library-page catch-up effect
-    // doesn't re-push this puppet on the next page load. Best-effort —
-    // localStorage failures (private mode, quota) don't break sync.
+    // Record the successful publish so the library-page catch-up
+    // effect doesn't re-push this puppet on the next page load. Best
+    // effort — localStorage failures (private mode, quota) don't
+    // break publishing.
     try {
       if (typeof window !== "undefined") {
         window.localStorage.setItem(`auto-publish:lastPushedAt:${puppetId}`, String(Date.now()));
@@ -279,7 +295,16 @@ async function _bakeAndPublish(puppetId: PuppetId): Promise<SyncResult> {
     } catch {
       // ignore
     }
-    return { status: "ok", modelName: body.model?.name, bytes: baked.zip.size };
+    console.info(
+      `[auto-publish] published ${puppetId} → ${body.savedAs ?? "<unknown>"} ` +
+        `(${baked.zip.size} bytes)`,
+    );
+    return {
+      status: "ok",
+      savedAs: body.savedAs,
+      bytes: baked.zip.size,
+      puppetId: body.puppetId ?? puppetId,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[auto-publish] push threw for ${puppetId}: ${msg}`);
