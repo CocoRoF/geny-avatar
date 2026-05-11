@@ -144,6 +144,11 @@ function ToolIcon({ id, className = "" }: { id: ToolId; className?: string }) {
         </svg>
       );
     case "wand":
+      // Chunkier wand with a multi-pointed sparkle at the tip — the
+      // old icon read as "scattered stars" and didn't signal "select"
+      // strongly. This one has a clear shaft + handle and a large
+      // emphasis star on the active end. Stroke + filled accent on
+      // the sparkle so the active state pops in the toolbox.
       return (
         <svg
           aria-hidden="true"
@@ -151,11 +156,22 @@ function ToolIcon({ id, className = "" }: { id: ToolId; className?: string }) {
           className={className}
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.5"
+          strokeWidth="1.7"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M15 9h0M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5" />
+          {/* Wand shaft (handle → tip) */}
+          <path d="M3 21l11-11" />
+          <path d="M3 21l1 -3 3 -1" opacity="0.55" />
+          {/* Sparkle star at the tip */}
+          <path
+            d="M16 4l1.4 2.6L20 8l-2.6 1.4L16 12l-1.4-2.6L12 8l2.6-1.4z"
+            fill="currentColor"
+            stroke="none"
+          />
+          {/* Smaller sparkles for character */}
+          <circle cx="20" cy="14" r="0.8" fill="currentColor" stroke="none" />
+          <circle cx="10" cy="4" r="0.6" fill="currentColor" stroke="none" />
         </svg>
       );
     case "eyedropper":

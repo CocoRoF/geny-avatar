@@ -5,6 +5,9 @@ import {
   brushOpLabels,
   type StudioMode,
   type ToolId,
+  type WandOptions as WandOptionsType,
+  type WandSampleMode,
+  type WandSampleSize,
 } from "@/lib/avatar/decompose/tools";
 
 /**
@@ -30,9 +33,24 @@ export interface OptionsBarProps {
   brushHardness: number; // 0..100
   onBrushHardness: (n: number) => void;
 
-  // Bucket + Wand share tolerance
+  // Bucket tolerance (independent of wand)
   tolerance: number;
   onTolerance: (n: number) => void;
+
+  // Wand: full options object — see WandOptionsType in tools.ts
+  wand: WandOptionsType;
+  onWand: (next: WandOptionsType) => void;
+
+  // Pressure dynamics — pen tablet support
+  pressureSize: boolean;
+  pressureOpacity: boolean;
+  onPressureSize: (v: boolean) => void;
+  onPressureOpacity: (v: boolean) => void;
+
+  // Edge quality — high stores the mask at 2x source for crisper
+  // boundaries at deep zoom. Memory cost 4x.
+  highDpiMask: boolean;
+  onHighDpiMask: (v: boolean) => void;
 
   // Threshold (trim only)
   threshold: number;
@@ -64,6 +82,14 @@ export function OptionsBar(props: OptionsBarProps) {
     onBrushHardness,
     tolerance,
     onTolerance,
+    wand,
+    onWand,
+    pressureSize,
+    pressureOpacity,
+    onPressureSize,
+    onPressureOpacity,
+    highDpiMask,
+    onHighDpiMask,
     threshold,
     onThreshold,
     zoom,
@@ -111,6 +137,12 @@ export function OptionsBar(props: OptionsBarProps) {
             onBrushOp={onBrushOp}
             brushHardness={brushHardness}
             onBrushHardness={onBrushHardness}
+            pressureSize={pressureSize}
+            pressureOpacity={pressureOpacity}
+            onPressureSize={onPressureSize}
+            onPressureOpacity={onPressureOpacity}
+            highDpiMask={highDpiMask}
+            onHighDpiMask={onHighDpiMask}
           />
         )}
         {selectedTool === "bucket" && (
@@ -122,7 +154,7 @@ export function OptionsBar(props: OptionsBarProps) {
             onBrushOp={onBrushOp}
           />
         )}
-        {selectedTool === "wand" && <WandOptions tolerance={tolerance} onTolerance={onTolerance} />}
+        {selectedTool === "wand" && <WandOptions wand={wand} onWand={onWand} />}
         {selectedTool === "eyedropper" && (
           <span className="text-[var(--color-fg-dim)]">Click a pixel to set foreground color</span>
         )}
@@ -215,6 +247,12 @@ function BrushOptions({
   onBrushOp,
   brushHardness,
   onBrushHardness,
+  pressureSize,
+  pressureOpacity,
+  onPressureSize,
+  onPressureOpacity,
+  highDpiMask,
+  onHighDpiMask,
 }: {
   tool: "brush" | "eraser";
   studioMode: StudioMode;
@@ -224,12 +262,14 @@ function BrushOptions({
   onBrushOp: (op: BrushOp) => void;
   brushHardness: number;
   onBrushHardness: (n: number) => void;
+  pressureSize: boolean;
+  pressureOpacity: boolean;
+  onPressureSize: (v: boolean) => void;
+  onPressureOpacity: (v: boolean) => void;
+  highDpiMask: boolean;
+  onHighDpiMask: (v: boolean) => void;
 }) {
   const labels = brushOpLabels(studioMode);
-  // Brush is always "add", Eraser is always "remove" — but we still
-  // expose the toggle so the user can swap a brush into reveal mode
-  // without leaving the brush tool. Photoshop hides this for the
-  // eraser since "erase eraser" is nonsense; we follow suit.
   return (
     <>
       {tool === "brush" && (
@@ -287,7 +327,60 @@ function BrushOptions({
         />
         <span className="w-10 font-mono text-[var(--color-fg-dim)]">{brushHardness}%</span>
       </div>
+      {/* Pen pressure dynamics — only meaningful when a pen tablet is
+          plugged in, but the toggle is harmless on a mouse (defaults
+          to 0.5 pressure → no effect). */}
+      <div className="flex items-center gap-1">
+        <span className="text-[var(--color-fg-dim)]">Pen:</span>
+        <Toggle
+          on={pressureSize}
+          onToggle={() => onPressureSize(!pressureSize)}
+          title="펜 압력으로 브러시 크기 조절 (펜타블릿 사용 시)"
+          label="Size"
+        />
+        <Toggle
+          on={pressureOpacity}
+          onToggle={() => onPressureOpacity(!pressureOpacity)}
+          title="펜 압력으로 불투명도 조절"
+          label="Opacity"
+        />
+      </div>
+      {studioMode === "trim" && (
+        <Toggle
+          on={highDpiMask}
+          onToggle={() => onHighDpiMask(!highDpiMask)}
+          title="마스크를 2× 해상도로 저장 — 깊은 줌에서 가장자리가 또렷해짐. 메모리 4배."
+          label="HD edge"
+        />
+      )}
     </>
+  );
+}
+
+function Toggle({
+  on,
+  onToggle,
+  title,
+  label,
+}: {
+  on: boolean;
+  onToggle: () => void;
+  title: string;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={title}
+      className={`rounded border px-1.5 py-0.5 text-[10px] ${
+        on
+          ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+          : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -350,26 +443,110 @@ function BucketOptions({
 }
 
 function WandOptions({
-  tolerance,
-  onTolerance,
+  wand,
+  onWand,
 }: {
-  tolerance: number;
-  onTolerance: (n: number) => void;
+  wand: WandOptionsType;
+  onWand: (next: WandOptionsType) => void;
+}) {
+  const set = <K extends keyof WandOptionsType>(k: K, v: WandOptionsType[K]) =>
+    onWand({ ...wand, [k]: v });
+
+  return (
+    <>
+      {/* Tolerance — same slider as before, now part of a fuller bar. */}
+      <div className="flex items-center gap-2">
+        <span className="text-[var(--color-fg-dim)]">Tolerance:</span>
+        <input
+          type="range"
+          min={0}
+          max={128}
+          value={wand.tolerance}
+          onChange={(e) => set("tolerance", Number(e.target.value))}
+          className="w-28"
+          title="비슷한 픽셀까지 선택 — 0 = 정확히 일치, 32 = feathered edge 까지"
+        />
+        <span className="w-8 font-mono text-[var(--color-fg-dim)]">{wand.tolerance}</span>
+      </div>
+
+      {/* Sample mode — what the wand compares against the seed.
+          alpha = footprint-based (default), luminance = brightness,
+          rgb = colour. */}
+      <Segmented
+        label="Sample"
+        value={wand.sampleMode}
+        options={[
+          { v: "alpha", label: "α", title: "Alpha — 가장 무난한 footprint 검출" },
+          { v: "luminance", label: "L", title: "Luminance — 밝기 기준" },
+          { v: "rgb", label: "RGB", title: "RGB — 색상 기준 (Max-channel 거리)" },
+        ]}
+        onChange={(v) => set("sampleMode", v as WandSampleMode)}
+      />
+
+      {/* Sample size — seed averaging window. */}
+      <Segmented
+        label="Size"
+        value={String(wand.sampleSize)}
+        options={[
+          { v: "1", label: "1", title: "단일 픽셀 (정확)" },
+          { v: "3", label: "3×3", title: "3×3 평균 (잡음 완화)" },
+          { v: "5", label: "5×5", title: "5×5 평균" },
+          { v: "11", label: "11×11", title: "11×11 평균 (덩어리 검출)" },
+        ]}
+        onChange={(v) => set("sampleSize", Number(v) as WandSampleSize)}
+      />
+
+      <Toggle
+        on={wand.contiguous}
+        onToggle={() => set("contiguous", !wand.contiguous)}
+        title="Contiguous — 연결된 영역만 선택. 끄면 비슷한 알파의 모든 픽셀 선택."
+        label="Contig."
+      />
+      <Toggle
+        on={wand.antiAlias}
+        onToggle={() => set("antiAlias", !wand.antiAlias)}
+        title="Anti-alias — 선택 가장자리를 1픽셀 부드럽게"
+        label="AA"
+      />
+
+      <span className="ml-1 hidden text-[10px] text-[var(--color-fg-dim)] lg:inline">
+        Click=새 선택 · Shift+ 추가 · Alt+ 제거 · Shift+Alt= 교집합
+      </span>
+    </>
+  );
+}
+
+function Segmented({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { v: string; label: string; title: string }[];
+  onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[var(--color-fg-dim)]">Tolerance:</span>
-      <input
-        type="range"
-        min={0}
-        max={128}
-        value={tolerance}
-        onChange={(e) => onTolerance(Number(e.target.value))}
-        className="w-32"
-        title="비슷한 알파 픽셀까지 선택 — 0 = 정확히 일치, 32 = feathered edge 까지"
-      />
-      <span className="w-10 font-mono text-[var(--color-fg-dim)]">{tolerance}</span>
-      <span className="ml-2 text-[var(--color-fg-dim)]">Shift+click 추가 · Alt+click 제거</span>
+    <div className="flex items-center gap-1">
+      <span className="text-[var(--color-fg-dim)]">{label}:</span>
+      <div className="flex overflow-hidden rounded border border-[var(--color-border)]">
+        {options.map((o, i) => (
+          <button
+            key={o.v}
+            type="button"
+            onClick={() => onChange(o.v)}
+            title={o.title}
+            className={`${i > 0 ? "border-l border-[var(--color-border)]" : ""} px-1.5 py-0.5 text-[10px] ${
+              value === o.v
+                ? "bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

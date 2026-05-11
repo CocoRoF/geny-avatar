@@ -2,21 +2,42 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrushCursor } from "@/components/decompose/BrushCursor";
+import { MarchingAnts } from "@/components/decompose/MarchingAnts";
 import { OptionsBar } from "@/components/decompose/OptionsBar";
 import { Toolbox } from "@/components/decompose/Toolbox";
+import { WandActionBar } from "@/components/decompose/WandActionBar";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { submitSam } from "@/lib/ai/sam/client";
 import type { SamCandidate, SamPoint } from "@/lib/ai/sam/types";
 import { findAlphaComponents } from "@/lib/avatar/connectedComponents";
-import { floodFillAlpha, maskToCanvas } from "@/lib/avatar/decompose/floodFill";
+import {
+  type Compositor,
+  type CompositorInputs,
+  createCompositor,
+} from "@/lib/avatar/decompose/compositor";
+import {
+  runFlood,
+  maskToCanvas as workerMaskToCanvas,
+} from "@/lib/avatar/decompose/floodFillClient";
+import { StrokeEngine } from "@/lib/avatar/decompose/strokeEngine";
 import {
   type BrushOp,
+  defaultWandOptions,
   type SelectionOp,
   type StudioMode,
   type ToolId,
   toolForShortcut,
+  type WandOptions,
 } from "@/lib/avatar/decompose/tools";
-import { clientToSourcePixel, useCanvasViewport } from "@/lib/avatar/decompose/useCanvasViewport";
+import { useCanvasViewport } from "@/lib/avatar/decompose/useCanvasViewport";
+import {
+  composeSelection,
+  featherSelection,
+  growSelection,
+  invertSelection,
+  selectionArea,
+  shrinkSelection,
+} from "@/lib/avatar/decompose/wandSelection";
 import { ID_PREFIX, newId } from "@/lib/avatar/id";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -105,12 +126,42 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   // ── Viewport (zoom + pan) ─────────────────────────────────────────
   const viewport = useCanvasViewport({ containerRef: canvasWrapperRef });
 
+  /** GPU-aware compositor. Created lazily after the preview canvas
+   *  mounts (so it can claim the WebGL2 context). The studio just
+   *  pushes inputs + calls invalidate(); rAF coalescing inside the
+   *  compositor keeps render cost bounded regardless of how many
+   *  pointer / state-change events arrive per frame. */
+  const compositorRef = useRef<Compositor | null>(null);
+  /** Brush stroke pipeline — handles stamp interpolation, pressure,
+   *  sub-pixel positioning. One engine for the panel's lifetime;
+   *  beginStroke / addSample / endStroke cycle per pointer drag. */
+  const strokeEngineRef = useRef<StrokeEngine | null>(null);
+  /** Cached bounding rect of the preview canvas. Updated by a
+   *  ResizeObserver so the hot pointermove path doesn't have to call
+   *  getBoundingClientRect() (which forces a layout flush). */
+  const cachedRectRef = useRef<DOMRectReadOnly | null>(null);
+
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threshold, setThreshold] = useState(0); // 0..255, 0 = no threshold mask
   const [brushSize, setBrushSize] = useState(20);
   const [brushHardness, setBrushHardness] = useState(80); // 0..100; 100=hard, 0=soft
-  const [tolerance, setTolerance] = useState(32); // 0..128, used by Bucket + Wand
+  const [bucketTolerance, setBucketTolerance] = useState(32); // 0..128 — bucket only
+  /** Magic wand options — Photoshop-class panel (tolerance, sample
+   *  mode, sample size, contiguous, anti-alias). The studio holds
+   *  this here so wand clicks pick up the latest settings; the
+   *  OptionsBar mutates the object via onWand. */
+  const [wandOpts, setWandOpts] = useState<WandOptions>(defaultWandOptions);
+  /** Pen tablet pressure dynamics. Toggles in the OptionsBar; the
+   *  stroke engine reads them every beginStroke(). */
+  const [pressureSize, setPressureSize] = useState(false);
+  const [pressureOpacity, setPressureOpacity] = useState(false);
+  /** Opt-in 2× mask resolution. When enabled, the mask + paint
+   *  canvases are allocated at double source dim so brush strokes
+   *  stay sub-pixel-crisp at deep zoom. Memory cost is ~ 4×; off by
+   *  default. Only meaningful in trim mode (paint already paints in
+   *  source pixels which downstream consumers expect). */
+  const [highDpiMask, setHighDpiMask] = useState(false);
   /** New tool system. The default tool is "brush" (B) so the user
    *  lands ready to paint, matching the previous default. */
   const [selectedTool, setSelectedTool] = useState<ToolId>("brush");
@@ -264,10 +315,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         setSourceAspect(extracted.canvas.width / extracted.canvas.height);
       }
 
-      // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked
+      // mask canvas: 0 alpha = unmasked (visible), 255 alpha = masked.
+      // Allocated at 2× source dim when "HD edge" is on so strokes
+      // stay sub-pixel-crisp at deep zoom. The clip path lives in
+      // source coords so the stroke engine scales coords up before
+      // stamping — see clipPathRef wiring below.
+      const maskScale = highDpiMask ? 2 : 1;
       const mask = document.createElement("canvas");
-      mask.width = extracted.canvas.width;
-      mask.height = extracted.canvas.height;
+      mask.width = extracted.canvas.width * maskScale;
+      mask.height = extracted.canvas.height * maskScale;
       maskCanvasRef.current = mask;
 
       // Paint canvas: starts as a clone of the source so brush
@@ -303,7 +359,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [adapter, layer, existingMask, existingTexture]);
+  }, [adapter, layer, existingMask, existingTexture, highDpiMask]);
 
   // ----- E.2: hydrate region canvases from persisted IDB blobs -----
   // Runs once `ready` flips and persistedRegions arrives. Each
@@ -353,143 +409,103 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     };
   }, [ready, persistedRegions]);
 
-  // ----- redraw preview whenever something changes -----
-  // 6.5+: preview canvas backing is the source dim multiplied by
-  // a fullscreen-aware density factor. Default mode keeps 1× so
-  // memory stays predictable; fullscreen scales to max(2, dpr)
-  // so when CSS upscales the canvas to fill the viewport the
-  // rasterized texture stays crisp instead of looking like a
-  // bilinear-blurred screenshot. Brush + SAM coord math always
-  // works in source pixel space (paintAt / recordSamPoint use
-  // source.width directly), so the backing change is invisible
-  // to the rest of the pipeline.
-  const redraw = useCallback(() => {
+  // ── Compositor lifecycle ──────────────────────────────────────────
+  //
+  // The compositor is created the first time the preview canvas
+  // mounts. Subsequent renders flow through `compositor.setInputs +
+  // invalidate()` which the compositor itself rAF-coalesces.
+  //
+  // Inputs are pushed via a single `pushInputs` helper kept stable
+  // across renders so every callback below has one well-named door
+  // into the renderer — avoids "did I forget to call invalidate?"
+  // landmines.
+  const pushInputs = useCallback((patch: Partial<CompositorInputs>) => {
+    const c = compositorRef.current;
+    if (!c) return;
+    c.setInputs(patch);
+    c.invalidate();
+  }, []);
+
+  /** Tell the compositor what the studio's current inputs are.
+   *  Calls `setInputs` with a fresh snapshot (assembled from the
+   *  refs / state below) and schedules a render. Used after any
+   *  mutation that the compositor can't see (e.g. brush strokes
+   *  writing into the mask canvas don't fire a React re-render). */
+  const invalidatePreview = useCallback(() => {
+    const c = compositorRef.current;
+    if (!c) return;
+    c.setInputs({
+      source: sourceCanvasRef.current,
+      mask: maskCanvasRef.current,
+      paint: paintCanvasRef.current,
+      regions: regionEntries
+        .map((e) => {
+          const canvas = regionCanvasMap.current.get(e.id);
+          return canvas ? { id: e.id, color: e.color, canvas } : null;
+        })
+        .filter((r): r is { id: string; color: string; canvas: HTMLCanvasElement } => r !== null),
+      studioMode,
+      threshold,
+      focusRegionId,
+      selectedRegionId,
+    });
+    c.invalidate();
+  }, [regionEntries, studioMode, threshold, focusRegionId, selectedRegionId]);
+
+  // Set up the compositor + ResizeObserver for the preview canvas.
+  // Resize the preview backing so it matches the layout dim *× DPR*
+  // — the compositor handles up-scaling internally. The cached rect
+  // (cachedRectRef) skips per-pointermove getBoundingClientRect.
+  useEffect(() => {
     const preview = previewRef.current;
-    const source = sourceCanvasRef.current;
-    const mask = maskCanvasRef.current;
-    if (!preview || !source || !mask) return;
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-    const density = fullscreen ? Math.max(2, dpr) : 1;
-    const targetW = Math.max(1, Math.round(source.width * density));
-    const targetH = Math.max(1, Math.round(source.height * density));
-    if (preview.width !== targetW || preview.height !== targetH) {
-      preview.width = targetW;
-      preview.height = targetH;
+    if (!preview || !ready) return;
+    if (!compositorRef.current) {
+      compositorRef.current = createCompositor(preview);
     }
-    const ctx = preview.getContext("2d");
-    if (!ctx) return;
-    // High-quality scaling for the up-sample case (fullscreen). Default
-    // bilinear gives a slightly soft look; "high" lets the browser
-    // pick its best (lanczos/cubic depending on impl).
-    if ("imageSmoothingQuality" in ctx) {
-      try {
-        ctx.imageSmoothingQuality = "high";
-      } catch {
-        // older browsers / canvas impl — ignore
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const rect = entry.contentRect;
+        cachedRectRef.current = preview.getBoundingClientRect();
+        // Resize the compositor's backing to the layout size × DPR
+        // so the up-scaled trim composite stays sharp at deep zoom
+        // without falling back to a blurry bilinear stretch.
+        const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+        const density = fullscreen ? Math.max(2, dpr) : dpr;
+        compositorRef.current?.resize(rect.width * density, rect.height * density);
+        compositorRef.current?.invalidate();
       }
-    }
-    ctx.clearRect(0, 0, preview.width, preview.height);
+    });
+    ro.observe(preview);
+    cachedRectRef.current = preview.getBoundingClientRect();
+    return () => ro.disconnect();
+  }, [ready, fullscreen]);
 
-    if (studioMode === "paint") {
-      // Paint mode: render whatever's on the paint canvas as the
-      // final layer. The mask still applies on top (so users can
-      // hide painted pixels with the trim mask) — but if no mask
-      // is set, the paint canvas is shown as-is.
-      const paint = paintCanvasRef.current;
-      if (paint) {
-        ctx.drawImage(paint, 0, 0, preview.width, preview.height);
-      } else {
-        ctx.drawImage(source, 0, 0, preview.width, preview.height);
-      }
-      return;
-    }
-
-    if (studioMode === "split") {
-      // Split mode: show source as-is, then overlay each region's
-      // mask painted in its assigned color (semi-transparent so the
-      // user can see what's underneath). The selected region gets a
-      // stronger fill so it's clear which one a brush stroke will
-      // land in. drawImage at preview dim auto-scales source/region
-      // canvases to the higher backing resolution.
-      ctx.drawImage(source, 0, 0, preview.width, preview.height);
-      for (const entry of regionEntries) {
-        // Focus mode: skip every region except the soloed one.
-        // Other regions are still in IDB / state — they just don't
-        // render so the user can concentrate on one at a time.
-        if (focusRegionId && entry.id !== focusRegionId) continue;
-        const rc = regionCanvasMap.current.get(entry.id);
-        if (!rc) continue;
-        ctx.save();
-        ctx.globalCompositeOperation = "source-over";
-        // Soloed region renders fully opaque so the user sees the
-        // mask shape clearly; without solo, the selected region is
-        // the brighter overlay and the rest stay dim.
-        const isFocused = focusRegionId === entry.id;
-        ctx.globalAlpha = isFocused ? 0.7 : entry.id === selectedRegionId ? 0.55 : 0.3;
-        const tmp = document.createElement("canvas");
-        tmp.width = preview.width;
-        tmp.height = preview.height;
-        const tctx = tmp.getContext("2d");
-        if (tctx) {
-          tctx.fillStyle = entry.color;
-          tctx.fillRect(0, 0, tmp.width, tmp.height);
-          tctx.globalCompositeOperation = "destination-in";
-          tctx.drawImage(rc, 0, 0, tmp.width, tmp.height);
-          ctx.drawImage(tmp, 0, 0);
-        }
-        ctx.restore();
-      }
-      return;
-    }
-
-    // Trim mode (existing): source × (1 - effectiveMask), where
-    // effectiveMask = max(thresholdMask, paintedMask). Computed at
-    // source dim then scaled up to preview dim — putImageData can't
-    // scale, so we composite to a tmp canvas first.
-    const srcCtx = source.getContext("2d");
-    const maskCtx = mask.getContext("2d");
-    if (!srcCtx || !maskCtx) return;
-    const srcData = srcCtx.getImageData(0, 0, source.width, source.height);
-    const maskData = maskCtx.getImageData(0, 0, mask.width, mask.height);
-
-    for (let i = 0; i < srcData.data.length; i += 4) {
-      const sa = srcData.data[i + 3];
-      const ma = maskData.data[i + 3];
-      // threshold cutoff: pixels below threshold treated as masked
-      // Only count as masked when there's actual source alpha to mask.
-      // Otherwise threshold > 0 would also mark pixels outside the
-      // layer's footprint (already alpha=0 after clipping) as masked,
-      // and `setLayerMasks` would erase atlas neighbors.
-      const thresholded = sa > 0 && sa < threshold ? 255 : 0;
-      const effective = Math.max(thresholded, ma);
-      const out = (sa * (255 - effective)) / 255;
-      srcData.data[i + 3] = out;
-    }
-    if (density === 1) {
-      ctx.putImageData(srcData, 0, 0);
-    } else {
-      const tmp = document.createElement("canvas");
-      tmp.width = source.width;
-      tmp.height = source.height;
-      const tctx = tmp.getContext("2d");
-      if (tctx) {
-        tctx.putImageData(srcData, 0, 0);
-        if ("imageSmoothingQuality" in ctx) {
-          try {
-            ctx.imageSmoothingQuality = "high";
-          } catch {
-            // ignore
-          }
-        }
-        ctx.drawImage(tmp, 0, 0, preview.width, preview.height);
-      }
-    }
-  }, [threshold, studioMode, regionEntries, selectedRegionId, focusRegionId, fullscreen]);
-
+  // Push inputs into the compositor whenever React-tracked state
+  // changes. Brush strokes don't go through here — they mutate the
+  // mask/paint/region canvas in place and call invalidatePreview()
+  // directly so the round-trip stays tight.
   useEffect(() => {
     if (!ready) return;
-    redraw();
-  }, [ready, redraw]);
+    invalidatePreview();
+  }, [ready, invalidatePreview]);
+
+  // Dispose the compositor on unmount.
+  useEffect(() => {
+    return () => {
+      compositorRef.current?.dispose();
+      compositorRef.current = null;
+    };
+  }, []);
+
+  // Threshold changes → mark the compositor's threshold-mask cache
+  // dirty so the next render re-bakes it. (The compositor batches the
+  // bake on the rAF, not per slider tick — keeps drag-the-slider
+  // responsive.)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: threshold is the only trigger; compositor + refs are stable
+  useEffect(() => {
+    compositorRef.current?.invalidateThreshold();
+    compositorRef.current?.invalidate();
+  }, [threshold]);
 
   // ----- dirty flag dispatch -----
   /** Set the right dirty flag based on the current studio mode.
@@ -571,125 +587,217 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     [brushSize, brushHardness, studioMode, foregroundColor],
   );
 
-  // ----- pointer painting -----
-  const paintAt = useCallback(
-    (clientX: number, clientY: number) => {
-      const preview = previewRef.current;
-      const source = sourceCanvasRef.current;
-      if (!preview || !source) return;
-      const target = activeTargetCanvas();
-      if (!target) return;
-      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
-      applyBrushDab(target, x, y, effectiveBrushOp());
-      markDirty();
-      redraw();
-    },
-    [activeTargetCanvas, applyBrushDab, effectiveBrushOp, redraw, markDirty],
-  );
+  // ── Pointer → source-pixel conversion (hot path) ─────────────────
+  //
+  // The cached preview rect updates on resize / scroll; pointermove
+  // hits this thousands of times per stroke so we never want to
+  // re-invoke getBoundingClientRect from here (forces a sync layout
+  // flush).
+  const clientToSrc = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
+    const preview = previewRef.current;
+    const source = sourceCanvasRef.current;
+    if (!preview || !source) return { x: 0, y: 0 };
+    const rect = cachedRectRef.current ?? preview.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+    return {
+      x: ((clientX - rect.left) / rect.width) * source.width,
+      y: ((clientY - rect.top) / rect.height) * source.height,
+    };
+  }, []);
 
-  // ----- bucket fill -----
-  /** Bucket-tool click: flood-fill the connected region around the
-   *  cursor and apply with the active brush op. Tolerance is the
-   *  alpha similarity threshold from the OptionsBar. */
-  const bucketAt = useCallback(
+  // ── Stroke engine plumbing ───────────────────────────────────────
+  //
+  // The engine is created lazily on first stroke. setConfig before
+  // every beginStroke pushes the latest brush params; mid-stroke
+  // shortcut tweaks (e.g. `[` / `]`) only take effect on the next
+  // stroke, matching Photoshop.
+  const beginBrushStroke = useCallback(
     (clientX: number, clientY: number) => {
-      const preview = previewRef.current;
-      const source = sourceCanvasRef.current;
-      if (!preview || !source) return;
       const target = activeTargetCanvas();
-      if (!target) return;
-      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
-      const result = floodFillAlpha({
-        source,
-        seedX: x,
-        seedY: y,
-        tolerance,
-        requireOpaqueSeed: true,
-        clip: clipPathRef.current,
+      const source = sourceCanvasRef.current;
+      if (!target || !source) return;
+      if (!strokeEngineRef.current) strokeEngineRef.current = new StrokeEngine();
+      // Coord + size scale between source-pixel space and the
+      // target canvas. Mask may be 2× source (HD edge); paint and
+      // region canvases stay at source dim. The brush engine works
+      // in target-pixel coords so dabs land at the right scale on
+      // an HD mask without doing the math in the engine.
+      const scale = target.width / source.width || 1;
+      const op = effectiveBrushOp();
+      const colour =
+        studioMode === "paint" && op === "add"
+          ? hexToRgb(foregroundColor)
+          : { r: 255, g: 255, b: 255 };
+      // Clip path was built in source coords. Apply the matrix so
+      // the strokeEngine's per-dab clip is in target coords too.
+      const scaledClip = clipPathRef.current ? scalePath(clipPathRef.current, scale) : null;
+      strokeEngineRef.current.setConfig({
+        size: brushSize * scale,
+        hardness: brushHardness,
+        op,
+        color: colour,
+        pressureSize,
+        pressureOpacity,
+        spacing: 0.25,
       });
-      if (result.empty) return;
-      const fillCanvas = maskToCanvas(result);
-      const tctx = target.getContext("2d");
-      if (!tctx) return;
-      tctx.save();
-      if (clipPathRef.current) tctx.clip(clipPathRef.current);
-      const op = effectiveBrushOp("bucket");
-      tctx.globalCompositeOperation = compositeForOp(op);
-      // In paint mode "add" tints the fill canvas with the foreground
-      // colour first (the fill canvas is white-on-transparent from
-      // the flood). For trim / split the white is fine.
-      if (studioMode === "paint" && op === "add") {
-        const tinted = tintCanvas(fillCanvas, foregroundColor);
-        tctx.drawImage(tinted, 0, 0);
-      } else {
-        tctx.drawImage(fillCanvas, 0, 0);
-      }
-      tctx.restore();
+      strokeEngineRef.current.beginStroke(target, scaledClip);
+      const src = clientToSrc(clientX, clientY);
+      strokeEngineRef.current.addSample({ x: src.x * scale, y: src.y * scale, pressure: 0.5 });
       markDirty();
-      redraw();
+      invalidatePreview();
     },
     [
       activeTargetCanvas,
+      brushHardness,
+      brushSize,
+      clientToSrc,
       effectiveBrushOp,
-      redraw,
-      studioMode,
-      tolerance,
       foregroundColor,
+      invalidatePreview,
       markDirty,
+      pressureOpacity,
+      pressureSize,
+      studioMode,
     ],
   );
 
-  // ----- magic wand selection -----
-  /** Wand-tool click: produce / mutate the selection bitmap based
-   *  on modifier keys (Photoshop convention):
-   *    - no modifier: replace current selection with new one
-   *    - shift:       union new selection into existing
-   *    - alt:         subtract new selection from existing
-   *    - shift+alt:   intersect with existing
-   */
-  const wandAt = useCallback(
-    (clientX: number, clientY: number, op: SelectionOp) => {
-      const preview = previewRef.current;
+  /** Feed pointermove (or coalesced sub-events) into the stroke
+   *  engine. The engine does all the per-sample work — interpolation,
+   *  pressure, dab stamping — so this callback stays trivial. */
+  const continueBrushStroke = useCallback(
+    (ev: PointerEvent | React.PointerEvent<HTMLCanvasElement>) => {
+      const engine = strokeEngineRef.current;
+      if (!engine) return;
+      // Engine works in target-pixel coords (see beginBrushStroke).
+      // The scale was baked into the engine's config at stroke
+      // start — we re-derive it here to convert each sample.
+      const target = activeTargetCanvas();
       const source = sourceCanvasRef.current;
-      if (!preview || !source) return;
-      const { x, y } = clientToSourcePixel(clientX, clientY, preview, source);
-      const result = floodFillAlpha({
+      if (!target || !source) return;
+      const scale = target.width / source.width || 1;
+      const src = clientToSrc(ev.clientX, ev.clientY);
+      engine.addSample({
+        x: src.x * scale,
+        y: src.y * scale,
+        pressure: ev.pressure || 0.5,
+      });
+    },
+    [activeTargetCanvas, clientToSrc],
+  );
+
+  // ── Bucket fill (worker-backed) ─────────────────────────────────
+  //
+  // Same shape as the old bucketAt but the BFS runs off-thread now,
+  // so a huge connected region click doesn't freeze the UI.
+  const bucketAt = useCallback(
+    async (clientX: number, clientY: number) => {
+      const source = sourceCanvasRef.current;
+      if (!source) return;
+      const target = activeTargetCanvas();
+      if (!target) return;
+      const { x, y } = clientToSrc(clientX, clientY);
+      const result = await runFlood({
         source,
         seedX: x,
         seedY: y,
-        tolerance,
-        requireOpaqueSeed: true,
-        clip: clipPathRef.current,
+        tolerance: bucketTolerance,
+        sampleMode: "alpha",
+        sampleSize: 1,
+        contiguous: true,
+        antiAlias: false,
+        ownerKey: "bucket",
       });
-      if (result.empty && op === "replace") {
+      if (result.aborted || result.area === 0) return;
+      const fillCanvas = workerMaskToCanvas(result);
+      const tctx = target.getContext("2d");
+      if (!tctx) return;
+      // Scale the source-built fill canvas to whatever dim the target
+      // is — handles the HD-edge case where target is 2× source.
+      const source2 = sourceCanvasRef.current;
+      const targetScale = source2 ? target.width / source2.width : 1;
+      tctx.save();
+      if (clipPathRef.current) tctx.clip(scalePath(clipPathRef.current, targetScale));
+      const op = effectiveBrushOp("bucket");
+      tctx.globalCompositeOperation = compositeForOp(op);
+      const draw =
+        studioMode === "paint" && op === "add"
+          ? tintCanvas(fillCanvas, foregroundColor)
+          : fillCanvas;
+      tctx.drawImage(draw, 0, 0, target.width, target.height);
+      tctx.restore();
+      markDirty();
+      invalidatePreview();
+    },
+    [
+      activeTargetCanvas,
+      bucketTolerance,
+      clientToSrc,
+      effectiveBrushOp,
+      foregroundColor,
+      invalidatePreview,
+      markDirty,
+      studioMode,
+    ],
+  );
+
+  // ── Magic wand (worker-backed + full options) ───────────────────
+  //
+  // The wand was alpha-only single-pixel BFS. It's now a Photoshop-
+  // grade selection tool with sample mode (alpha/luminance/RGB),
+  // sample size, contiguous toggle, and anti-alias. The worker does
+  // the BFS so big clicks no longer freeze the UI.
+  const wandAt = useCallback(
+    async (clientX: number, clientY: number, op: SelectionOp) => {
+      const source = sourceCanvasRef.current;
+      if (!source) return;
+      const { x, y } = clientToSrc(clientX, clientY);
+      const result = await runFlood({
+        source,
+        seedX: x,
+        seedY: y,
+        tolerance: wandOpts.tolerance,
+        sampleMode: wandOpts.sampleMode,
+        sampleSize: wandOpts.sampleSize,
+        contiguous: wandOpts.contiguous,
+        antiAlias: wandOpts.antiAlias,
+        ownerKey: "wand",
+      });
+      if (result.aborted) return;
+      if (result.area === 0 && op === "replace") {
         setWandSelection(null);
         setWandSelectionArea(0);
         return;
       }
-      const incoming = maskToCanvas(result);
+      const incoming = workerMaskToCanvas(result);
       if (op === "replace" || !wandSelection) {
         setWandSelection(incoming);
         setWandSelectionArea(result.area);
         return;
       }
-      // Compose with existing selection on a fresh canvas.
+      // Compose into the existing selection.
       const merged = document.createElement("canvas");
       merged.width = source.width;
       merged.height = source.height;
       const mctx = merged.getContext("2d");
       if (!mctx) return;
       mctx.drawImage(wandSelection, 0, 0);
-      mctx.globalCompositeOperation =
-        op === "add" ? "source-over" : op === "subtract" ? "destination-out" : "destination-in"; // intersect
-      mctx.drawImage(incoming, 0, 0);
-      // Recompute area for the status display.
-      const data = mctx.getImageData(0, 0, merged.width, merged.height).data;
-      let area = 0;
-      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) area++;
+      composeSelection(
+        merged,
+        incoming,
+        op === "add" ? "add" : op === "subtract" ? "subtract" : "intersect",
+      );
       setWandSelection(merged);
-      setWandSelectionArea(area);
+      setWandSelectionArea(selectionArea(merged));
     },
-    [tolerance, wandSelection],
+    [
+      clientToSrc,
+      wandOpts.tolerance,
+      wandOpts.sampleMode,
+      wandOpts.sampleSize,
+      wandOpts.contiguous,
+      wandOpts.antiAlias,
+      wandSelection,
+    ],
   );
 
   /** Apply the wand selection to the active canvas with the given
@@ -702,25 +810,84 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       if (!target) return;
       const tctx = target.getContext("2d");
       if (!tctx) return;
+      // Same HD-edge scaling as bucket — selection bitmap was built
+      // at source dim, target may be 2× when HD edge is on.
+      const source = sourceCanvasRef.current;
+      const scale = source ? target.width / source.width : 1;
       tctx.save();
-      if (clipPathRef.current) tctx.clip(clipPathRef.current);
+      if (clipPathRef.current) tctx.clip(scalePath(clipPathRef.current, scale));
       tctx.globalCompositeOperation = compositeForOp(op);
-      if (studioMode === "paint" && op === "add") {
-        const tinted = tintCanvas(wandSelection, foregroundColor);
-        tctx.drawImage(tinted, 0, 0);
-      } else {
-        tctx.drawImage(wandSelection, 0, 0);
-      }
+      const draw =
+        studioMode === "paint" && op === "add"
+          ? tintCanvas(wandSelection, foregroundColor)
+          : wandSelection;
+      tctx.drawImage(draw, 0, 0, target.width, target.height);
       tctx.restore();
       if (clearAfter) {
         setWandSelection(null);
         setWandSelectionArea(0);
       }
       markDirty();
-      redraw();
+      invalidatePreview();
     },
-    [activeTargetCanvas, redraw, studioMode, wandSelection, foregroundColor, markDirty],
+    [activeTargetCanvas, invalidatePreview, studioMode, wandSelection, foregroundColor, markDirty],
   );
+
+  // ── Selection refine ops (Photoshop "Refine Selection") ─────────
+  const onSelectionInvert = useCallback(() => {
+    const source = sourceCanvasRef.current;
+    if (!wandSelection || !source) return;
+    const inverted = invertSelection(wandSelection, source);
+    setWandSelection(inverted);
+    setWandSelectionArea(selectionArea(inverted));
+  }, [wandSelection]);
+
+  const onSelectionGrow = useCallback(() => {
+    if (!wandSelection) return;
+    const grown = growSelection(wandSelection, 1);
+    setWandSelection(grown);
+    setWandSelectionArea(selectionArea(grown));
+  }, [wandSelection]);
+
+  const onSelectionShrink = useCallback(() => {
+    if (!wandSelection) return;
+    const shrunk = shrinkSelection(wandSelection, 1);
+    setWandSelection(shrunk);
+    setWandSelectionArea(selectionArea(shrunk));
+  }, [wandSelection]);
+
+  const onSelectionFeather = useCallback(() => {
+    if (!wandSelection) return;
+    const feathered = featherSelection(wandSelection, 2);
+    setWandSelection(feathered);
+    // Feather doesn't change the binary count materially; the
+    // readout was a px count of "selected" pixels and feathered
+    // pixels are still selected, so we keep the existing area.
+  }, [wandSelection]);
+
+  /** Promote the current wand selection to a brand-new named region.
+   *  Split mode only; the region gets the next colour in the palette
+   *  and lands selected so the user can immediately keep painting
+   *  into it. */
+  const onSelectionSaveAsRegion = useCallback(() => {
+    if (!wandSelection) return;
+    const source = sourceCanvasRef.current;
+    if (!source) return;
+    const idx = regionEntries.length;
+    const id = newId(ID_PREFIX.regionMask);
+    const color = REGION_COLORS[idx % REGION_COLORS.length];
+    const c = document.createElement("canvas");
+    c.width = source.width;
+    c.height = source.height;
+    const cctx = c.getContext("2d");
+    if (cctx) cctx.drawImage(wandSelection, 0, 0);
+    regionCanvasMap.current.set(id, c);
+    setRegionEntries((prev) => [...prev, { id, name: `region ${idx + 1}`, color }]);
+    setSelectedRegionId(id);
+    setSplitDirty(true);
+    setWandSelection(null);
+    setWandSelectionArea(0);
+  }, [wandSelection, regionEntries.length]);
 
   /** Sprint 6.2: convert a pointer event in auto mode into a SAM
    *  point and append. Left button = foreground (label 1), anything
@@ -788,7 +955,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           const preview = previewRef.current;
           const source = sourceCanvasRef.current;
           if (!preview || !source) return;
-          const { x, y } = clientToSourcePixel(e.clientX, e.clientY, preview, source);
+          const { x, y } = clientToSrc(e.clientX, e.clientY);
           const sample =
             studioMode === "paint" && paintCanvasRef.current
               ? samplePixelHex(paintCanvasRef.current, x, y)
@@ -824,13 +991,14 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         case "eraser":
           paintingRef.current = true;
           (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-          paintAt(e.clientX, e.clientY);
+          beginBrushStroke(e.clientX, e.clientY);
           return;
       }
     },
     [
+      beginBrushStroke,
       bucketAt,
-      paintAt,
+      clientToSrc,
       recordSamPoint,
       selectedTool,
       studioMode,
@@ -849,7 +1017,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       const preview = previewRef.current;
       const source = sourceCanvasRef.current;
       if (preview && source) {
-        const { x, y } = clientToSourcePixel(e.clientX, e.clientY, preview, source);
+        const { x, y } = clientToSrc(e.clientX, e.clientY);
         pointerPosRef.current = { x, y };
       }
       // Hand-tool / Space drag.
@@ -858,9 +1026,32 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         return;
       }
       if (!paintingRef.current) return;
-      paintAt(e.clientX, e.clientY);
+      // Pull every coalesced sub-event the browser stashed since the
+      // last move — at 120 Hz pen + 60 Hz frame this is the difference
+      // between 60 dabs and 240 dabs along the same path. Feed each
+      // into the stroke engine so stamp interpolation lays down a
+      // continuous trail instead of a dotted skip.
+      const coalesced =
+        typeof e.nativeEvent.getCoalescedEvents === "function"
+          ? (e.nativeEvent as PointerEvent).getCoalescedEvents()
+          : [];
+      if (coalesced.length === 0) {
+        continueBrushStroke(e);
+      } else {
+        for (const sub of coalesced) continueBrushStroke(sub);
+      }
+      // One invalidate per pointermove tick — the compositor rAF-
+      // batches multiple invalidates into a single render.
+      invalidatePreview();
     },
-    [paintAt, viewport.isPanning, viewport.onPanPointerMove, viewport],
+    [
+      clientToSrc,
+      continueBrushStroke,
+      invalidatePreview,
+      viewport.isPanning,
+      viewport.onPanPointerMove,
+      viewport,
+    ],
   );
 
   const onPointerUp = useCallback(
@@ -869,6 +1060,11 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         viewport.onPanPointerUp(e.nativeEvent);
         (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
         return;
+      }
+      if (paintingRef.current) {
+        // End the stroke cleanly so the engine resets its
+        // interpolation state for the next drag.
+        strokeEngineRef.current?.endStroke();
       }
       paintingRef.current = false;
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
@@ -903,19 +1099,39 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     const source = sourceCanvasRef.current;
     if (!mask || !source) return;
 
+    // Downsample the mask back to source dim before baking — the
+    // mask may be 2× source when HD edge is on. Downstream consumers
+    // (Geny export bake, atlas-neighbor protection) expect source-
+    // dim masks. The bilinear shrink preserves the AA edge HD mode
+    // was buying us in the first place.
+    const sourceDimMask =
+      mask.width === source.width && mask.height === source.height
+        ? mask
+        : (() => {
+            const tmp = document.createElement("canvas");
+            tmp.width = source.width;
+            tmp.height = source.height;
+            const tctx = tmp.getContext("2d");
+            if (tctx) {
+              if ("imageSmoothingQuality" in tctx) tctx.imageSmoothingQuality = "high";
+              tctx.drawImage(mask, 0, 0, source.width, source.height);
+            }
+            return tmp;
+          })();
+
     // Bake the threshold cutoff into the saved mask so callers don't
     // have to know about the slider.
     const baked = document.createElement("canvas");
-    baked.width = mask.width;
-    baked.height = mask.height;
+    baked.width = source.width;
+    baked.height = source.height;
     const ctx = baked.getContext("2d");
     if (!ctx) return;
 
     const srcCtx = source.getContext("2d");
-    const maskCtx = mask.getContext("2d");
+    const maskCtx = sourceDimMask.getContext("2d");
     if (!srcCtx || !maskCtx) return;
     const srcData = srcCtx.getImageData(0, 0, source.width, source.height);
-    const maskData = maskCtx.getImageData(0, 0, mask.width, mask.height);
+    const maskData = maskCtx.getImageData(0, 0, source.width, source.height);
     const out = ctx.createImageData(baked.width, baked.height);
     for (let i = 0; i < srcData.data.length; i += 4) {
       const sa = srcData.data[i + 3];
@@ -1147,7 +1363,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         tctx.drawImage(img, 0, 0, target.width, target.height);
         tctx.restore();
         setSplitDirty(true);
-        redraw();
+        invalidatePreview();
       } catch (e) {
         setSamError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -1156,7 +1372,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       setSamPoints([]);
       setSamCandidates(null);
     },
-    [selectedRegionId, redraw, samComposeOp],
+    [selectedRegionId, invalidatePreview, samComposeOp],
   );
 
   /** Drop accumulated points + candidates without applying. Useful
@@ -1240,7 +1456,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       const cctx = c.getContext("2d");
       cctx?.clearRect(0, 0, c.width, c.height);
       setSplitDirty(true);
-      redraw();
+      invalidatePreview();
       return;
     }
     if (studioMode === "paint") {
@@ -1254,7 +1470,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       pctx.clearRect(0, 0, paint.width, paint.height);
       pctx.drawImage(source, 0, 0);
       setPaintDirty(true);
-      redraw();
+      invalidatePreview();
       return;
     }
     const mask = maskCanvasRef.current;
@@ -1264,8 +1480,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     ctx.clearRect(0, 0, mask.width, mask.height);
     setMask(layer.id, null);
     setDirty(true);
-    redraw();
-  }, [layer.id, setMask, redraw, studioMode, selectedRegionId]);
+    invalidatePreview();
+  }, [layer.id, setMask, invalidatePreview, studioMode, selectedRegionId]);
 
   /** Dismiss with a confirm prompt when there are unsaved changes.
    *  Used by every dismiss path: header "close" button, the
@@ -1320,6 +1536,44 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         }
         requestClose();
         return;
+      }
+      // Wand-selection refine + apply shortcuts. Active only when a
+      // selection exists; otherwise the keys fall through to the
+      // regular handler chain (e.g. Enter is harmless).
+      if (wandSelection) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          applyWandSelection(ev.shiftKey ? "remove" : "add", true);
+          return;
+        }
+        if (ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+          const k = ev.key.toLowerCase();
+          if (k === "i") {
+            ev.preventDefault();
+            onSelectionInvert();
+            return;
+          }
+          if (k === "g") {
+            ev.preventDefault();
+            onSelectionGrow();
+            return;
+          }
+          if (k === "s") {
+            ev.preventDefault();
+            onSelectionShrink();
+            return;
+          }
+          if (k === "f") {
+            ev.preventDefault();
+            onSelectionFeather();
+            return;
+          }
+          if (k === "r" && studioMode === "split") {
+            ev.preventDefault();
+            onSelectionSaveAsRegion();
+            return;
+          }
+        }
       }
       // Tool shortcuts. Single-letter Photoshop bindings.
       if (!ev.metaKey && !ev.ctrlKey && !ev.altKey) {
@@ -1379,7 +1633,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose, studioMode, viewport, wandSelection, focusRegionId]);
+  }, [
+    requestClose,
+    studioMode,
+    viewport,
+    wandSelection,
+    focusRegionId,
+    applyWandSelection,
+    onSelectionInvert,
+    onSelectionGrow,
+    onSelectionShrink,
+    onSelectionFeather,
+    onSelectionSaveAsRegion,
+  ]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -1518,8 +1784,16 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
               onBrushOp={setBrushOp}
               brushHardness={brushHardness}
               onBrushHardness={setBrushHardness}
-              tolerance={tolerance}
-              onTolerance={setTolerance}
+              tolerance={bucketTolerance}
+              onTolerance={setBucketTolerance}
+              wand={wandOpts}
+              onWand={setWandOpts}
+              pressureSize={pressureSize}
+              pressureOpacity={pressureOpacity}
+              onPressureSize={setPressureSize}
+              onPressureOpacity={setPressureOpacity}
+              highDpiMask={highDpiMask}
+              onHighDpiMask={setHighDpiMask}
               threshold={threshold}
               onThreshold={setThreshold}
               zoom={viewport.zoom}
@@ -1614,13 +1888,12 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                           ))}
                         </svg>
                       )}
-                    {/* Wand selection outline — semi-transparent
-                        overlay, no marching ants for now (a true
-                        marching-ants needs a contour walk; the
-                        coloured fill is enough to communicate
-                        what's selected). */}
+                    {/* Marching-ants outline — animated boundary
+                        contour of the current wand selection. Sits
+                        inside the zoom/pan transform wrapper so
+                        ants scale + translate with the canvas. */}
                     {wandSelection && sourceCanvasRef.current && (
-                      <WandSelectionOverlay
+                      <MarchingAnts
                         selection={wandSelection}
                         sourceWidth={sourceCanvasRef.current.width}
                         sourceHeight={sourceCanvasRef.current.height}
@@ -1637,24 +1910,33 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                   enabled={isSizedBrushTool(selectedTool) && !viewport.spaceHeld}
                   color={selectedTool === "wand" ? "#3b82f6" : undefined}
                 />
-              </div>
-
-              <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)] p-4 text-xs">
-                {/* Wand selection panel — visible whenever a selection
-                exists, regardless of the active tool. Lets the user
-                Apply / Remove / Deselect from any tool context. */}
+                {/* Floating wand action bar — visible whenever a
+                    selection exists. Above the canvas so the user
+                    doesn't have to glance at the sidebar for the
+                    common Apply / Refine ops. */}
                 {wandSelection && (
-                  <WandPanel
+                  <WandActionBar
                     area={wandSelectionArea}
                     studioMode={studioMode}
                     onApplyAdd={() => applyWandSelection("add", true)}
                     onApplyRemove={() => applyWandSelection("remove", true)}
+                    onInvert={onSelectionInvert}
+                    onGrow={onSelectionGrow}
+                    onShrink={onSelectionShrink}
+                    onFeather={onSelectionFeather}
+                    onSaveAsRegion={studioMode === "split" ? onSelectionSaveAsRegion : undefined}
                     onDeselect={() => {
                       setWandSelection(null);
                       setWandSelectionArea(0);
                     }}
                   />
                 )}
+              </div>
+
+              <aside className="flex min-h-0 flex-col overflow-y-auto border-l border-[var(--color-border)] p-4 text-xs">
+                {/* The wand selection's action bar lives above the
+                    canvas now (see WandActionBar in the canvas
+                    wrapper above) — no sidebar duplicate. */}
                 {studioMode === "trim" ? (
                   <>
                     <ShortcutsHelp />
@@ -1936,6 +2218,22 @@ function compositeForOp(op: BrushOp): GlobalCompositeOperation {
   return op === "add" ? "source-over" : "destination-out";
 }
 
+/** Return a Path2D that's the input path transformed by a uniform
+ *  scale factor. Used to lift the source-coord clip path onto an HD
+ *  mask target (mask may be 2× source dim). Path2D.addPath supports
+ *  a DOMMatrixInit second argument on every browser the editor
+ *  targets — falls through to a clone on the off chance it doesn't. */
+function scalePath(path: Path2D, scale: number): Path2D {
+  if (scale === 1) return path;
+  const next = new Path2D();
+  try {
+    next.addPath(path, new DOMMatrix().scaleSelf(scale, scale));
+    return next;
+  } catch {
+    return path;
+  }
+}
+
 /** Parse "#rrggbb" or "rgb(...)" into an {r,g,b} triple. Falls back
  *  to white on a parse failure so paint strokes still produce a
  *  visible mark. */
@@ -2006,112 +2304,6 @@ function cursorClassForTool(tool: ToolId, spaceHeld: boolean, isPanning: boolean
   if (tool === "eyedropper") return "cursor-crosshair";
   // brush / eraser / bucket / wand — overlay handles the visual.
   return "cursor-crosshair";
-}
-
-/** Tints + shows the wand selection on top of the canvas. The
- *  selection canvas is opaque-white inside, transparent outside;
- *  we recolour to a translucent blue so it reads as "selected"
- *  without obscuring the underlying texture. */
-function WandSelectionOverlay({
-  selection,
-  sourceWidth,
-  sourceHeight,
-}: {
-  selection: HTMLCanvasElement;
-  sourceWidth: number;
-  sourceHeight: number;
-}) {
-  // Render the selection into a recolour canvas once per render; the
-  // selection canvas itself is the parent's state so it doesn't
-  // change between frames unless the user clicks again.
-  const tinted = useMemo(() => {
-    const c = document.createElement("canvas");
-    c.width = sourceWidth;
-    c.height = sourceHeight;
-    const ctx = c.getContext("2d");
-    if (!ctx) return c;
-    // 1) the selection mask
-    ctx.drawImage(selection, 0, 0, sourceWidth, sourceHeight);
-    // 2) recolour white→blue, keep alpha
-    ctx.globalCompositeOperation = "source-in";
-    ctx.fillStyle = "rgba(59, 130, 246, 0.35)";
-    ctx.fillRect(0, 0, sourceWidth, sourceHeight);
-    return c;
-  }, [selection, sourceWidth, sourceHeight]);
-
-  const dataUrl = useMemo(() => tinted.toDataURL("image/png"), [tinted]);
-
-  return (
-    <div
-      aria-hidden="true"
-      className="pointer-events-none absolute inset-0"
-      style={{
-        backgroundImage: `url(${dataUrl})`,
-        backgroundSize: "100% 100%",
-        backgroundRepeat: "no-repeat",
-      }}
-    />
-  );
-}
-
-/** Floating panel above the regions list, visible whenever a wand
- *  selection exists. Lets the user apply / remove the selection
- *  on the active mask, or simply deselect. */
-function WandPanel({
-  area,
-  studioMode,
-  onApplyAdd,
-  onApplyRemove,
-  onDeselect,
-}: {
-  area: number;
-  studioMode: StudioMode;
-  onApplyAdd: () => void;
-  onApplyRemove: () => void;
-  onDeselect: () => void;
-}) {
-  const labels =
-    studioMode === "trim"
-      ? { add: "Hide selected", remove: "Reveal selected" }
-      : studioMode === "paint"
-        ? { add: "Fill selected", remove: "Erase selected" }
-        : { add: "Add to region", remove: "Remove from region" };
-  return (
-    <div className="mb-3 rounded border border-blue-500/40 bg-blue-500/5 p-2">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="font-medium text-blue-300">Selection</span>
-        <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
-          {area.toLocaleString()} px
-        </span>
-      </div>
-      <div className="grid grid-cols-2 gap-1">
-        <button
-          type="button"
-          onClick={onApplyAdd}
-          className="rounded border border-[var(--color-accent)] px-2 py-1 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
-          title="Apply with brush 'add' op"
-        >
-          {labels.add}
-        </button>
-        <button
-          type="button"
-          onClick={onApplyRemove}
-          className="rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-          title="Apply with brush 'remove' op"
-        >
-          {labels.remove}
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={onDeselect}
-        className="mt-1 w-full rounded border border-[var(--color-border)] px-2 py-1 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-        title="Esc"
-      >
-        Deselect (Esc)
-      </button>
-    </div>
-  );
 }
 
 /** Shortcut cheat-sheet — same in both studio modes since the

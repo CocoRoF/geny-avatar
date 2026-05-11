@@ -157,3 +157,46 @@ export const SELECTION_OPS: { id: SelectionOp; label: string; tooltip: string }[
   { id: "subtract", label: "Sub", tooltip: "선택 제거 (Alt)" },
   { id: "intersect", label: "Int", tooltip: "교집합 (Shift+Alt)" },
 ];
+
+/** Sample mode used by the magic wand's flood fill. Drives the
+ *  per-pixel distance comparator inside the worker:
+ *
+ *   - alpha     — distance = |sourceA − seedA|. Picks up feathered
+ *                 footprints; the historic default for the editor.
+ *   - luminance — distance = |Y(source) − Y(seed)|. Use when the
+ *                 layer has a uniform colour with brightness
+ *                 variations (e.g. a dyed cloth region).
+ *   - rgb       — distance = max(|R|,|G|,|B|). Use when the layer is
+ *                 multi-coloured and the wand needs to pick a swatch
+ *                 of one specific hue.
+ */
+export type WandSampleMode = "alpha" | "luminance" | "rgb";
+
+/** Sample window size used to compute the seed signature. Larger
+ *  windows average out single-pixel noise; smaller windows pick up
+ *  fine detail. Mirrors Photoshop's Sample Size option. */
+export type WandSampleSize = 1 | 3 | 5 | 11;
+
+/** Centralised default wand options. The studio holds a single
+ *  WandOptions object in state and the OptionsBar mutates it; the
+ *  worker reads from it on every click. */
+export interface WandOptions {
+  tolerance: number; // 0..128 (matches the slider range)
+  sampleMode: WandSampleMode;
+  sampleSize: WandSampleSize;
+  /** True = BFS (Photoshop's default). False = global scan: any
+   *  pixel within tolerance qualifies regardless of connectivity. */
+  contiguous: boolean;
+  /** Anti-alias the selection edge (1-pixel feathered boundary). */
+  antiAlias: boolean;
+}
+
+export function defaultWandOptions(): WandOptions {
+  return {
+    tolerance: 32,
+    sampleMode: "alpha",
+    sampleSize: 1,
+    contiguous: true,
+    antiAlias: true,
+  };
+}
