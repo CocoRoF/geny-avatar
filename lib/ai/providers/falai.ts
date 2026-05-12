@@ -131,8 +131,17 @@ export class FalAIProvider implements AIProvider {
     // 15–30 s, so a 1.5 s cadence balances perceived latency vs API
     // pressure. Hard cap at 3 min — past that the upstream is
     // misbehaving and the user gets a clear failure.
-    const statusUrl = `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}/status`;
-    const resultUrl = `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}`;
+    //
+    // Use the URLs the submit response hands back rather than building
+    // them from MODEL_PATH. The actual request_id ends up at a host
+    // like `https://queue.fal.run/fal-ai/flux-2/requests/...` (model-
+    // family path, not the `.../edit` endpoint that took the submit),
+    // and reconstructing it from MODEL_PATH yields a 405 because the
+    // server only honours GETs at the route the submit returned.
+    const statusUrl =
+      submitted.status_url ?? `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}/status`;
+    const resultUrl = submitted.response_url ?? `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}`;
+    console.info(`[falai] status_url=${statusUrl}\n         response_url=${resultUrl}`);
     const startedAt = Date.now();
     const timeoutMs = 180_000;
     const pollMs = 1500;
