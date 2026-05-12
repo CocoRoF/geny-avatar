@@ -133,5 +133,5 @@ async function runJob(
 }
 
 function isProviderId(s: string): s is ProviderId {
-  return s === "gemini" || s === "openai" || s === "replicate";
+  return s === "gemini" || s === "openai" || s === "replicate" || s === "falai";
 }
