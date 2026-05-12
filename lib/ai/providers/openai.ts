@@ -219,16 +219,20 @@ export class OpenAIProvider implements AIProvider {
 
     const sections: string[] = [];
 
-    // 1. Slot map (only meaningful when refs are attached)
+    // 1. Slot map. Always tells the model what [image 1] *is*; the
+    // reference list section only appears when refs are attached.
+    sections.push(
+      "[image 1] is the canvas to edit — it represents one drawable of a multi-part Live2D-style 2D rigged puppet (skirt, face, hair, accessory, etc.). The render pipeline alpha-clips the output to [image 1]'s silhouette automatically, so don't worry about where the shape ends — focus on what fills it.",
+    );
     if (hasRefs) {
       const refLabels =
         refs.length === 1 ? "[image 2]" : refs.map((_, i) => `[image ${i + 2}]`).join(", ");
       sections.push(
-        `Inputs: [image 1] is the canvas to edit — it represents one slot of a 2D rigged-puppet atlas (skirt, face, hair, accessory, etc.). ${refLabels} ${
+        `${refLabels} ${
           refs.length === 1 ? "is a visual reference" : "are visual references"
         } for the desired look. Identify which region of ${
           refs.length === 1 ? "the reference" : "each reference"
-        } describes [image 1]'s slot, and apply that region's content there. The render pipeline alpha-clips the output to [image 1]'s silhouette automatically, so don't worry about where the shape ends — focus on what fills it.`,
+        } describes [image 1]'s slot, and apply that region's content there. The last reference, when present, may be a full-character snapshot of the puppet — treat it as spatial context (so you know what [image 1] is part of), not as the style anchor.`,
       );
     }
 
@@ -238,17 +242,21 @@ export class OpenAIProvider implements AIProvider {
     // 3. Preservation — short. Alpha-enforcement does the heavy
     // lifting; we just remind the model the framing stays.
     sections.push(
-      "Keep [image 1]'s silhouette and crop framing — the renderer expects the result to fit [image 1]'s exact shape.",
+      "Keep [image 1]'s silhouette and crop framing — the renderer expects the result to fit [image 1]'s exact shape. Maintain the line weight and shading style of the original.",
     );
 
-    // 4. Mask role
+    // 4. Style negation. Three words save a lot of photoreal drift on
+    // anime / illustration puppets per OpenAI's prompting guide.
+    sections.push("Style: anime / illustration. NOT photoreal. NOT 3D. NOT live-action.");
+
+    // 5. Mask role
     if (hasMask) {
       sections.push(
         "The mask channel marks the editable region of [image 1]. Pixels outside the mask must come through unchanged.",
       );
     }
 
-    // 5. Negative
+    // 6. Negative
     if (input.negativePrompt?.trim()) {
       sections.push(`Avoid: ${input.negativePrompt.trim()}`);
     }
