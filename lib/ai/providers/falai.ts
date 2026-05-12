@@ -46,28 +46,47 @@ import type { ModelInfo } from "../types";
 import type { AIProvider, ProviderConfig, ProviderGenerateInput } from "./interface";
 
 const QUEUE_BASE = "https://queue.fal.run";
-const MODEL_PATH = "fal-ai/flux-2/edit";
+
+/** Per-model endpoint paths on queue.fal.run. */
+const FLUX_2_EDIT_PATH = "fal-ai/flux-2/edit";
+const FLUX_INPAINTING_PATH = "fal-ai/flux-general/inpainting";
+
+const FLUX_2_EDIT_ID = "flux-2-edit";
+const FLUX_INPAINTING_ID = "flux-inpainting";
 
 const MODELS: readonly ModelInfo[] = [
   {
-    id: "flux-2-edit",
+    id: FLUX_2_EDIT_ID,
     displayName: "FLUX.2 [edit]",
     description:
-      "BFL's instruction-following image editor. Cheaper bulk runs, stronger identity preservation than gpt-image-2 across multi-ref edits.",
+      "Instruction-following editor. Cheap bulk fan-out. Best when you want to describe the change in plain words. Struggles on isolated atlas crops (face hallucination, tendril loss).",
+  },
+  {
+    id: FLUX_INPAINTING_ID,
+    displayName: "FLUX.1 inpainting (mask-aware)",
+    description:
+      "Mask-aware inpainting on FLUX.1 [dev]. Sends a binary mask alongside the source so the model only repaints the silhouette region — best fit for atlas-crop layer editing. Slower and base-model is older than flux-2.",
   },
 ];
 
 export const falaiConfig: ProviderConfig = {
   id: "falai",
-  displayName: "fal.ai FLUX.2",
+  displayName: "fal.ai FLUX",
   capabilities: {
-    // flux-2/edit is instruction-following — no binary mask channel.
-    supportsBinaryMask: false,
+    // flux-inpainting takes a binary mask; flux-2/edit doesn't. We
+    // advertise binary mask support at the provider level because the
+    // inpainting model is now part of this provider — UI knows to
+    // wire the mask channel when fal.ai is picked. The model branch
+    // inside generate() decides whether to actually use it.
+    supportsBinaryMask: true,
     supportsNegativePrompt: false,
-    // image_urls accepts the source + refs in a single ordered list,
-    // same posture as gpt-image-2's image[] array.
+    // image_urls (flux-2/edit) accepts the source + refs in a single
+    // ordered list. flux-inpainting takes a single image_url and a
+    // mask_url; reference images aren't honoured there. We still
+    // advertise refs at the capability level so the UI keeps the user
+    // ref affordances when fal.ai is picked.
     supportsReferenceImages: true,
-    defaultModelId: MODELS[0].id,
+    defaultModelId: FLUX_2_EDIT_ID,
     models: MODELS,
   },
 };
@@ -80,33 +99,19 @@ export class FalAIProvider implements AIProvider {
   }
 
   async generate(input: ProviderGenerateInput): Promise<Blob> {
-    const refs = input.referenceImages ?? [];
-    // First entry is the source. flux-2/edit reads the edit subject
-    // from image_urls[0] and treats the rest as visual references in
-    // the same way gpt-image-2 does.
-    const sourceDataUri = await blobToDataUri(input.sourceImage);
-    const refDataUris = await Promise.all(refs.map(blobToDataUri));
-    const imageUrls = [sourceDataUri, ...refDataUris].slice(0, 4);
-
-    const promptText = this.composePrompt(input);
-
-    const body: Record<string, unknown> = {
-      prompt: promptText,
-      image_urls: imageUrls,
-      output_format: "png",
-      enable_safety_checker: false,
-    };
-    if (typeof input.seed === "number") body.seed = input.seed;
+    const modelId = input.modelId ?? this.config.capabilities.defaultModelId;
+    const { modelPath, body } = await this.buildSubmitBody(modelId, input);
 
     console.info(
-      `[falai] POST ${QUEUE_BASE}/${MODEL_PATH}\n` +
-        `         image_urls: ${imageUrls.length} entries (1 source + ${imageUrls.length - 1} refs)\n` +
+      `[falai] POST ${QUEUE_BASE}/${modelPath}\n` +
+        `         model:           ${modelId}\n` +
         `         user prompt:     ${truncate(input.prompt, 200)}\n` +
         `         refined prompt:  ${input.refinedPrompt ? truncate(input.refinedPrompt, 400) : "(none)"}\n` +
-        `         composed prompt: ${truncate(promptText, 600)}`,
+        `         composed prompt: ${truncate(String(body.prompt ?? ""), 600)}\n` +
+        `         mask:            ${typeof body.mask_url === "string" ? `attached (${(body.mask_url as string).length} char data URI)` : "(none)"}`,
     );
 
-    const submit = await fetch(`${QUEUE_BASE}/${MODEL_PATH}`, {
+    const submit = await fetch(`${QUEUE_BASE}/${modelPath}`, {
       method: "POST",
       headers: {
         Authorization: `Key ${this.apiKey}`,
@@ -128,20 +133,20 @@ export class FalAIProvider implements AIProvider {
     console.info(`[falai] queued request_id=${requestId}`);
 
     // Poll status until COMPLETED. fal.ai recommends 1–2 s intervals;
-    // FLUX.2 Schnell typically finishes in <5 s, FLUX.2 Dev/Pro in
-    // 15–30 s, so a 1.5 s cadence balances perceived latency vs API
-    // pressure. Hard cap at 3 min — past that the upstream is
-    // misbehaving and the user gets a clear failure.
+    // FLUX.2 Schnell typically finishes in <5 s, FLUX.1 inpainting at
+    // 28 steps lands around 10-15 s. 1.5 s cadence balances perceived
+    // latency vs API pressure. Hard cap at 3 min — past that the
+    // upstream is misbehaving and the user gets a clear failure.
     //
     // Use the URLs the submit response hands back rather than building
-    // them from MODEL_PATH. The actual request_id ends up at a host
-    // like `https://queue.fal.run/fal-ai/flux-2/requests/...` (model-
-    // family path, not the `.../edit` endpoint that took the submit),
-    // and reconstructing it from MODEL_PATH yields a 405 because the
-    // server only honours GETs at the route the submit returned.
+    // them from the endpoint path. The actual request_id ends up at a
+    // host like `https://queue.fal.run/fal-ai/flux-2/requests/...`
+    // (model-family path, not the `.../edit` endpoint that took the
+    // submit), and reconstructing it ourselves yields a 405 because
+    // the server only honours GETs at the route the submit returned.
     const statusUrl =
-      submitted.status_url ?? `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}/status`;
-    const resultUrl = submitted.response_url ?? `${QUEUE_BASE}/${MODEL_PATH}/requests/${requestId}`;
+      submitted.status_url ?? `${QUEUE_BASE}/${modelPath}/requests/${requestId}/status`;
+    const resultUrl = submitted.response_url ?? `${QUEUE_BASE}/${modelPath}/requests/${requestId}`;
     console.info(`[falai] status_url=${statusUrl}\n         response_url=${resultUrl}`);
     const startedAt = Date.now();
     const timeoutMs = 180_000;
@@ -248,6 +253,73 @@ export class FalAIProvider implements AIProvider {
 
     return parts.join("\n\n");
   }
+
+  /**
+   * Inpainting scaffold — used only for the flux-general/inpainting
+   * endpoint. The model already honours the mask channel for region
+   * containment, so we don't need the "isolated atlas texture / no
+   * character features" guardrails that flux-2/edit needs. We do
+   * still want to bias toward anime/illustration and against
+   * photoreal drift on anime puppets.
+   */
+  private composeInpaintingPrompt(input: ProviderGenerateInput): string {
+    const userIntent = (input.refinedPrompt ?? input.prompt).trim();
+    return [
+      userIntent.length > 0 ? userIntent : "preserve the existing region",
+      "Style: anime / illustration, soft cel shading. NOT photoreal. NOT 3D. Keep the line weight and shading style of the original.",
+    ].join("\n\n");
+  }
+
+  /**
+   * Build the (endpoint path, JSON body) pair for the picked model.
+   * Two paths today; both go through the same submit / poll loop
+   * downstream so the wiring stays simple.
+   */
+  private async buildSubmitBody(
+    modelId: string,
+    input: ProviderGenerateInput,
+  ): Promise<{ modelPath: string; body: Record<string, unknown> }> {
+    if (modelId === FLUX_INPAINTING_ID) {
+      if (!input.maskImage) {
+        throw new Error(
+          "fal.ai flux-inpainting requires a binary mask — none was attached. " +
+            "Pick FLUX.2 [edit] for mask-less edits, or draw a mask in DecomposeStudio first.",
+        );
+      }
+      const imageDataUri = await blobToDataUri(input.sourceImage);
+      const maskDataUri = await maskBlobToBinaryDataUri(input.maskImage);
+      const promptText = this.composeInpaintingPrompt(input);
+      const body: Record<string, unknown> = {
+        prompt: promptText,
+        image_url: imageDataUri,
+        mask_url: maskDataUri,
+        // Full repaint inside the mask. Lower values let source colour
+        // bleed through, which is the whole problem we're solving.
+        strength: 1.0,
+        // 28 is the model default; tighter inference saves cost, but
+        // anime detail wants the full count. Re-evaluate after eval.
+        num_inference_steps: 28,
+        guidance_scale: 3.5,
+      };
+      if (typeof input.seed === "number") body.seed = input.seed;
+      return { modelPath: FLUX_INPAINTING_PATH, body };
+    }
+
+    // Default: flux-2/edit (instruction-following, no mask).
+    const refs = input.referenceImages ?? [];
+    const sourceDataUri = await blobToDataUri(input.sourceImage);
+    const refDataUris = await Promise.all(refs.map(blobToDataUri));
+    const imageUrls = [sourceDataUri, ...refDataUris].slice(0, 4);
+    const promptText = this.composePrompt(input);
+    const body: Record<string, unknown> = {
+      prompt: promptText,
+      image_urls: imageUrls,
+      output_format: "png",
+      enable_safety_checker: false,
+    };
+    if (typeof input.seed === "number") body.seed = input.seed;
+    return { modelPath: FLUX_2_EDIT_PATH, body };
+  }
 }
 
 type FalSubmitResponse = {
@@ -273,6 +345,27 @@ async function blobToDataUri(blob: Blob): Promise<string> {
   // browser path never reaches this provider (registry is server-only).
   const b64 = Buffer.from(buf).toString("base64");
   return `data:${mime};base64,${b64}`;
+}
+
+/**
+ * Encode a mask blob for flux-general/inpainting.
+ *
+ * Current behaviour: forward the mask bytes verbatim. DecomposeStudio
+ * stores masks as PNGs with `alpha=255` marking the edit region; many
+ * diffusion inpainters honour either the alpha channel or the RGB
+ * luma when picking the edit zone. Forwarding the bytes as-is gets us
+ * past the API contract and lets us observe what fal.ai's renderer
+ * actually does with the convention.
+ *
+ * If results show the mask is being interpreted backwards (or ignored
+ * outright), the next step is to bake the alpha into RGB on the client
+ * (`alpha=255 → white(255,255,255), alpha=0 → black(0,0,0)`) before
+ * uploading. We avoid the conversion on the server because Node doesn't
+ * have canvas / sharp wired in this project and adding either is a
+ * larger commitment than this hotfix wants to make.
+ */
+async function maskBlobToBinaryDataUri(blob: Blob): Promise<string> {
+  return blobToDataUri(blob);
 }
 
 function delay(ms: number): Promise<void> {
