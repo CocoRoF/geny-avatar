@@ -19,6 +19,7 @@ import { apiUrl } from "@/lib/basePath";
  * timeout.
  */
 
+import { defaultAlphaErodeRadius, erodeAlphaInPlace } from "./morphology";
 import type { AIJobStatus, ModelInfo, ProviderId } from "./types";
 
 export type ProviderAvailability = {
@@ -578,9 +579,26 @@ export async function postprocessGeneratedBlob(opts: {
   }
 
   // Step 2: alpha enforcement against the upright source.
+  //
+  // Eroding the source alpha a few pixels inward before multiplying
+  // prevents seam contamination at atlas-island boundaries — atlas
+  // pages pack islands ~4 px apart, and the AI's anti-aliased edge
+  // would otherwise bleed onto the neighbour at composite time.
+  // Radius scales with the silhouette short side; tiny components
+  // get the floor (2 px), large ones cap at 8 px.
   const srcCtx = opts.sourceCanvas.getContext("2d");
   if (srcCtx) {
     const srcData = srcCtx.getImageData(0, 0, targetW, targetH);
+    const erodeShortSide = sourceBBox
+      ? Math.min(sourceBBox.w, sourceBBox.h)
+      : Math.min(targetW, targetH);
+    const erodeRadius = defaultAlphaErodeRadius(erodeShortSide);
+    if (erodeRadius > 0) {
+      erodeAlphaInPlace(srcData, erodeRadius);
+    }
+    console.info(
+      `[postprocess] alpha-enforce: erode radius=${erodeRadius}px (shortSide=${erodeShortSide}px)`,
+    );
     const cropData = ctx.getImageData(0, 0, targetW, targetH);
     for (let i = 0; i < cropData.data.length; i += 4) {
       cropData.data[i + 3] = Math.round((cropData.data[i + 3] * srcData.data[i + 3]) / 255);
