@@ -1002,8 +1002,18 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // dominant anchor — the snapshot is context, not identity.
       // Skipped when the budget is already full (>3 user refs leaves
       // no slot for one more under gpt-image-2's image[] limit).
+      //
+      // **Provider gating**: fal.ai flux-2/edit treats every entry in
+      // image_urls[] as a visual *example* to imitate, not as context.
+      // Sending the canonical-pose snapshot makes flux stamp the whole
+      // character onto the drawable. OpenAI gpt-image-2 honours the
+      // "spatial context only" framing because its prompt scaffold
+      // can carry that disambiguation; flux doesn't. Until we have a
+      // separate `spatialContextImage` channel that providers opt
+      // into, only OpenAI gets the canonical-pose ref.
+      const supportsCharacterRef = providerId === "openai";
       let characterRefBlob: Blob | null = null;
-      if (app && supportsRefs && activeRefBlobs.length <= 3) {
+      if (app && supportsRefs && supportsCharacterRef && activeRefBlobs.length <= 3) {
         try {
           characterRefBlob = await renderPuppetReference(app);
         } catch (e) {
@@ -1017,9 +1027,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         `[generate] character-ref: ${
           characterRefBlob
             ? `attached (${characterRefBlob.size}B, slot ${submitRefs.length})`
-            : app
-              ? `skipped (refs budget=${activeRefBlobs.length}, supportsRefs=${supportsRefs})`
-              : "skipped (no Pixi app)"
+            : !supportsCharacterRef
+              ? `skipped (provider=${providerId} doesn't disambiguate ref roles)`
+              : app
+                ? `skipped (refs budget=${activeRefBlobs.length}, supportsRefs=${supportsRefs})`
+                : "skipped (no Pixi app)"
         }`,
       );
 

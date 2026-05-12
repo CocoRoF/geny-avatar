@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-falai-prompt-scaffold.md](2026-05-13-falai-prompt-scaffold.md) | 1.4 follow-up | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-falai-skip-canonical-ref.md](2026-05-13-falai-skip-canonical-ref.md) | 1.2/1.4 hotfix | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-falai-prompt-scaffold.md](2026-05-13-falai-prompt-scaffold.md) | 1.4 follow-up | [#11](https://github.com/CocoRoF/geny-avatar/pull/11) | done |
 | 2026-05-12 | [2026-05-12-fix-jobs-map-singleton.md](2026-05-12-fix-jobs-map-singleton.md) | infra hotfix | [#10](https://github.com/CocoRoF/geny-avatar/pull/10) | done |
 | 2026-05-12 | [2026-05-12-phase1-4-fix-fal-status-405.md](2026-05-12-phase1-4-fix-fal-status-405.md) | 1.4 hotfix | [#9](https://github.com/CocoRoF/geny-avatar/pull/9) | done |
 | 2026-05-12 | [2026-05-12-phase1-closure.md](2026-05-12-phase1-closure.md) | 1 (closure) | [#8](https://github.com/CocoRoF/geny-avatar/pull/8) | done |
