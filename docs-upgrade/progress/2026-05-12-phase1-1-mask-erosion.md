@@ -86,5 +86,5 @@ render를 image[2]에 추가. 별 entry로 진행 로그 작성.
 - 손댄 파일:
   - `lib/ai/morphology.ts` (신설)
   - `lib/ai/client.ts` (import 추가 + Step 2 본문 수정)
-- PR: 이 entry가 포함된 PR이 머지될 때 main에 들어감. 정확한 PR 번호는
-  머지 직후 `git log --grep` 또는 GitHub PRs 탭에서 확인.
+- PR [#2](https://github.com/CocoRoF/geny-avatar/pull/2) (squash-merge
+  `44eecc6`).

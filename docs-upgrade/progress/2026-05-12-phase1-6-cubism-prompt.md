@@ -75,4 +75,5 @@ provider + router).
 ## 참조
 
 - 손댄 파일 1개: `lib/ai/providers/openai.ts`.
-- PR: 이 entry가 포함된 PR이 머지될 때 main에 들어감.
+- PR [#4](https://github.com/CocoRoF/geny-avatar/pull/4) (squash-merge
+  `d18c04d`).
