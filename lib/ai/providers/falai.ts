@@ -88,7 +88,7 @@ export class FalAIProvider implements AIProvider {
     const refDataUris = await Promise.all(refs.map(blobToDataUri));
     const imageUrls = [sourceDataUri, ...refDataUris].slice(0, 4);
 
-    const promptText = (input.refinedPrompt ?? input.prompt).trim();
+    const promptText = this.composePrompt(input);
 
     const body: Record<string, unknown> = {
       prompt: promptText,
@@ -102,7 +102,8 @@ export class FalAIProvider implements AIProvider {
       `[falai] POST ${QUEUE_BASE}/${MODEL_PATH}\n` +
         `         image_urls: ${imageUrls.length} entries (1 source + ${imageUrls.length - 1} refs)\n` +
         `         user prompt:     ${truncate(input.prompt, 200)}\n` +
-        `         refined prompt:  ${input.refinedPrompt ? truncate(input.refinedPrompt, 400) : "(none)"}`,
+        `         refined prompt:  ${input.refinedPrompt ? truncate(input.refinedPrompt, 400) : "(none)"}\n` +
+        `         composed prompt: ${truncate(promptText, 600)}`,
     );
 
     const submit = await fetch(`${QUEUE_BASE}/${MODEL_PATH}`, {
@@ -192,6 +193,54 @@ export class FalAIProvider implements AIProvider {
     });
     console.info(`[falai] result blob: ${blob.size} bytes`);
     return blob;
+  }
+
+  /**
+   * Build the instruction string for flux-2/edit.
+   *
+   * flux-2/edit is instruction-following: short prompts get a faithful
+   * "change only what was asked" behaviour. The default failure mode
+   * is the model leaving the silhouette outline untouched (it reads
+   * "the outline is the boundary, don't paint past it") and stamping
+   * source-coloured pixels along the silhouette edge — even when the
+   * intent is a full colour replacement.
+   *
+   * Two fixes packed into the scaffold:
+   *
+   *   1. **Edge-to-edge instruction** — explicit "fill the entire
+   *      silhouette including outline pixels" so the boundary band
+   *      doesn't retain source colour.
+   *   2. **Reference role** — image_urls[1+] may include a full-
+   *      character snapshot (Phase 1.2). flux-2 defaults to treating
+   *      reference images as style anchors, which causes source-
+   *      character colour bleed onto the edit. Telling it to use refs
+   *      as spatial context only keeps the user intent intact.
+   *
+   * The user's prompt sits at the end so the model treats it as the
+   * primary instruction, not buried under scaffolding.
+   */
+  private composePrompt(input: ProviderGenerateInput): string {
+    const userIntent = (input.refinedPrompt ?? input.prompt).trim();
+    const refs = input.referenceImages ?? [];
+    const hasRefs = refs.length > 0;
+
+    const parts: string[] = [
+      "[image 1] is one drawable of a multi-part Live2D-style 2D rigged puppet (hair, face, top, etc.).",
+    ];
+    if (hasRefs) {
+      parts.push(
+        "Subsequent images (image_urls[1+]) are spatial context only — they show the whole character so you understand what part [image 1] is. DO NOT transfer their colours or style onto [image 1].",
+      );
+    }
+    parts.push(`Edit instruction: ${userIntent.length > 0 ? userIntent : "(none — no-op edit)"}`);
+    parts.push(
+      "Apply the edit edge to edge: replace the ENTIRE [image 1] silhouette including its outline pixels, not just the interior. The original outline colour must not be preserved when the instruction implies a colour change.",
+    );
+    parts.push(
+      "Style: anime / illustration, soft cel shading. NOT photoreal. NOT 3D. NOT live-action.",
+    );
+
+    return parts.join("\n\n");
   }
 }
 
