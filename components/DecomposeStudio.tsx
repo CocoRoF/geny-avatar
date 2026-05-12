@@ -1106,26 +1106,68 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     [viewport.isPanning, viewport.onPanPointerUp, viewport],
   );
 
-  // ── Wheel zoom ────────────────────────────────────────────────────
-  // We attach the wheel listener via a ref-effect (rather than a JSX
-  // onWheel prop) so we can pass `{ passive: false }` and call
-  // preventDefault on the event — modern browsers warn that React's
-  // synthetic onWheel can't.
+  // ── Wheel routing ──────────────────────────────────────────────────
+  //
+  // Photoshop-style:
+  //
+  //   plain wheel       → zoom canvas around the cursor
+  //   Ctrl/Cmd + wheel  → resize the active brush (brush + eraser only)
+  //   Alt + wheel       → adjust brush hardness (brush + eraser only)
+  //
+  // The browser's default Ctrl+Wheel page-zoom shortcut would otherwise
+  // hijack the same chord and nuke the editor layout, so we always
+  // preventDefault inside the canvas wrapper. `{ passive: false }` is
+  // required for preventDefault to take effect on wheel listeners in
+  // modern browsers — React's synthetic onWheel can't promise it, hence
+  // the manual addEventListener via this ref-effect.
   useEffect(() => {
     const wrapper = canvasWrapperRef.current;
     if (!wrapper) return;
     const handler = (e: WheelEvent) => {
-      // Skip when the wheel is targeting a scrollable input (e.g.
-      // the threshold slider) inside the same wrapper. Slider hit
-      // tests aren't an issue today since the OptionsBar lives
-      // outside the wrapper, but defensive nonetheless.
+      // Let scroll-y inputs (range sliders, etc.) inside the wrapper
+      // keep their native wheel behaviour. None exist today but it's
+      // a cheap guard.
       const target = e.target as HTMLElement | null;
       if (target && target.tagName === "INPUT") return;
+
+      // Block every browser-level wheel shortcut inside the canvas —
+      // Ctrl+Wheel for page zoom is the offender we actually care
+      // about, but Alt+Wheel and friends are also fair game.
+      e.preventDefault();
+      e.stopPropagation();
+
+      const mod = e.ctrlKey || e.metaKey;
+      const isBrush = selectedTool === "brush" || selectedTool === "eraser";
+
+      // Ctrl/Cmd + Wheel → brush size. Exponential factor matches the
+      // viewport's zoom feel so muscle memory transfers; tiny brushes
+      // get a 1-px-minimum step so int rounding can't stall the
+      // shrink at single digits.
+      if (mod && isBrush) {
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        setBrushSize((s) => {
+          const next = Math.round(s * factor);
+          const stepped = next === s ? s + (e.deltaY > 0 ? -1 : 1) : next;
+          return Math.max(1, Math.min(400, stepped));
+        });
+        return;
+      }
+
+      // Alt + Wheel → brush hardness, ±5 per tick. Linear because the
+      // 0..100 range is short enough that exponential feels twitchy.
+      if (e.altKey && isBrush) {
+        const delta = e.deltaY > 0 ? -5 : 5;
+        setBrushHardness((h) => Math.max(0, Math.min(100, h + delta)));
+        return;
+      }
+
+      // Plain wheel → canvas zoom around the cursor. viewport.onWheel
+      // also calls preventDefault internally; harmless duplicate.
       viewport.onWheel(e);
     };
     wrapper.addEventListener("wheel", handler, { passive: false });
     return () => wrapper.removeEventListener("wheel", handler);
-  }, [viewport.onWheel, viewport]);
+  }, [viewport.onWheel, viewport, selectedTool]);
 
   // ----- save / clear / close -----
   const onSaveMask = useCallback(async () => {
@@ -2367,6 +2409,9 @@ function ShortcutsHelp() {
     ["I", "Eyedropper"],
     ["Z / H", "Zoom / Hand"],
     ["[ / ]", "Brush size −/+"],
+    ["Ctrl+Wheel", "Brush size (over canvas)"],
+    ["Alt+Wheel", "Brush hardness (over canvas)"],
+    ["Wheel", "Zoom canvas"],
     ["X", "Swap brush ↔ eraser / bucket mode"],
     ["Space", "Pan (hold)"],
     ["RMB-drag", "Pan (any tool)"],
