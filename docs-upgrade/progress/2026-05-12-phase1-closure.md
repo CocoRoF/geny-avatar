@@ -221,6 +221,28 @@ negation + mask role + negative tail) 를 따르는지.
 - prompt 구조 누락 → [openai.ts:207](../../lib/ai/providers/openai.ts#L207)
   composePrompt 점검.
 
+## Phase 1.x 추가 백로그 (Phase 2 진입 전 또는 병행)
+
+검증 중 식별된 follow-up. Phase 2 진입 후에도 진행 가능하지만
+긴 컨텍스트가 식기 전에 closure entry에 기록.
+
+- **FLUX-2 edit의 atlas-crop 한계**. 외곽 outline / tendril 손실. 후속
+  옵션:
+  - **A. fal.ai의 mask-aware 모델 (FLUX inpainting / ControlNet)
+    도입**. `falai` provider에 모델 옵션 확장. mask blob을 명시
+    채널로 활용. alimama-creative FLUX-Controlnet-Inpainting 또는
+    fal.ai 카탈로그의 다른 mask-aware FLUX.
+  - **B. source 전처리 강화**. `prepareOpenAISource`의 padded
+    square + neutral background을 FLUX path에도 적용. tendril
+    경계 모호함 줄임.
+  - **C. provider 책임 재배분**. Phase 1.4 가치를 "FLUX provider
+    가용성" 으로 한정하고 quality는 Phase 3 orchestrator의 anchor/
+    fan-out 분리 흐름에서 자연스럽게 처리. 단일 layer 편집은
+    OpenAI 안내.
+- **OpenAI 결과 quality 평가**. Criterion 5 결과 quality 부분은 사용자
+  image 추가 보고 대기. 별로다면 prompt 추가 정비 또는 refined-prompt
+  파이프라인 강화.
+
 ## 측정 결과 기록
 
 (사용자가 검증 수행 후 아래에 한 줄씩 append. 형식: `- [Criterion N]
@@ -238,10 +260,24 @@ YYYY-MM-DD: 측정값 / 관찰 / 통과 여부.`)
   로 fix) → 그 다음 우리 자체 status 404 (jobs Map module 분리,
   [PR #10](https://github.com/CocoRoF/geny-avatar/pull/10)로 fix) →
   최종 정상 호출 + 10.9 s 안에 결과 도착. **호출 가용성: 통과**.
-- **[Criterion 3 — 결과 quality] 2026-05-12**: FLUX 결과의 silhouette
-  외곽 1-3 px 띠가 원본 색 그대로 잔존 (white hair인데 outline 갈색).
-  이 entry 머지 후 별도 [PR](https://github.com/CocoRoF/geny-avatar/pulls?q=falai-prompt-scaffold)
-  로 FLUX provider prompt scaffold 추가 → 사용자 재테스트 대기.
+- **[Criterion 3 — 결과 quality] 2026-05-13**: 4단계 hotfix 후 character
+  feature hallucination 해소 ([#11](https://github.com/CocoRoF/geny-avatar/pull/11)
+  prompt scaffold → [#12](https://github.com/CocoRoF/geny-avatar/pull/12)
+  canonical-pose 제외 → [#13](https://github.com/CocoRoF/geny-avatar/pull/13)
+  character feature 금지 강제). "white hair" prompt에 silhouette
+  안에 face/eyes 그려넣지 않음. **기본 ship 통과**.
+
+  남은 한계 (known, ship 차단 아님):
+    - silhouette 외곽 1-2 px outline 갈색 잔존 (anime outline 보존
+      경향).
+    - silhouette tendril 끝부분 일부 영역이 transparent로 손실 (FLUX이
+      alpha 모호한 영역을 "주변"으로 분류).
+    - 외곽 quality는 OpenAI gpt-image-2에 비해 떨어짐.
+
+  사용자 의견: ControlNet-style mask-aware 모델로 업그레이드 권장
+  ("controlnet 같은 것도 제대로 좀 이용하든지 좀 제대로 업그레이드").
+  Phase 1.x 추가 작업 또는 Phase 3 orchestrator의 cheap provider
+  채택 단계에서 함께 처리.
 - **[Criterion 4] (대기)**: 빌트인 puppet 1-2개로 다음 회귀 흐름 1회
   점검 권장:
   1. 모델 로드 → 정상 렌더.
