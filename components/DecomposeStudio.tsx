@@ -560,21 +560,26 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
 
   /** Snapshot whichever canvas the current studio mode would write
    *  into. Returns null in modes we don't track (split). The
-   *  resulting map plugs straight into history.commit. */
-  const captureModeChanges = useCallback((): Map<CanvasKey, ImageData> | null => {
-    const changes = new Map<CanvasKey, ImageData>();
+   *  resulting map plugs straight into history.commit.
+   *
+   *  Snapshots use canvas-to-canvas drawImage instead of
+   *  getImageData → ImageData. Reading pixels off the live canvas
+   *  with getImageData triggers Chrome's willReadFrequently
+   *  heuristic, which demotes the canvas from GPU-backed to CPU-
+   *  backed storage after a handful of reads. That demotion is what
+   *  caused the "edit gets laggy after a few strokes" symptom: brush
+   *  stamps lose GPU acceleration AND the compositor's texImage2D
+   *  becomes a CPU→GPU upload instead of a GPU-to-GPU blit. drawImage
+   *  stays on the GPU end-to-end, so the live canvas keeps its
+   *  accelerated backing no matter how many snapshots we take. */
+  const captureModeChanges = useCallback((): Map<CanvasKey, HTMLCanvasElement> | null => {
+    const changes = new Map<CanvasKey, HTMLCanvasElement>();
     if (studioMode === "mask" && maskCanvasRef.current) {
-      const c = maskCanvasRef.current;
-      const ctx = c.getContext("2d");
-      if (!ctx) return null;
-      changes.set("mask", ctx.getImageData(0, 0, c.width, c.height));
+      changes.set("mask", cloneCanvas(maskCanvasRef.current));
       return changes;
     }
     if (studioMode === "paint" && paintCanvasRef.current) {
-      const c = paintCanvasRef.current;
-      const ctx = c.getContext("2d");
-      if (!ctx) return null;
-      changes.set("paint", ctx.getImageData(0, 0, c.width, c.height));
+      changes.set("paint", cloneCanvas(paintCanvasRef.current));
       return changes;
     }
     return null;
@@ -592,24 +597,25 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   );
 
   /** Restore the canvases from a history snapshot map. Called from
-   *  undo / redo / goto handlers. */
+   *  undo / redo / goto handlers. drawImage with composite="copy"
+   *  fully replaces the target pixels (handles the opaque-to-
+   *  transparent transition correctly without an explicit clear). */
   const applyHistorySnapshot = useCallback(
-    (snapshots: ReadonlyMap<CanvasKey, ImageData> | null) => {
+    (snapshots: ReadonlyMap<CanvasKey, HTMLCanvasElement> | null) => {
       if (!snapshots) return;
-      for (const [key, data] of snapshots) {
-        if (key === "mask" && maskCanvasRef.current) {
-          const ctx = maskCanvasRef.current.getContext("2d");
-          if (ctx && ctx.canvas.width === data.width && ctx.canvas.height === data.height) {
-            ctx.putImageData(data, 0, 0);
-          }
-        } else if (key === "paint" && paintCanvasRef.current) {
-          const ctx = paintCanvasRef.current.getContext("2d");
-          if (ctx && ctx.canvas.width === data.width && ctx.canvas.height === data.height) {
-            ctx.putImageData(data, 0, 0);
-          }
-        }
+      for (const [key, snap] of snapshots) {
+        let target: HTMLCanvasElement | null = null;
+        if (key === "mask") target = maskCanvasRef.current;
+        else if (key === "paint") target = paintCanvasRef.current;
         // region:* keys are reserved for split-mode history (not
         // wired yet; intentionally ignored if they ever appear).
+        if (!target) continue;
+        const ctx = target.getContext("2d");
+        if (!ctx) continue;
+        ctx.save();
+        ctx.globalCompositeOperation = "copy";
+        ctx.drawImage(snap, 0, 0, target.width, target.height);
+        ctx.restore();
       }
       markDirty();
       invalidatePreview();
@@ -635,21 +641,16 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   // Capture baseline whenever the editor (re)becomes ready: layer
   // load / HD-edge toggle / existingMask/Texture change all trigger
   // this. The pre-edit state is the natural anchor for "undo all
-  // the way back to the open state".
+  // the way back to the open state". Canvas-to-canvas clones (no
+  // getImageData) keep the live mask/paint canvases GPU-backed.
   // biome-ignore lint/correctness/useExhaustiveDependencies: history.setBaseline is stable
   useEffect(() => {
     if (!ready) return;
-    const baseline = new Map<CanvasKey, ImageData>();
+    const baseline = new Map<CanvasKey, HTMLCanvasElement>();
     const mask = maskCanvasRef.current;
-    if (mask) {
-      const ctx = mask.getContext("2d");
-      if (ctx) baseline.set("mask", ctx.getImageData(0, 0, mask.width, mask.height));
-    }
+    if (mask) baseline.set("mask", cloneCanvas(mask));
     const paint = paintCanvasRef.current;
-    if (paint) {
-      const ctx = paint.getContext("2d");
-      if (ctx) baseline.set("paint", ctx.getImageData(0, 0, paint.width, paint.height));
-    }
+    if (paint) baseline.set("paint", cloneCanvas(paint));
     history.setBaseline(baseline);
   }, [ready]);
 
@@ -2452,6 +2453,19 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
  *  thread it through their dep arrays. */
 function compositeForOp(op: BrushOp): GlobalCompositeOperation {
   return op === "add" ? "source-over" : "destination-out";
+}
+
+/** Clone a canvas via drawImage. Used for history snapshots — the
+ *  alternative (getImageData → ImageData) triggers Chrome's
+ *  willReadFrequently demotion path, which then forces the live
+ *  canvas off GPU acceleration. drawImage stays GPU-to-GPU. */
+function cloneCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = source.width;
+  out.height = source.height;
+  const ctx = out.getContext("2d");
+  if (ctx) ctx.drawImage(source, 0, 0);
+  return out;
 }
 
 /** Map a studio mode to the canvas that "owns" pixel mutation in
