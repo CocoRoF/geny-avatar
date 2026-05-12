@@ -153,6 +153,7 @@ export default function BuiltinEditPage({ params }: { params: Promise<{ key: str
             />
             <LayersPanel
               adapter={adapter}
+              app={app}
               puppetKey={`builtin:${key}`}
               onToggleLayer={toggleLayer}
               onBulkSet={bulkSetLayerVisibility}
