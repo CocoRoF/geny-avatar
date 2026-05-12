@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-phase1-3-verification-result.md](2026-05-13-phase1-3-verification-result.md) | 1.3 검증 결과 | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-falai-inpainting-model.md](2026-05-13-falai-inpainting-model.md) | 1.x ControlNet | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-phase1-3-verification-result.md](2026-05-13-phase1-3-verification-result.md) | 1.3 검증 결과 | [#14](https://github.com/CocoRoF/geny-avatar/pull/14) | done |
 | 2026-05-13 | [2026-05-13-falai-no-character-features.md](2026-05-13-falai-no-character-features.md) | 1.4 hotfix (3rd) | [#13](https://github.com/CocoRoF/geny-avatar/pull/13) | done |
 | 2026-05-13 | [2026-05-13-falai-skip-canonical-ref.md](2026-05-13-falai-skip-canonical-ref.md) | 1.2/1.4 hotfix | [#12](https://github.com/CocoRoF/geny-avatar/pull/12) | done |
 | 2026-05-13 | [2026-05-13-falai-prompt-scaffold.md](2026-05-13-falai-prompt-scaffold.md) | 1.4 follow-up | [#11](https://github.com/CocoRoF/geny-avatar/pull/11) | done |
