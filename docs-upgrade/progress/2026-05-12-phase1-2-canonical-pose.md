@@ -102,4 +102,5 @@
   - `components/GeneratePanel.tsx` (canonical ref 부착)
   - `app/edit/[avatarId]/page.tsx` (prop 전달)
   - `app/edit/builtin/[key]/page.tsx` (prop 전달)
-- PR: 이 entry가 포함된 PR이 머지될 때 main에 들어감.
+- PR [#3](https://github.com/CocoRoF/geny-avatar/pull/3) (squash-merge
+  `e42b155`).

@@ -47,5 +47,5 @@
 
 ## 참조
 
-- 작업 1 (이 entry): geny-avatar 디렉토리 내 직접 작업, 커밋 미수행
-  (사용자 승인 후 커밋 예정).
+- PR [#1](https://github.com/CocoRoF/geny-avatar/pull/1) (squash-merge
+  `966b294`).
