@@ -7,8 +7,17 @@
  *
  * Since this is an in-memory `Map`, it doesn't survive process restarts
  * or scale across instances. That's fine for a hobby-scale solo deploy;
- * production would back this with Redis or a DB. The map is module-level
- * to share state across route invocations within the same process.
+ * production would back this with Redis or a DB.
+ *
+ * **The Map lives on `globalThis`, not module scope.** Next.js dev mode
+ * (and especially Turbopack) can evaluate the same module more than
+ * once — once per route bundle, again on HMR — which gives each route
+ * its own private `Map` and silently breaks the
+ * generate-route-writes / status-route-reads contract: the client
+ * polls `/api/ai/status/{id}` and gets a 404 because that route's
+ * module instance never saw the `createJob` call from
+ * `/api/ai/generate`. Anchoring on `globalThis` is the singleton
+ * pattern Next.js recommends for this exact case.
  */
 import { randomUUID } from "node:crypto";
 import type { AIJobId, AIJobStatus, ProviderId } from "../types";
@@ -21,7 +30,14 @@ type ServerJob = {
   createdAt: number;
 };
 
-const jobs = new Map<AIJobId, ServerJob>();
+type JobGlobal = typeof globalThis & {
+  __genyAvatarJobs__?: Map<AIJobId, ServerJob>;
+};
+const jobsGlobal = globalThis as JobGlobal;
+if (!jobsGlobal.__genyAvatarJobs__) {
+  jobsGlobal.__genyAvatarJobs__ = new Map<AIJobId, ServerJob>();
+}
+const jobs = jobsGlobal.__genyAvatarJobs__;
 
 /** TTL: drop jobs older than 1h to keep memory bounded. */
 const JOB_TTL_MS = 60 * 60 * 1000;
