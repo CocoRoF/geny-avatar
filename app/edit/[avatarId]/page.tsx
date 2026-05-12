@@ -291,6 +291,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
             <VariantsPanel puppetKey={puppetId} adapter={adapter} onApplyVariant={applyVariant} />
             <LayersPanel
               adapter={adapter}
+              app={app}
               puppetKey={puppetId}
               onToggleLayer={toggleLayer}
               onBulkSet={bulkSetLayerVisibility}

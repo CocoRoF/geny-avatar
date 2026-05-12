@@ -1,5 +1,6 @@
 "use client";
 
+import type { Application } from "pixi.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
@@ -14,6 +15,7 @@ import {
   submitGenerate,
 } from "@/lib/ai/client";
 import type { ProviderId } from "@/lib/ai/types";
+import { renderPuppetReference } from "@/lib/avatar/canonicalPoseRender";
 import {
   bboxFromMask,
   type ComponentInfo,
@@ -35,6 +37,11 @@ import { useEditorStore } from "@/lib/store/editor";
 
 type Props = {
   adapter: AvatarAdapter | null;
+  /** Pixi Application instance behind the editor canvas. Used to capture
+   *  a full-character reference snapshot at submit time so AI calls
+   *  ride along with spatial context for the drawable being edited.
+   *  Null while the puppet is still loading. */
+  app: Application | null;
   layer: Layer;
   /** Stable puppet key for IDB job history. `null` disables persistence. */
   puppetKey: string | null;
@@ -55,7 +62,7 @@ type Props = {
  *   5. submitGenerate POSTs and polls until done; returns the result blob.
  *   6. Preview shown next to the source. Apply-to-atlas lands in 3.3.
  */
-export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
+export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
   const close = useEditorStore((s) => s.setGenerateLayer);
   const existingMask = useEditorStore((s) => s.layerMasks[layer.id] ?? null);
   const existingTexture = useEditorStore((s) => s.layerTextureOverrides[layer.id] ?? null);
@@ -986,6 +993,36 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         geminiMaskBlob = existingMask ?? undefined;
       }
 
+      // ── character reference snapshot ─────────────────────────────
+      // Capture the puppet's current rendered state once per submit
+      // and ride it along as the last image[] entry. Gives the model
+      // spatial context for what the edited drawable is part of (the
+      // face the hair frames, the body the jacket sits on). Appended
+      // rather than prepended so user-uploaded references stay the
+      // dominant anchor — the snapshot is context, not identity.
+      // Skipped when the budget is already full (>3 user refs leaves
+      // no slot for one more under gpt-image-2's image[] limit).
+      let characterRefBlob: Blob | null = null;
+      if (app && supportsRefs && activeRefBlobs.length <= 3) {
+        try {
+          characterRefBlob = await renderPuppetReference(app);
+        } catch (e) {
+          console.warn("[generate] character-ref capture failed; skipping", e);
+        }
+      }
+      const submitRefs: Blob[] = characterRefBlob
+        ? [...activeRefBlobs, characterRefBlob]
+        : activeRefBlobs;
+      console.info(
+        `[generate] character-ref: ${
+          characterRefBlob
+            ? `attached (${characterRefBlob.size}B, slot ${submitRefs.length})`
+            : app
+              ? `skipped (refs budget=${activeRefBlobs.length}, supportsRefs=${supportsRefs})`
+              : "skipped (no Pixi app)"
+        }`,
+      );
+
       // ── prompt refinement (optional) ────────────────────────────
       // When usePromptRefine is on AND the picked provider is OpenAI,
       // run the user's prompt through `/api/ai/refine-prompt` so the
@@ -1166,7 +1203,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
         );
 
         const settled = await Promise.allSettled(
-          prepared.map((_, idx) => runRegionGen(idx, prepared, baseText, activeRefBlobs)),
+          prepared.map((_, idx) => runRegionGen(idx, prepared, baseText, submitRefs)),
         );
 
         // G.8: same fix as regenerateOneRegion — read finalBlobs
@@ -1223,7 +1260,7 @@ export function GeneratePanel({ adapter, layer, puppetKey }: Props) {
           modelId: modelId || undefined,
           sourceImage: geminiSourceBlob,
           maskImage: geminiMaskBlob,
-          referenceImages: activeRefBlobs.length > 0 ? activeRefBlobs : undefined,
+          referenceImages: submitRefs.length > 0 ? submitRefs : undefined,
         });
         // No tight-crop / sourceBBox for Gemini — it reads native dims.
         processed = await postprocessGeneratedBlob({

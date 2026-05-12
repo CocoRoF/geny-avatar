@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import type { Application } from "pixi.js";
 import { useEffect, useMemo } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
@@ -26,6 +27,10 @@ type Props = {
   /** Adapter held by the parent page. Used to read texture page bitmaps
    *  for layer thumbnails. */
   adapter: AvatarAdapter | null;
+  /** Pixi Application from the parent page. Forwarded into GeneratePanel
+   *  so it can capture a full-character reference snapshot to attach as
+   *  image[2] in AI calls. Null while the puppet is still loading. */
+  app: Application | null;
   /** Stable identifier for the currently-loaded puppet — IDB PuppetId
    *  for uploaded puppets, `"builtin:${sampleKey}"` for built-in samples,
    *  or `null` when no IDB binding exists yet (transient — the editor
@@ -45,7 +50,7 @@ type Props = {
  * map from the store; reports clicks back through the parent so the page
  * can mirror the change to the adapter.
  */
-export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Props) {
+export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet }: Props) {
   const layers = useEditorStore(selectLayers);
   const visibility = useEditorStore((s) => s.visibilityOverrides);
   const filter = useEditorStore((s) => s.layerFilter);
@@ -199,7 +204,7 @@ export function LayersPanel({ adapter, puppetKey, onToggleLayer, onBulkSet }: Pr
         <DecomposeStudio adapter={adapter} layer={studioLayer} puppetKey={puppetKey} />
       )}
       {generateLayer && (
-        <GeneratePanel adapter={adapter} layer={generateLayer} puppetKey={puppetKey} />
+        <GeneratePanel adapter={adapter} app={app} layer={generateLayer} puppetKey={puppetKey} />
       )}
     </div>
   );
