@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-12 | [2026-05-12-phase1-4-falai-provider.md](2026-05-12-phase1-4-falai-provider.md) | 1.4 | (이 PR) | done |
+| 2026-05-12 | [2026-05-12-phase1-5-router.md](2026-05-12-phase1-5-router.md) | 1.5 | (이 PR) | done |
+| 2026-05-12 | [2026-05-12-phase1-4-falai-provider.md](2026-05-12-phase1-4-falai-provider.md) | 1.4 | [#6](https://github.com/CocoRoF/geny-avatar/pull/6) | done |
 | 2026-05-12 | [2026-05-12-phase1-6-cubism-prompt.md](2026-05-12-phase1-6-cubism-prompt.md) | 1.6 | [#4](https://github.com/CocoRoF/geny-avatar/pull/4) | done |
 | 2026-05-12 | [2026-05-12-phase1-2-canonical-pose.md](2026-05-12-phase1-2-canonical-pose.md) | 1.2 | [#3](https://github.com/CocoRoF/geny-avatar/pull/3) | done |
 | 2026-05-12 | [2026-05-12-phase1-1-mask-erosion.md](2026-05-12-phase1-1-mask-erosion.md) | 1.1 | [#2](https://github.com/CocoRoF/geny-avatar/pull/2) | done |
