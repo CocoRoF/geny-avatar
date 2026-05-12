@@ -226,7 +226,40 @@ negation + mask role + negative tail) 를 따르는지.
 (사용자가 검증 수행 후 아래에 한 줄씩 append. 형식: `- [Criterion N]
 YYYY-MM-DD: 측정값 / 관찰 / 통과 여부.`)
 
-> _아직 측정 안 됨._
+- **[Criterion 1] 2026-05-12**: 시각 검사 — 편집된 layer 합성 후
+  인접 island 영역에 색 침범 없음. **통과 (잠정)**. 더 다양한 모델
+  / 더 많은 케이스의 정량 측정은 Phase 3 eval 인프라와 함께.
+- **[Criterion 2] 2026-05-12**: 콘솔에 `[generate] character-ref:
+  attached (~B, slot N)` 정상 출력. user ref 0개일 때 slot 1에
+  부착. **통과**.
+- **[Criterion 3 — 호출 가용성] 2026-05-12**: FAL_KEY 세팅 후
+  initial 호출 시 403 (잔액 부족 — 사용자 충전) → 그 다음 405
+  (status URL 오류, [PR #9](https://github.com/CocoRoF/geny-avatar/pull/9)
+  로 fix) → 그 다음 우리 자체 status 404 (jobs Map module 분리,
+  [PR #10](https://github.com/CocoRoF/geny-avatar/pull/10)로 fix) →
+  최종 정상 호출 + 10.9 s 안에 결과 도착. **호출 가용성: 통과**.
+- **[Criterion 3 — 결과 quality] 2026-05-12**: FLUX 결과의 silhouette
+  외곽 1-3 px 띠가 원본 색 그대로 잔존 (white hair인데 outline 갈색).
+  이 entry 머지 후 별도 [PR](https://github.com/CocoRoF/geny-avatar/pulls?q=falai-prompt-scaffold)
+  로 FLUX provider prompt scaffold 추가 → 사용자 재테스트 대기.
+- **[Criterion 4] (대기)**: 빌트인 puppet 1-2개로 다음 회귀 흐름 1회
+  점검 권장:
+  1. 모델 로드 → 정상 렌더.
+  2. DecomposeStudio mask 편집 → save.
+  3. GeneratePanel OpenAI provider → 단일 region → generate → apply.
+  4. multi-region 모델에서 generate-all → apply.
+  5. 같은 layer 다시 generate (previous result chain) → apply.
+  6. Variant 저장 / 적용 / 삭제.
+  7. 모델 export → 다른 환경에서 재로드.
+  - 사용자 환경 부담을 줄여 모든 흐름 / 모든 모델은 필수 아님.
+    하나의 모델에서 모든 흐름이 회귀 없으면 통과 잠정.
+- **[Criterion 5 — prompt 구조] 2026-05-12**: 콘솔 `composed prompt:`
+  출력에 4 섹션 (`[image 1] is the canvas`, `Edit [image 1]:`,
+  `Keep [image 1]'s silhouette`, `Style: anime / illustration. NOT
+  photoreal`) 모두 포함 확인. **구조 통과**.
+- **[Criterion 5 — quality]**: OpenAI 결과 image의 정성 평가는 별도
+  사용자 보고 필요. 외곽 잔존 / 머리 모양 변형 / 색 부정확 중 어느
+  것인지에 따라 hotfix 방향 결정.
 
 ## 다음 작업
 
