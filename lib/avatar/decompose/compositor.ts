@@ -65,6 +65,8 @@ export interface RegionInput {
 
 export type CompositorBackend = "webgl2" | "canvas2d";
 
+export type DirtyKey = "source" | "mask" | "paint" | "thresh" | "regions";
+
 export interface Compositor {
   /** Backend the compositor ended up using. WebGL2 is preferred but
    *  the fallback handles every browser the editor cares about. */
@@ -75,12 +77,19 @@ export interface Compositor {
   /** Tell the compositor the threshold value changed. The threshold
    *  mask cache is rebuilt lazily before the next render. */
   invalidateThreshold(): void;
+  /** Tell the compositor that a specific input canvas's pixel
+   *  content changed in place (brush stroke / wand apply / etc.)
+   *  even though the canvas reference is unchanged. Only WebGL2
+   *  needs this — Canvas 2D re-reads the canvases every render
+   *  anyway. */
+  markDirty(key: DirtyKey): void;
   /** Schedule a render on the next animation frame. Multiple calls
    *  within the same frame coalesce. */
   invalidate(): void;
   /** Set the inputs (any subset). The compositor takes ownership of
    *  the references; mutating the underlying canvases after this
-   *  call is fine — the next render reads the current contents. */
+   *  call is fine — the next render reads the current contents.
+   *  Canvas-identity changes auto-mark the affected key dirty. */
   setInputs(inputs: Partial<CompositorInputs>): void;
   /** Force a synchronous render right now (e.g. on save). */
   renderSync(): void;
@@ -236,6 +245,12 @@ class Canvas2DCompositor implements Compositor {
 
   invalidateThreshold(): void {
     this.threshDirty = true;
+  }
+
+  markDirty(_key: DirtyKey): void {
+    // Canvas 2D backend re-reads every input canvas on each render
+    // anyway, so dirty hints are no-ops here. The method exists to
+    // satisfy the shared Compositor interface.
   }
 
   invalidate(): void {
@@ -445,6 +460,18 @@ class GLCompositor implements Compositor {
   private texRegions: WebGLTexture[] = [];
   private threshCanvas: HTMLCanvasElement | null = null;
   private threshDirty = true;
+  /** Per-input upload dirty bits. A brush stroke writes to a single
+   *  canvas in place; without these flags every render would re-
+   *  upload every texture (~ 12 MB / frame), so paint mode at high
+   *  pen rates burns ~ 1 GB/s of upload bandwidth for no good reason.
+   *  Studio call sites set the relevant key when they mutate the
+   *  matching canvas; setInputs auto-sets on identity change. */
+  private dirtyTex = {
+    source: true,
+    mask: true,
+    paint: true,
+    regions: true,
+  };
   private inputs: CompositorInputs = { ...EMPTY_INPUTS };
   private rafId = 0;
   private contextLost = false;
@@ -516,12 +543,30 @@ class GLCompositor implements Compositor {
     }
     if (patch.source !== undefined && patch.source !== this.inputs.source) {
       this.threshDirty = true;
+      this.dirtyTex.source = true;
+    }
+    if (patch.mask !== undefined && patch.mask !== this.inputs.mask) {
+      this.dirtyTex.mask = true;
+    }
+    if (patch.paint !== undefined && patch.paint !== this.inputs.paint) {
+      this.dirtyTex.paint = true;
+    }
+    if (patch.regions !== undefined && patch.regions !== this.inputs.regions) {
+      this.dirtyTex.regions = true;
     }
     this.inputs = { ...this.inputs, ...patch };
   }
 
   invalidateThreshold(): void {
     this.threshDirty = true;
+  }
+
+  markDirty(key: DirtyKey): void {
+    if (key === "thresh") {
+      this.threshDirty = true;
+      return;
+    }
+    this.dirtyTex[key] = true;
   }
 
   invalidate(): void {
@@ -547,18 +592,34 @@ class GLCompositor implements Compositor {
     gl.clear(gl.COLOR_BUFFER_BIT);
     if (!source) return;
 
-    // Upload textures from canvases. Browsers blit canvas→texture
-    // on the GPU side; this isn't the readback path that
-    // getImageData triggers.
-    this.uploadTexture(this.texSource, source, gl.TEXTURE0);
+    // Per-texture upload-or-bind. Dirty bits track which canvases
+    // had their pixels mutated since the last render; clean
+    // textures are just rebound to their sampler slot (cheap), only
+    // dirty ones re-upload to VRAM (4 MB each for a 1024² source).
+    if (this.dirtyTex.source) {
+      this.uploadTexture(this.texSource, source, gl.TEXTURE0);
+      this.dirtyTex.source = false;
+    } else {
+      this.bindTextureOnly(this.texSource, gl.TEXTURE0);
+    }
     let hasMask = false;
     if (mask) {
-      this.uploadTexture(this.texMask, mask, gl.TEXTURE1);
+      if (this.dirtyTex.mask) {
+        this.uploadTexture(this.texMask, mask, gl.TEXTURE1);
+        this.dirtyTex.mask = false;
+      } else {
+        this.bindTextureOnly(this.texMask, gl.TEXTURE1);
+      }
       hasMask = true;
     }
     let hasPaint = false;
     if (paint) {
-      this.uploadTexture(this.texPaint, paint, gl.TEXTURE2);
+      if (this.dirtyTex.paint) {
+        this.uploadTexture(this.texPaint, paint, gl.TEXTURE2);
+        this.dirtyTex.paint = false;
+      } else {
+        this.bindTextureOnly(this.texPaint, gl.TEXTURE2);
+      }
       hasPaint = true;
     }
     let hasThresh = false;
@@ -566,9 +627,13 @@ class GLCompositor implements Compositor {
       if (this.threshDirty) {
         this.threshCanvas = bakeThresholdMask(source, threshold, this.threshCanvas);
         this.threshDirty = false;
-      }
-      if (this.threshCanvas) {
-        this.uploadTexture(this.texThresh, this.threshCanvas, gl.TEXTURE3);
+        // Threshold canvas was rebuilt — upload mandatory.
+        if (this.threshCanvas) {
+          this.uploadTexture(this.texThresh, this.threshCanvas, gl.TEXTURE3);
+          hasThresh = true;
+        }
+      } else if (this.threshCanvas) {
+        this.bindTextureOnly(this.texThresh, gl.TEXTURE3);
         hasThresh = true;
       }
     }
@@ -587,15 +652,22 @@ class GLCompositor implements Compositor {
     gl.uniform1i(this.uniforms.uHasThresh!, hasThresh ? 1 : 0);
 
     // Split mode region uploads. We only count active regions —
-    // shader loops break out at uRegionCount.
+    // shader loops break out at uRegionCount. Regions are uploaded
+    // every render when the dirty bit is set; the cost of tracking
+    // per-region dirty bits isn't worth it for a max of 8 regions.
     let regionCount = 0;
     if (studioMode === "split") {
       const colors = new Float32Array(8 * 3);
       const alphas = new Float32Array(8);
+      const regionsDirty = this.dirtyTex.regions;
       for (let i = 0; i < Math.min(regions.length, 8); i++) {
         const r = regions[i];
         if (focusRegionId && r.id !== focusRegionId) continue;
-        this.uploadTexture(this.texRegions[regionCount], r.canvas, gl.TEXTURE4 + regionCount);
+        if (regionsDirty) {
+          this.uploadTexture(this.texRegions[regionCount], r.canvas, gl.TEXTURE4 + regionCount);
+        } else {
+          this.bindTextureOnly(this.texRegions[regionCount], gl.TEXTURE4 + regionCount);
+        }
         gl.uniform1i(this.regionUniforms[regionCount]!, 4 + regionCount);
         const [cr, cg, cb] = hexToVec3(r.color);
         colors[regionCount * 3 + 0] = cr;
@@ -607,6 +679,7 @@ class GLCompositor implements Compositor {
       }
       gl.uniform3fv(this.uniforms.uRegionColor!, colors);
       gl.uniform1fv(this.uniforms.uRegionAlpha!, alphas);
+      this.dirtyTex.regions = false;
     }
     gl.uniform1i(this.uniforms.uRegionCount!, regionCount);
 
@@ -614,6 +687,13 @@ class GLCompositor implements Compositor {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // premultiplied
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
+  }
+
+  private bindTextureOnly(tex: WebGLTexture | null, unit: number): void {
+    if (!tex) return;
+    const gl = this.gl;
+    gl.activeTexture(unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
   }
 
   private uploadTexture(tex: WebGLTexture | null, canvas: HTMLCanvasElement, unit: number): void {

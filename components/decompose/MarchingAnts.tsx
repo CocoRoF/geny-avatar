@@ -1,40 +1,48 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { selectionOutline } from "@/lib/avatar/decompose/wandSelection";
 
 /**
- * Marching-ants overlay for a wand selection.
+ * Marching-ants overlay for the magic wand selection.
  *
- * Why this exists vs the old "translucent blue fill":
- *   - Photoshop convention. Marching ants is the universal "this is
- *     a selection" signal — solid fills imply paint, not selection.
- *   - The fill obscured the underlying texture so the user couldn't
- *     see exactly what was selected vs not at the seam.
+ * Design:
  *
- * Implementation:
- *   1. Pre-compute a 1-pixel boundary canvas from the selection
- *      (white where selection ends, transparent elsewhere). Same
- *      dimensions as source, so the parent's CSS transform — which
- *      already handles zoom / pan — places the ants correctly.
- *   2. Render the boundary canvas twice on top of the preview, with
- *      alternating colours (white/black) animated via CSS dashed
- *      mask-pattern offset. Since the boundary is already a 1-px
- *      ring, animating *colour* across time produces the same
- *      perceptual effect as classic crawling-ants without needing a
- *      contour walk + SVG path.
+ *   1. Pre-compute the 1-pixel selection boundary as an alpha mask
+ *      (`selectionOutline`). Same dimensions as the source.
  *
- * The ring image is regenerated only when the selection identity
- * changes, so a 10 Hz animation tick is just two cheap CSS prop
- * tweaks (no canvas work per frame).
+ *   2. Render a single absolutely-positioned <div> sized to the
+ *      canvas wrapper. The boundary canvas becomes its CSS
+ *      `mask-image`, so only pixels along the selection edge are
+ *      visible — everything else is clipped away.
+ *
+ *   3. The div's `background-image` is a diagonal black/white
+ *      repeating-linear-gradient (the dash pattern). Combined with
+ *      the boundary mask, only the dashes that fall along the edge
+ *      pixels are rendered.
+ *
+ *   4. A rAF loop continuously updates `background-position` so the
+ *      dashes scroll along the contour. Pure CSS style mutation —
+ *      no React re-renders, no per-frame canvas work, no per-frame
+ *      JS layout.
+ *
+ * Why this is better than the previous implementation:
+ *
+ *   The earlier version stacked the SAME outline canvas TWICE at
+ *   different `background-position` offsets to fake the "two
+ *   colours marching" look. That literally rendered the line twice
+ *   at 1px-apart positions, so users saw a doubled / slightly
+ *   misaligned outline. Replacing the dual-image trick with a
+ *   single masked gradient produces ONE crisp line whose fill
+ *   actually moves.
  */
 export interface MarchingAntsProps {
   selection: HTMLCanvasElement;
-  /** Source dimensions — the boundary is drawn at source resolution
-   *  and the parent CSS already maps it onto the preview. */
+  /** Source dimensions — recorded for debugging; the actual mapping
+   *  is handled by CSS (`mask-size: 100% 100%` stretches the
+   *  source-dim boundary to fit the canvas wrapper). */
   sourceWidth: number;
   sourceHeight: number;
-  /** CSS class for the absolutely-positioned wrapper. */
   className?: string;
 }
 
@@ -44,59 +52,63 @@ export function MarchingAnts({
   sourceHeight,
   className,
 }: MarchingAntsProps) {
-  // The boundary canvas is expensive (full-image scan) but only
-  // changes when the selection changes — useMemo keys on the
-  // selection instance.
+  // The outline is only as expensive as the selection allows; useMemo
+  // keys on the selection identity so a re-mount of MarchingAnts
+  // with the same selection skips rebuilding.
   const outline = useMemo(() => selectionOutline(selection), [selection]);
-  const dataUrl = useMemo(() => outline.toDataURL("image/png"), [outline]);
+  const maskUrl = useMemo(() => outline.toDataURL("image/png"), [outline]);
 
-  // Animate the dash phase via a simple frame counter — gives the
-  // classic "ants crawling" perceptual effect by swapping the
-  // outline image's box-shadow direction without redrawing the
-  // canvas. requestAnimationFrame ticked at ~ 8 Hz keeps CPU near 0.
-  const [phase, setPhase] = useState(0);
-  const lastRef = useRef(0);
+  const elementRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let raf = 0;
-    const ANT_HZ = 8;
-    const tick = (t: number) => {
-      if (t - lastRef.current > 1000 / ANT_HZ) {
-        lastRef.current = t;
-        setPhase((p) => (p + 1) & 1);
+    let cancelled = false;
+    const tick = (now: number) => {
+      if (cancelled) return;
+      const el = elementRef.current;
+      if (el) {
+        // 8px diagonal stripe period; scroll one full period every
+        // ~600ms. Matches Photoshop's marching cadence — fast enough
+        // to feel "selected", slow enough not to twitch.
+        const period = 11.3137085; // 8 * sqrt(2) for a -45deg pattern
+        const offset = (now / 60) % period;
+        el.style.backgroundPosition = `${offset}px 0`;
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
   }, []);
 
   return (
     <div
+      ref={elementRef}
       aria-hidden="true"
       className={`pointer-events-none absolute inset-0 ${className ?? ""}`}
       style={{
-        // Two stacked images: dark ring + white ring. We swap the
-        // backgroundPosition (1 px diagonal) on each phase tick so
-        // the eye sees crawling pixels. The single-pixel ring data
-        // URL is the same; only the offset alternates.
-        backgroundImage: `url(${dataUrl}), url(${dataUrl})`,
-        backgroundSize: "100% 100%, 100% 100%",
-        backgroundRepeat: "no-repeat, no-repeat",
-        backgroundPosition: phase === 0 ? "0 0, 1px 1px" : "1px 0, 0 1px",
-        backgroundBlendMode: "normal",
-        // Filter tints both layers. The first to white (via a
-        // brightness/contrast push), the second is the source —
-        // gives a soft white-on-black ant trail readable on any
-        // texture without obscuring it.
-        filter: "drop-shadow(0 0 1px rgba(0,0,0,0.85))",
-        mixBlendMode: "normal",
+        // CSS mask clips the gradient to the selection's 1-px
+        // boundary — everything outside that ring is transparent.
+        // The -webkit- prefix is still required for Safari < 17.
+        WebkitMaskImage: `url(${maskUrl})`,
+        WebkitMaskSize: "100% 100%",
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskPosition: "0 0",
+        maskImage: `url(${maskUrl})`,
+        maskSize: "100% 100%",
+        maskRepeat: "no-repeat",
+        maskPosition: "0 0",
+        // Diagonal black/white dashes, repeating every 8px. The
+        // animation in the effect above slides the position to make
+        // dashes appear to march along the boundary.
+        backgroundImage:
+          "repeating-linear-gradient(-45deg, #ffffff 0, #ffffff 4px, #000000 4px, #000000 8px)",
+        // Pixelated rendering keeps the 1-px outline crisp when the
+        // wrapper is zoomed; without this the mask resamples with
+        // bilinear smoothing and the line looks fuzzy at deep zoom.
         imageRendering: "pixelated",
-        width: "100%",
-        height: "100%",
       }}
-      // Reserved attributes so future devs can find the wrapper —
-      // not used by the layout itself.
-      data-marching-ants
       data-w={sourceWidth}
       data-h={sourceHeight}
     />

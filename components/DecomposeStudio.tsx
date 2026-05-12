@@ -444,38 +444,39 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  refs / state below) and schedules a render. Used after any
    *  mutation that the compositor can't see (e.g. brush strokes
    *  writing into the mask canvas don't fire a React re-render). */
-  const invalidatePreview = useCallback(() => {
-    const c = compositorRef.current;
-    if (!c) return;
-    c.setInputs({
-      source: sourceCanvasRef.current,
-      mask: maskCanvasRef.current,
-      paint: paintCanvasRef.current,
-      regions: regionEntries
-        .map((e) => {
-          const canvas = regionCanvasMap.current.get(e.id);
-          return canvas ? { id: e.id, color: e.color, canvas } : null;
-        })
-        .filter((r): r is { id: string; color: string; canvas: HTMLCanvasElement } => r !== null),
-      studioMode,
-      threshold,
-      focusRegionId,
-      selectedRegionId,
-    });
-    // Paint mode renders synchronously: the user is direct-manipulating
-    // texture pixels and any latency between stamping and visual
-    // feedback feels like a broken brush. The rAF coalescing the
-    // compositor does for trim/split is unnecessary here because paint
-    // mode's frag shader is a single texture sample (cheap) and the
-    // user wants to SEE every dab the moment it lands. Trim and split
-    // keep rAF coalescing because their compositor paths are heavier
-    // (region tints, threshold cache).
-    if (studioMode === "paint") {
-      c.renderSync();
-    } else {
+  const invalidatePreview = useCallback(
+    (dirty?: { mask?: boolean; paint?: boolean; regions?: boolean; source?: boolean }) => {
+      const c = compositorRef.current;
+      if (!c) return;
+      c.setInputs({
+        source: sourceCanvasRef.current,
+        mask: maskCanvasRef.current,
+        paint: paintCanvasRef.current,
+        regions: regionEntries
+          .map((e) => {
+            const canvas = regionCanvasMap.current.get(e.id);
+            return canvas ? { id: e.id, color: e.color, canvas } : null;
+          })
+          .filter((r): r is { id: string; color: string; canvas: HTMLCanvasElement } => r !== null),
+        studioMode,
+        threshold,
+        focusRegionId,
+        selectedRegionId,
+      });
+      // Tell the compositor exactly which canvas's pixels changed
+      // since last render, so it can skip uploading the others. When
+      // the caller doesn't pass a hint we mark the active mode's
+      // working canvas — safe default for "something inside the
+      // canvas got mutated."
+      const hint = dirty ?? defaultDirtyForMode(studioMode);
+      if (hint.source) c.markDirty("source");
+      if (hint.mask) c.markDirty("mask");
+      if (hint.paint) c.markDirty("paint");
+      if (hint.regions) c.markDirty("regions");
       c.invalidate();
-    }
-  }, [regionEntries, studioMode, threshold, focusRegionId, selectedRegionId]);
+    },
+    [regionEntries, studioMode, threshold, focusRegionId, selectedRegionId],
+  );
 
   // Set up the compositor + ResizeObserver for the preview canvas.
   // Resize the preview backing so it matches the layout dim *× DPR*
@@ -2451,6 +2452,21 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
  *  thread it through their dep arrays. */
 function compositeForOp(op: BrushOp): GlobalCompositeOperation {
   return op === "add" ? "source-over" : "destination-out";
+}
+
+/** Map a studio mode to the canvas that "owns" pixel mutation in
+ *  that mode. Used as the default dirty hint for invalidatePreview
+ *  when a caller doesn't specify one — saves passing redundant
+ *  `{ mask: true }` everywhere a mask-mode stroke ends. */
+function defaultDirtyForMode(mode: StudioMode): {
+  source?: boolean;
+  mask?: boolean;
+  paint?: boolean;
+  regions?: boolean;
+} {
+  if (mode === "mask") return { mask: true };
+  if (mode === "paint") return { paint: true };
+  return { regions: true };
 }
 
 /** Return a Path2D that's the input path transformed by a uniform
