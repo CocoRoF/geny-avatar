@@ -198,26 +198,31 @@ export class FalAIProvider implements AIProvider {
   /**
    * Build the instruction string for flux-2/edit.
    *
-   * flux-2/edit is instruction-following: short prompts get a faithful
-   * "change only what was asked" behaviour. The default failure mode
-   * is the model leaving the silhouette outline untouched (it reads
-   * "the outline is the boundary, don't paint past it") and stamping
-   * source-coloured pixels along the silhouette edge — even when the
-   * intent is a full colour replacement.
+   * flux-2/edit is instruction-following but biased toward "complete
+   * the character" when handed an isolated atlas crop. Two failure
+   * modes observed in this pipeline:
    *
-   * Two fixes packed into the scaffold:
+   *   1. **Hallucinated character features.** Hand it a hair-only
+   *      atlas crop and it fills the silhouette interior with a face,
+   *      eyes, body — interpreting the crop as a character thumbnail
+   *      instead of an isolated texture region. The alpha-clip in
+   *      postprocess passes those pixels through because they sit
+   *      inside the silhouette.
+   *   2. **Outline retention.** It reads the silhouette outline as
+   *      "the boundary stays" and stamps source-coloured pixels
+   *      along the edge even when the intent is a full colour change.
    *
-   *   1. **Edge-to-edge instruction** — explicit "fill the entire
-   *      silhouette including outline pixels" so the boundary band
-   *      doesn't retain source colour.
-   *   2. **Reference role** — image_urls[1+] may include a full-
-   *      character snapshot (Phase 1.2). flux-2 defaults to treating
-   *      reference images as style anchors, which causes source-
-   *      character colour bleed onto the edit. Telling it to use refs
-   *      as spatial context only keeps the user intent intact.
+   * The scaffold attacks both:
    *
-   * The user's prompt sits at the end so the model treats it as the
-   * primary instruction, not buried under scaffolding.
+   *   - Names the input as a texture region, not a thumbnail.
+   *   - Forbids adding character features (face / eyes / body /
+   *     accessory). Strongest signal flux-2 honours.
+   *   - "Edge to edge" instruction for outline replacement.
+   *   - Style negation to avoid photoreal drift.
+   *   - Reference role disambiguation when refs are attached.
+   *
+   * The user's intent sits last so the model treats it as the primary
+   * instruction, not buried under scaffolding.
    */
   private composePrompt(input: ProviderGenerateInput): string {
     const userIntent = (input.refinedPrompt ?? input.prompt).trim();
@@ -225,11 +230,12 @@ export class FalAIProvider implements AIProvider {
     const hasRefs = refs.length > 0;
 
     const parts: string[] = [
-      "[image 1] is one drawable of a multi-part Live2D-style 2D rigged puppet (hair, face, top, etc.).",
+      "[image 1] is an ISOLATED ATLAS TEXTURE REGION (e.g. hair only, jacket only, accessory only) belonging to one drawable of a multi-part Live2D-style 2D rigged puppet. It is NOT a portrait or character thumbnail.",
+      "DO NOT add face, eyes, mouth, body, hands, accessories, or any character feature that is not already present in [image 1]. Modify ONLY the pixels of the existing texture region; the rest of the character lives in other drawables and must not leak in.",
     ];
     if (hasRefs) {
       parts.push(
-        "Subsequent images (image_urls[1+]) are spatial context only — they show the whole character so you understand what part [image 1] is. DO NOT transfer their colours or style onto [image 1].",
+        "Subsequent images (image_urls[1+]) are visual references for desired look only. DO NOT transfer their composition or non-target regions onto [image 1].",
       );
     }
     parts.push(`Edit instruction: ${userIntent.length > 0 ? userIntent : "(none — no-op edit)"}`);
@@ -237,7 +243,7 @@ export class FalAIProvider implements AIProvider {
       "Apply the edit edge to edge: replace the ENTIRE [image 1] silhouette including its outline pixels, not just the interior. The original outline colour must not be preserved when the instruction implies a colour change.",
     );
     parts.push(
-      "Style: anime / illustration, soft cel shading. NOT photoreal. NOT 3D. NOT live-action.",
+      "Style: anime / illustration, soft cel shading. NOT photoreal. NOT 3D. NOT live-action. Output stays an isolated texture region with transparent background — no scene, no character body filled in.",
     );
 
     return parts.join("\n\n");
