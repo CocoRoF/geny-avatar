@@ -120,22 +120,32 @@ export function toolForShortcut(key: string): ToolId | null {
 export type BrushOp = "add" | "remove";
 
 /** Studio mode the editor is currently in. Each mode has its own
- *  meaning for brush "add" / "remove" semantics — trim hides /
- *  reveals pixels via a single mask, split adds / removes pixels
- *  to / from named region masks, and paint actually paints colour
- *  pixels onto the layer texture (an eraser in paint mode wipes
- *  pixels to transparent rather than touching any mask). */
-export type StudioMode = "trim" | "split" | "paint";
+ *  meaning for brush "add" / "remove" semantics:
+ *   - "mask"  — single visibility mask. Brush hides pixels in the
+ *               final output; eraser reveals them. Saved to
+ *               layerMasks.
+ *   - "split" — multi-region named masks. Brush adds pixels into a
+ *               region; eraser removes them. Saved to regionMasks.
+ *   - "paint" — direct texture painting. Brush writes colour
+ *               pixels; eraser wipes pixels to transparent. Saved
+ *               to layerTextureOverrides.
+ *
+ * (The mask mode was historically labelled "trim" — that wording
+ *  hid what it actually does. Internally and in the UI it's now
+ *  called "mask" since that's the entire mental model.) */
+export type StudioMode = "mask" | "split" | "paint";
 
 /** Returns the user-visible mode-aware label pair for the brush op
- *  selector — the OptionsBar shows this beside the active brush /
- *  eraser / bucket so the user knows what the stroke will do. */
+ *  selector. Brush + eraser no longer expose this toggle directly —
+ *  eraser is "remove" by definition, brush is "add". The labels are
+ *  still consumed by the Bucket's mode toggle and the WandActionBar's
+ *  Apply / Subtract buttons. */
 export function brushOpLabels(studioMode: StudioMode): {
   add: string;
   remove: string;
 } {
-  if (studioMode === "trim") {
-    // Trim mode masks hide pixels.
+  if (studioMode === "mask") {
+    // Mask mode hides pixels in the final output.
     return { add: "Hide", remove: "Reveal" };
   }
   if (studioMode === "paint") {

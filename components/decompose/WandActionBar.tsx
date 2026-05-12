@@ -52,7 +52,7 @@ export function WandActionBar({
   onDeselect,
 }: WandActionBarProps) {
   const labels =
-    studioMode === "trim"
+    studioMode === "mask"
       ? { add: "Hide", remove: "Reveal" }
       : studioMode === "paint"
         ? { add: "Fill", remove: "Erase" }

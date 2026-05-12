@@ -129,12 +129,9 @@ export function OptionsBar(props: OptionsBarProps) {
       <div className="flex min-w-0 flex-1 items-center gap-3">
         {(selectedTool === "brush" || selectedTool === "eraser") && (
           <BrushOptions
-            tool={selectedTool}
             studioMode={studioMode}
             brushSize={brushSize}
             onBrushSize={onBrushSize}
-            brushOp={brushOp}
-            onBrushOp={onBrushOp}
             brushHardness={brushHardness}
             onBrushHardness={onBrushHardness}
             pressureSize={pressureSize}
@@ -178,9 +175,9 @@ export function OptionsBar(props: OptionsBarProps) {
         )}
       </div>
 
-      {/* Trim threshold lives on the right since it applies all the
-          time in trim mode regardless of the selected tool. */}
-      {studioMode === "trim" && (
+      {/* Mask threshold lives on the right since it applies all the
+          time in mask mode regardless of the selected tool. */}
+      {studioMode === "mask" && (
         <div className="flex items-center gap-2">
           <span className="text-[var(--color-fg-dim)]">Alpha:</span>
           <input
@@ -239,12 +236,9 @@ export function OptionsBar(props: OptionsBarProps) {
 }
 
 function BrushOptions({
-  tool,
   studioMode,
   brushSize,
   onBrushSize,
-  brushOp,
-  onBrushOp,
   brushHardness,
   onBrushHardness,
   pressureSize,
@@ -254,12 +248,9 @@ function BrushOptions({
   highDpiMask,
   onHighDpiMask,
 }: {
-  tool: "brush" | "eraser";
   studioMode: StudioMode;
   brushSize: number;
   onBrushSize: (n: number) => void;
-  brushOp: BrushOp;
-  onBrushOp: (op: BrushOp) => void;
   brushHardness: number;
   onBrushHardness: (n: number) => void;
   pressureSize: boolean;
@@ -269,38 +260,14 @@ function BrushOptions({
   highDpiMask: boolean;
   onHighDpiMask: (v: boolean) => void;
 }) {
-  const labels = brushOpLabels(studioMode);
+  // The brush + eraser tools intentionally don't expose a "Mode"
+  // toggle anymore. Brush always adds, eraser always removes —
+  // pressing X swaps between the two tools (the Photoshop B↔E
+  // pattern, handled by the studio's keydown handler). The Bucket
+  // keeps its toggle since there's no "eraser-flavoured bucket"
+  // tool to flip to.
   return (
     <>
-      {tool === "brush" && (
-        <div className="flex items-center gap-1">
-          <span className="text-[var(--color-fg-dim)]">Mode:</span>
-          <button
-            type="button"
-            onClick={() => onBrushOp("add")}
-            className={`rounded border px-2 py-0.5 ${
-              brushOp === "add"
-                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-            }`}
-            title={`${labels.add} — ${studioMode === "trim" ? "스트로크한 픽셀을 마스크로 숨김" : "선택된 영역에 픽셀 추가"}`}
-          >
-            {labels.add}
-          </button>
-          <button
-            type="button"
-            onClick={() => onBrushOp("remove")}
-            className={`rounded border px-2 py-0.5 ${
-              brushOp === "remove"
-                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-            }`}
-            title={`${labels.remove} — X 키로 토글`}
-          >
-            {labels.remove}
-          </button>
-        </div>
-      )}
       <div className="flex items-center gap-2">
         <span className="text-[var(--color-fg-dim)]">Size:</span>
         <input
@@ -345,7 +312,7 @@ function BrushOptions({
           label="Opacity"
         />
       </div>
-      {studioMode === "trim" && (
+      {studioMode === "mask" && (
         <Toggle
           on={highDpiMask}
           onToggle={() => onHighDpiMask(!highDpiMask)}

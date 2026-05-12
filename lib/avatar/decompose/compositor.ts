@@ -126,7 +126,7 @@ const EMPTY_INPUTS: CompositorInputs = {
   mask: null,
   paint: null,
   regions: [],
-  studioMode: "trim",
+  studioMode: "mask",
   threshold: 0,
   focusRegionId: null,
   selectedRegionId: null,
@@ -281,7 +281,7 @@ class Canvas2DCompositor implements Compositor {
       return;
     }
 
-    // Trim mode: composite source × (1 − effectiveMask) where
+    // Mask mode: composite source × (1 − effectiveMask) where
     // effectiveMask = thresholdMask ∪ mask.
     //
     // Algorithm (no pixel loop):
@@ -419,7 +419,7 @@ void main() {
     fragColor = col;
     return;
   }
-  // Trim mode: source × (1 − effective_mask).
+  // Mask mode: source × (1 − effective_mask).
   float m = 0.0;
   if (uHasMask)   m = max(m, texture(uMask,   vUv).a);
   if (uHasThresh) m = max(m, texture(uThresh, vUv).a);
@@ -577,7 +577,7 @@ class GLCompositor implements Compositor {
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
 
-    gl.uniform1i(this.uniforms.uMode!, studioMode === "trim" ? 0 : studioMode === "split" ? 1 : 2);
+    gl.uniform1i(this.uniforms.uMode!, studioMode === "mask" ? 0 : studioMode === "split" ? 1 : 2);
     gl.uniform1i(this.uniforms.uSource!, 0);
     gl.uniform1i(this.uniforms.uMask!, 1);
     gl.uniform1i(this.uniforms.uPaint!, 2);

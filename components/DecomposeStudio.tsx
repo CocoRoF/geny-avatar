@@ -67,7 +67,7 @@ type Props = {
 type BrushMode = "paint" | "erase" | "auto";
 /**
  * Top mode toggle (StudioMode imported from `lib/avatar/decompose/tools`):
- *   - "trim"  — single-mask paint/erase. Saves to
+ *   - "mask"  — single-mask paint/erase. Saves to
  *               `editorStore.layerMasks[layer.id]`.
  *   - "split" — multi-region painter. Each named region has its own
  *               binary mask; brush paints into the selected region.
@@ -224,7 +224,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   // metadata: id, name, color). Painting in split mode writes into
   // the canvas for the currently-selected region; save bakes each
   // canvas to a PNG blob and persists the bundle to IDB.
-  const [studioMode, setStudioMode] = useState<StudioMode>("trim");
+  const [studioMode, setStudioMode] = useState<StudioMode>("mask");
   const {
     regions: persistedRegions,
     save: saveRegions,
@@ -1128,7 +1128,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   }, [viewport.onWheel, viewport]);
 
   // ----- save / clear / close -----
-  const onSaveTrim = useCallback(async () => {
+  const onSaveMask = useCallback(async () => {
     const mask = maskCanvasRef.current;
     const source = sourceCanvasRef.current;
     if (!mask || !source) return;
@@ -1477,8 +1477,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
   const onSave = useCallback(async () => {
     if (studioMode === "split") await onSaveSplit();
     else if (studioMode === "paint") await onSavePaint();
-    else await onSaveTrim();
-  }, [studioMode, onSaveSplit, onSavePaint, onSaveTrim]);
+    else await onSaveMask();
+  }, [studioMode, onSaveSplit, onSavePaint, onSaveMask]);
 
   const onClear = useCallback(() => {
     if (studioMode === "split") {
@@ -1526,7 +1526,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
    *  header for the non-discard path. */
   const requestClose = useCallback(() => {
     const isDirty =
-      studioMode === "trim" ? dirty : studioMode === "split" ? splitDirty : paintDirty;
+      studioMode === "mask" ? dirty : studioMode === "split" ? splitDirty : paintDirty;
     if (!isDirty) {
       close(null);
       return;
@@ -1631,11 +1631,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           setBrushSize((s) => Math.min(400, Math.max(s + 1, Math.round(s * 1.15))));
           return;
         }
-        // X swaps the brush op (Hide ↔ Reveal / Add ↔ Remove). Same
-        // muscle memory as Photoshop's foreground/background swap.
+        // X is the universal swap key. In brush / eraser it flips to
+        // the opposite tool (Photoshop B↔E pattern); for bucket it
+        // still toggles the add/remove mode since bucket keeps that
+        // toggle in its options bar.
         if (ev.key === "x" || ev.key === "X") {
           ev.preventDefault();
-          setBrushOp((op) => (op === "add" ? "remove" : "add"));
+          if (selectedTool === "brush") setSelectedTool("eraser");
+          else if (selectedTool === "eraser") setSelectedTool("brush");
+          else setBrushOp((op) => (op === "add" ? "remove" : "add"));
           return;
         }
         // + / - zoom (without modifier — Photoshop also accepts
@@ -1669,6 +1673,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     requestClose,
+    selectedTool,
     studioMode,
     viewport,
     wandSelection,
@@ -1708,7 +1713,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
           <span className="font-mono text-[var(--color-accent)]">decompose · v1</span>
           <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
-          {(studioMode === "trim" ? dirty : studioMode === "split" ? splitDirty : paintDirty) && (
+          {(studioMode === "mask" ? dirty : studioMode === "split" ? splitDirty : paintDirty) && (
             <span className="text-yellow-400">· unsaved</span>
           )}
           {/* Focus chip — only visible in split mode while a region is
@@ -1730,15 +1735,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           <div className="ml-3 flex gap-0.5">
             <button
               type="button"
-              onClick={() => setStudioMode("trim")}
+              onClick={() => setStudioMode("mask")}
               className={`rounded-l border px-2 py-0.5 ${
-                studioMode === "trim"
+                studioMode === "mask"
                   ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
                   : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
               }`}
               title="단일 마스크로 픽셀 숨기기 / 복원"
             >
-              Trim
+              Mask
             </button>
             <button
               type="button"
@@ -1973,10 +1978,10 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                 {/* The wand selection's action bar lives above the
                     canvas now (see WandActionBar in the canvas
                     wrapper above) — no sidebar duplicate. */}
-                {studioMode === "trim" ? (
+                {studioMode === "mask" ? (
                   <>
                     <ShortcutsHelp />
-                    <TrimHelp />
+                    <MaskHelp />
                   </>
                 ) : studioMode === "paint" ? (
                   <>
@@ -2362,7 +2367,7 @@ function ShortcutsHelp() {
     ["I", "Eyedropper"],
     ["Z / H", "Zoom / Hand"],
     ["[ / ]", "Brush size −/+"],
-    ["X", "Swap mode"],
+    ["X", "Swap brush ↔ eraser / bucket mode"],
     ["Space", "Pan (hold)"],
     ["RMB-drag", "Pan (any tool)"],
     ["⌘0 / ⌘1", "Fit / 100%"],
@@ -2383,23 +2388,25 @@ function ShortcutsHelp() {
   );
 }
 
-function TrimHelp() {
+function MaskHelp() {
   return (
     <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
-      <div className="mb-1 uppercase tracking-widest">How (Trim)</div>
+      <div className="mb-1 uppercase tracking-widest">How (Mask)</div>
       <ul className="space-y-1 list-disc list-inside">
         <li>마스크가 칠해진 픽셀이 최종 출력에서 숨겨집니다</li>
         <li>
-          <span className="text-[var(--color-fg)]">B</span> 브러시로 추가,{" "}
-          <span className="text-[var(--color-fg)]">E</span> 지우개로 복원
+          <span className="text-[var(--color-fg)]">B</span> 브러시로 마스크 추가(픽셀 숨김),{" "}
+          <span className="text-[var(--color-fg)]">E</span> 지우개로 마스크 제거(픽셀 복원).{" "}
+          <span className="text-[var(--color-fg)]">X</span> 로 B ↔ E 빠른 전환
         </li>
         <li>
           <span className="text-[var(--color-fg)]">G</span> 버킷으로 연결된 영역 한 번에 채움
+          (Hide/Reveal 모드 토글 가능)
         </li>
         <li>
           <span className="text-[var(--color-fg)]">W</span> 매직 셀렉터로 영역 선택 후 일괄 적용
         </li>
-        <li>상단 alpha 슬라이더로 feathered edge 제거</li>
+        <li>상단 Alpha 슬라이더로 feathered edge 제거</li>
         <li>save 시 마스크 + threshold 모두 PNG 로 baked</li>
       </ul>
     </div>
