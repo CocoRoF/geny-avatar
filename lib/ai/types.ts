@@ -10,7 +10,7 @@ import type { LayerId, TextureId } from "../avatar/types";
 
 export type AIJobId = string;
 
-export type ProviderId = "gemini" | "openai" | "replicate";
+export type ProviderId = "gemini" | "openai" | "replicate" | "falai";
 
 /**
  * Describes a single model available within a provider. UI uses

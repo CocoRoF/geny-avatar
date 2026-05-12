@@ -7,15 +7,22 @@
  *   GEMINI_API_KEY     — Google AI Studio key for Nano Banana
  *   OPENAI_API_KEY     — OpenAI key for gpt-image-2
  *   REPLICATE_API_TOKEN — wired in Sprint 3.2 with SDXL + ControlNet
+ *   FAL_KEY            — fal.ai key for FLUX.2 [edit]
  */
 
 import type { ProviderId } from "../types";
+import { FalAIProvider, falaiConfig } from "./falai";
 import { GeminiProvider, geminiConfig } from "./gemini";
 import type { AIProvider, ProviderConfig } from "./interface";
 import { OpenAIProvider, openaiConfig } from "./openai";
 import { ReplicateProvider, replicateConfig } from "./replicate";
 
-export const providerConfigs: ProviderConfig[] = [geminiConfig, openaiConfig, replicateConfig];
+export const providerConfigs: ProviderConfig[] = [
+  geminiConfig,
+  openaiConfig,
+  replicateConfig,
+  falaiConfig,
+];
 
 export type ProviderAvailability = {
   id: ProviderId;
@@ -68,6 +75,11 @@ export function getProvider(id: ProviderId): {
       // Provider is shape-only — generate() throws a clear message.
       return { provider: new ReplicateProvider(key) };
     }
+    case "falai": {
+      const key = process.env.FAL_KEY;
+      if (!key) return { provider: null, reason: "FAL_KEY not set" };
+      return { provider: new FalAIProvider(key) };
+    }
     default:
       return { provider: null, reason: `unknown provider: ${id}` };
   }
@@ -81,6 +93,8 @@ function envKeyForProvider(id: ProviderId): string | null {
       return "OPENAI_API_KEY";
     case "replicate":
       return "REPLICATE_API_TOKEN";
+    case "falai":
+      return "FAL_KEY";
     default:
       return null;
   }
