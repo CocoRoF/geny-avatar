@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrushCursor } from "@/components/decompose/BrushCursor";
+import { HistoryPanel } from "@/components/decompose/HistoryPanel";
 import { MarchingAnts } from "@/components/decompose/MarchingAnts";
 import { OptionsBar } from "@/components/decompose/OptionsBar";
 import { Toolbox } from "@/components/decompose/Toolbox";
@@ -30,6 +31,7 @@ import {
   type WandOptions,
 } from "@/lib/avatar/decompose/tools";
 import { useCanvasViewport } from "@/lib/avatar/decompose/useCanvasViewport";
+import { type CanvasKey, useHistory } from "@/lib/avatar/decompose/useHistory";
 import {
   composeSelection,
   featherSelection,
@@ -546,6 +548,110 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     else setDirty(true);
   }, [studioMode]);
 
+  // ── History stack (Photoshop-style undo / redo) ────────────────
+  //
+  // Tracks the mask + paint canvas across discrete user actions
+  // (one stroke = one entry, regardless of dab count). Split mode
+  // doesn't go through the stack yet — region canvases come and go,
+  // which would need extra bookkeeping; mask + paint is what the
+  // current panel scope covers.
+  const history = useHistory();
+
+  /** Snapshot whichever canvas the current studio mode would write
+   *  into. Returns null in modes we don't track (split). The
+   *  resulting map plugs straight into history.commit. */
+  const captureModeChanges = useCallback((): Map<CanvasKey, ImageData> | null => {
+    const changes = new Map<CanvasKey, ImageData>();
+    if (studioMode === "mask" && maskCanvasRef.current) {
+      const c = maskCanvasRef.current;
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      changes.set("mask", ctx.getImageData(0, 0, c.width, c.height));
+      return changes;
+    }
+    if (studioMode === "paint" && paintCanvasRef.current) {
+      const c = paintCanvasRef.current;
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      changes.set("paint", ctx.getImageData(0, 0, c.width, c.height));
+      return changes;
+    }
+    return null;
+  }, [studioMode]);
+
+  /** Append a history entry labelled with the action's name. Called
+   *  AFTER any canvas-modifying action completes. */
+  const commitHistoryAction = useCallback(
+    (label: string) => {
+      const changes = captureModeChanges();
+      if (!changes || changes.size === 0) return;
+      history.commit(label, changes);
+    },
+    [captureModeChanges, history.commit],
+  );
+
+  /** Restore the canvases from a history snapshot map. Called from
+   *  undo / redo / goto handlers. */
+  const applyHistorySnapshot = useCallback(
+    (snapshots: ReadonlyMap<CanvasKey, ImageData> | null) => {
+      if (!snapshots) return;
+      for (const [key, data] of snapshots) {
+        if (key === "mask" && maskCanvasRef.current) {
+          const ctx = maskCanvasRef.current.getContext("2d");
+          if (ctx && ctx.canvas.width === data.width && ctx.canvas.height === data.height) {
+            ctx.putImageData(data, 0, 0);
+          }
+        } else if (key === "paint" && paintCanvasRef.current) {
+          const ctx = paintCanvasRef.current.getContext("2d");
+          if (ctx && ctx.canvas.width === data.width && ctx.canvas.height === data.height) {
+            ctx.putImageData(data, 0, 0);
+          }
+        }
+        // region:* keys are reserved for split-mode history (not
+        // wired yet; intentionally ignored if they ever appear).
+      }
+      markDirty();
+      invalidatePreview();
+    },
+    [invalidatePreview, markDirty],
+  );
+
+  const onUndo = useCallback(() => {
+    applyHistorySnapshot(history.undo());
+  }, [applyHistorySnapshot, history.undo]);
+
+  const onRedo = useCallback(() => {
+    applyHistorySnapshot(history.redo());
+  }, [applyHistorySnapshot, history.redo]);
+
+  const onHistoryGoto = useCallback(
+    (index: number) => {
+      applyHistorySnapshot(history.goto(index));
+    },
+    [applyHistorySnapshot, history.goto],
+  );
+
+  // Capture baseline whenever the editor (re)becomes ready: layer
+  // load / HD-edge toggle / existingMask/Texture change all trigger
+  // this. The pre-edit state is the natural anchor for "undo all
+  // the way back to the open state".
+  // biome-ignore lint/correctness/useExhaustiveDependencies: history.setBaseline is stable
+  useEffect(() => {
+    if (!ready) return;
+    const baseline = new Map<CanvasKey, ImageData>();
+    const mask = maskCanvasRef.current;
+    if (mask) {
+      const ctx = mask.getContext("2d");
+      if (ctx) baseline.set("mask", ctx.getImageData(0, 0, mask.width, mask.height));
+    }
+    const paint = paintCanvasRef.current;
+    if (paint) {
+      const ctx = paint.getContext("2d");
+      if (ctx) baseline.set("paint", ctx.getImageData(0, 0, paint.width, paint.height));
+    }
+    history.setBaseline(baseline);
+  }, [ready]);
+
   // ----- target-canvas selector + brush stroke -----
   /** Pick the canvas the active tool's stroke / fill should land on.
    *    trim  → the single layer mask
@@ -761,11 +867,13 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       tctx.restore();
       markDirty();
       invalidatePreview();
+      commitHistoryAction(op === "add" ? "Bucket fill" : "Bucket erase");
     },
     [
       activeTargetCanvas,
       bucketTolerance,
       clientToSrc,
+      commitHistoryAction,
       effectiveBrushOp,
       foregroundColor,
       invalidatePreview,
@@ -863,8 +971,17 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       }
       markDirty();
       invalidatePreview();
+      commitHistoryAction(op === "add" ? "Selection apply" : "Selection erase");
     },
-    [activeTargetCanvas, invalidatePreview, studioMode, wandSelection, foregroundColor, markDirty],
+    [
+      activeTargetCanvas,
+      commitHistoryAction,
+      invalidatePreview,
+      studioMode,
+      wandSelection,
+      foregroundColor,
+      markDirty,
+    ],
   );
 
   // ── Selection refine ops (Photoshop "Refine Selection") ─────────
@@ -1095,15 +1212,21 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
         (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
         return;
       }
-      if (paintingRef.current) {
+      const wasPainting = paintingRef.current;
+      if (wasPainting) {
         // End the stroke cleanly so the engine resets its
         // interpolation state for the next drag.
         strokeEngineRef.current?.endStroke();
       }
       paintingRef.current = false;
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture?.(e.pointerId);
+      // Commit one history entry per completed stroke. Labels match
+      // the tool that drew so the History panel reads naturally.
+      if (wasPainting && (selectedTool === "brush" || selectedTool === "eraser")) {
+        commitHistoryAction(selectedTool === "eraser" ? "Eraser stroke" : "Brush stroke");
+      }
     },
-    [viewport.isPanning, viewport.onPanPointerUp, viewport],
+    [commitHistoryAction, selectedTool, viewport.isPanning, viewport.onPanPointerUp, viewport],
   );
 
   // ── Wheel routing ──────────────────────────────────────────────────
@@ -1547,6 +1670,7 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
       pctx.drawImage(source, 0, 0);
       setPaintDirty(true);
       invalidatePreview();
+      commitHistoryAction("Reset paint");
       return;
     }
     const mask = maskCanvasRef.current;
@@ -1557,7 +1681,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     setMask(layer.id, null);
     setDirty(true);
     invalidatePreview();
-  }, [layer.id, setMask, invalidatePreview, studioMode, selectedRegionId]);
+    commitHistoryAction("Clear mask");
+  }, [commitHistoryAction, layer.id, setMask, invalidatePreview, studioMode, selectedRegionId]);
 
   /** Dismiss with a confirm prompt when there are unsaved changes.
    *  Used by every dismiss path: header "close" button, the
@@ -1709,6 +1834,15 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
           viewport.actualSize();
           return;
         }
+        // Undo / Redo (Photoshop bindings: Ctrl+Z back, Ctrl+Shift+Z
+        // forward). `z` may arrive as either case depending on shift
+        // state — match toLowerCase for robustness.
+        if (ev.key.toLowerCase() === "z") {
+          ev.preventDefault();
+          if (ev.shiftKey) onRedo();
+          else onUndo();
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1726,6 +1860,8 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
     onSelectionShrink,
     onSelectionFeather,
     onSelectionSaveAsRegion,
+    onUndo,
+    onRedo,
   ]);
 
   const previewStyle = useMemo<React.CSSProperties>(
@@ -2022,12 +2158,28 @@ export function DecomposeStudio({ adapter, layer, puppetKey }: Props) {
                     wrapper above) — no sidebar duplicate. */}
                 {studioMode === "mask" ? (
                   <>
-                    <ShortcutsHelp />
+                    <HistoryPanel
+                      entries={history.entries}
+                      pointer={history.pointer}
+                      canUndo={history.canUndo}
+                      canRedo={history.canRedo}
+                      onGoto={onHistoryGoto}
+                      onUndo={onUndo}
+                      onRedo={onRedo}
+                    />
                     <MaskHelp />
                   </>
                 ) : studioMode === "paint" ? (
                   <>
-                    <ShortcutsHelp />
+                    <HistoryPanel
+                      entries={history.entries}
+                      pointer={history.pointer}
+                      canUndo={history.canUndo}
+                      canRedo={history.canRedo}
+                      onGoto={onHistoryGoto}
+                      onUndo={onUndo}
+                      onRedo={onRedo}
+                    />
                     <PaintHelp />
                   </>
                 ) : (
