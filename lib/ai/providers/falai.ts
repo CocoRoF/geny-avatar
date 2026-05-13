@@ -281,9 +281,15 @@ export class FalAIProvider implements AIProvider {
   ): Promise<{ modelPath: string; body: Record<string, unknown> }> {
     if (modelId === FLUX_INPAINTING_ID) {
       if (!input.maskImage) {
+        // The client (`GeneratePanel`) is expected to derive a mask
+        // from the source canvas alpha for the inpainting model so
+        // the entire component becomes the edit zone. Hitting this
+        // branch means the auto-derive step didn't run — either an
+        // older client or a direct API caller.
         throw new Error(
-          "fal.ai flux-inpainting requires a binary mask — none was attached. " +
-            "Pick FLUX.2 [edit] for mask-less edits, or draw a mask in DecomposeStudio first.",
+          "fal.ai flux-inpainting requires a binary mask, but none was attached. " +
+            "Normally the client derives one from the source alpha. If you're calling " +
+            "the API directly, attach `maskImage` as a white-on-black PNG.",
         );
       }
       const imageDataUri = await blobToDataUri(input.sourceImage);
