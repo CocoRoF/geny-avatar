@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-openai-inpaint-path.md](2026-05-13-openai-inpaint-path.md) | 1.x OpenAI inpaint | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-falai-flux-pro-fill.md](2026-05-13-falai-flux-pro-fill.md) | 1.x FLUX pro fill | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-openai-inpaint-path.md](2026-05-13-openai-inpaint-path.md) | 1.x OpenAI inpaint | [#26](https://github.com/CocoRoF/geny-avatar/pull/26) | done |
 | 2026-05-13 | [2026-05-13-inpaint-source-padding-and-prompt.md](2026-05-13-inpaint-source-padding-and-prompt.md) | 1.x char hallucination | [#25](https://github.com/CocoRoF/geny-avatar/pull/25) | done |
 | 2026-05-13 | [2026-05-13-mask-roundtrip-and-preview.md](2026-05-13-mask-roundtrip-and-preview.md) | 1.x mask roundtrip | [#24](https://github.com/CocoRoF/geny-avatar/pull/24) | done |
 | 2026-05-13 | [2026-05-13-embedded-mask-format-and-context.md](2026-05-13-embedded-mask-format-and-context.md) | 1.x inpaint convention | [#23](https://github.com/CocoRoF/geny-avatar/pull/23) | done |
