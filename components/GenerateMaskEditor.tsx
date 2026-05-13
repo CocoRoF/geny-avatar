@@ -201,7 +201,19 @@ export function GenerateMaskEditor({ sourceCanvas, value, onChange }: GenerateMa
     [commit],
   );
 
-  /** Redraw the display canvas after any mask edit. */
+  /** Redraw the display canvas after any mask edit.
+   *
+   *  Composition:
+   *    1. Source at full opacity → real layer colours.
+   *    2. Mask via `multiply` blend → black pixels darken (preserve),
+   *       white pixels pass through unchanged (edit zone). Result: the
+   *       layer looks normal where the AI will redraw, dimmed where
+   *       it won't.
+   *
+   *  Previous attempt used a source-over alpha overlay with white on
+   *  top, which washed the source out to grey because the white mask
+   *  pixels covered the source colours entirely. Multiply blend is
+   *  the correct composite for "preserve vs edit" visualisation. */
   // biome-ignore lint/correctness/useExhaustiveDependencies: redraw must fire on tick bump
   useEffect(() => {
     const display = displayRef.current;
@@ -214,16 +226,21 @@ export function GenerateMaskEditor({ sourceCanvas, value, onChange }: GenerateMa
     const ctx = display.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, w, h);
-    // Source as faint background so the user sees what they're masking.
-    ctx.globalAlpha = 0.35;
-    ctx.drawImage(sourceCanvas, 0, 0);
+    // 1. Source at full opacity — show real layer colours.
     ctx.globalAlpha = 1;
-    // Mask overlay — multiply blend so white pixels brighten the
-    // source (highlighting "edit here") and black pixels darken it.
     ctx.globalCompositeOperation = "source-over";
-    ctx.globalAlpha = 0.55;
+    ctx.drawImage(sourceCanvas, 0, 0);
+    // 2. Mask via multiply — black preserves region darken, white passes through.
+    ctx.globalCompositeOperation = "multiply";
+    ctx.globalAlpha = 0.85;
     ctx.drawImage(mask, 0, 0);
+    // 3. Re-enforce source alpha so pixels outside the silhouette
+    //    stay transparent (mask is opaque everywhere; without this
+    //    multiply would leave a black rectangular halo where the
+    //    source was originally transparent).
     ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(sourceCanvas, 0, 0);
     ctx.globalCompositeOperation = "source-over";
   }, [renderTick, sourceCanvas]);
 
