@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-mask-tab-fixes.md](2026-05-13-mask-tab-fixes.md) | 1.x MASK fixes | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-mask-tab-full-features.md](2026-05-13-mask-tab-full-features.md) | 1.x MASK full | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-mask-tab-fixes.md](2026-05-13-mask-tab-fixes.md) | 1.x MASK fixes | [#18](https://github.com/CocoRoF/geny-avatar/pull/18) | done |
 | 2026-05-13 | [2026-05-13-generate-mask-tab.md](2026-05-13-generate-mask-tab.md) | 1.x MASK tab UI | [#17](https://github.com/CocoRoF/geny-avatar/pull/17) | done |
 | 2026-05-13 | [2026-05-13-inpaint-mask-from-source-alpha.md](2026-05-13-inpaint-mask-from-source-alpha.md) | 1.x ControlNet f/u | [#16](https://github.com/CocoRoF/geny-avatar/pull/16) | done |
 | 2026-05-13 | [2026-05-13-falai-inpainting-model.md](2026-05-13-falai-inpainting-model.md) | 1.x ControlNet | [#15](https://github.com/CocoRoF/geny-avatar/pull/15) | done |
