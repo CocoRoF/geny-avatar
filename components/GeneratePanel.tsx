@@ -23,6 +23,7 @@ import {
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
 import { buildInpaintMaskFromAlpha } from "@/lib/avatar/inpaintMask";
+import { bakeTransparencyToNeutral } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
@@ -1042,8 +1043,21 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       let geminiSourceBlob: Blob | undefined;
       let geminiMaskBlob: Blob | undefined;
       if (!useMultiComponent) {
-        geminiSourceBlob = await canvasToPngBlob(sourceCanvas);
         if (isInpaintingModel) {
+          // **Source pre-processing for inpainting**: bake the layer's
+          // transparent area to neutral grey before handing it to the
+          // model. The default behaviour of an isolated atlas crop
+          // (transparent background, lone silhouette) makes fal's
+          // inpainter read the silhouette as "outline of a character
+          // to fill in" — face / body / accessories appear inside.
+          // A grey backdrop reframes the input as "texture region
+          // embedded in a neutral frame", which the model handles
+          // correctly. Mask channel stays the same.
+          geminiSourceBlob = await bakeTransparencyToNeutral(sourceCanvas);
+          console.info(
+            `[generate] inpaint source: baked transparency to neutral grey (${geminiSourceBlob.size}B). ` +
+              "Drops the 'character thumbnail' prior that hallucinates face/body inside the silhouette.",
+          );
           // Priority: user-painted MASK tab > derived from source alpha.
           // DecomposeStudio mask is intentionally ignored — different
           // semantics (hide vs edit). See GenerateMaskEditor doc.
@@ -1059,6 +1073,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
             );
           }
         } else {
+          geminiSourceBlob = await canvasToPngBlob(sourceCanvas);
           geminiMaskBlob = existingMask ?? undefined;
         }
       }
