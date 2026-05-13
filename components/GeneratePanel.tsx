@@ -22,6 +22,7 @@ import {
   componentThumbnail,
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
+import { buildInpaintMaskFromAlpha } from "@/lib/avatar/inpaintMask";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
@@ -986,11 +987,35 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       }
 
       // Gemini path — single source + raw mask. Used only when not OpenAI.
+      //
+      // **Mask convention split**: DecomposeStudio's mask
+      // (`existingMask`) is a destination-out hide tool — `alpha=255`
+      // marks pixels to ERASE from the final atlas. Inpainting models
+      // (fal.ai flux-inpainting and friends) read `alpha=255` /
+      // white as "REGENERATE this pixel". The two semantics are
+      // opposites; forwarding the Decompose mask makes the inpainter
+      // rewrite exactly what the user wanted to keep.
+      //
+      // For inpainting models we derive a fresh mask from the source
+      // canvas alpha: the entire component becomes the edit zone, which
+      // is the natural default for a Live2D texture layer ("the user
+      // picked this layer because they want it edited"). Gemini's
+      // raw-mask path keeps consuming the Decompose mask verbatim
+      // since it isn't an inpainter and the convention question
+      // doesn't apply.
+      const isInpaintingModel = providerId === "falai" && modelId === "flux-inpainting";
       let geminiSourceBlob: Blob | undefined;
       let geminiMaskBlob: Blob | undefined;
       if (!useMultiComponent) {
         geminiSourceBlob = await canvasToPngBlob(sourceCanvas);
-        geminiMaskBlob = existingMask ?? undefined;
+        if (isInpaintingModel) {
+          geminiMaskBlob = await buildInpaintMaskFromAlpha(sourceCanvas);
+          console.info(
+            `[generate] inpaint mask: derived from source alpha (${geminiMaskBlob.size}B). DecomposeStudio mask ignored (hide-vs-edit convention conflict).`,
+          );
+        } else {
+          geminiMaskBlob = existingMask ?? undefined;
+        }
       }
 
       // ── character reference snapshot ─────────────────────────────
