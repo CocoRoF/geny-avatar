@@ -118,6 +118,19 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
    *  NOT the same thing as the DecomposeStudio mask. See
    *  `components/GenerateMaskEditor.tsx` for the convention split. */
   const [inpaintMaskBlob, setInpaintMaskBlob] = useState<Blob | null>(null);
+  /** Object URL for the inpaint mask preview shown next to the SOURCE
+   *  label. Held as state so the URL stays stable across renders and
+   *  gets revoked on cleanup. */
+  const [inpaintMaskPreviewUrl, setInpaintMaskPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!inpaintMaskBlob) {
+      setInpaintMaskPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(inpaintMaskBlob);
+    setInpaintMaskPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [inpaintMaskBlob]);
 
   /** Last submit's component count, surfaced in the structured submit
    *  log so the user can correlate result quality with how many
@@ -1780,15 +1793,32 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                   className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 border-r border-[var(--color-border)] p-4"
                   style={previewBg}
                 >
-                  <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    source
+                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    <span>source</span>
                     {isFocusedMulti &&
                       focusedRegionIdx !== null &&
                       components[focusedRegionIdx] && (
-                        <span className="ml-2 text-[var(--color-accent)]">
+                        <span className="text-[var(--color-accent)]">
                           · region {focusedRegionIdx + 1} of {components.length}
                         </span>
                       )}
+                    {inpaintMaskPreviewUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("mask")}
+                        className="flex items-center gap-1.5 rounded border border-[var(--color-accent)]/60 bg-[var(--color-accent)]/5 px-1.5 py-0.5 normal-case tracking-normal text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/15"
+                        title="inpaint mask preview — click to edit in MASK tab. white = AI redraws, black = preserved."
+                      >
+                        {/* biome-ignore lint/performance/noImgElement: tiny blob URL thumbnail */}
+                        <img
+                          src={inpaintMaskPreviewUrl}
+                          alt="inpaint mask preview"
+                          className="h-5 w-5 rounded-sm border border-[var(--color-accent)]/40 object-contain"
+                          style={{ background: "#000" }}
+                        />
+                        <span className="font-mono text-[10px]">mask · edit</span>
+                      </button>
+                    )}
                   </div>
                   {error ? (
                     <div className="text-sm text-red-400">{error}</div>

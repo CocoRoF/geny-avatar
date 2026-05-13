@@ -401,7 +401,33 @@ export function DecomposeStudio({
         img.onload = () => {
           if (cancelled) return;
           const ctx = mask.getContext("2d");
-          if (ctx) ctx.drawImage(img, 0, 0, mask.width, mask.height);
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, mask.width, mask.height);
+            // **Convention round-trip**: when the saved mask uses the
+            // inpaint convention (RGB white = edit, alpha=255 everywhere),
+            // a naive drawImage leaves alpha=255 over the whole canvas
+            // and the mask UI shows the entire frame as masked. Decompose's
+            // brush canvas keeps the mask in the alpha channel, so we
+            // re-encode: read luma, write to alpha, clear RGB. The
+            // standalone hide-mask convention (RGB black + variable
+            // alpha) is left as-is by detecting `embedded` from the
+            // caller — the same prop that triggered the inpaint encoding
+            // on save.
+            if (embedded) {
+              const w = mask.width;
+              const h = mask.height;
+              const data = ctx.getImageData(0, 0, w, h);
+              const px = data.data;
+              for (let i = 0; i < px.length; i += 4) {
+                const luma = (px[i] + px[i + 1] + px[i + 2]) / 3;
+                px[i] = 0;
+                px[i + 1] = 0;
+                px[i + 2] = 0;
+                px[i + 3] = luma >= 128 ? 255 : 0;
+              }
+              ctx.putImageData(data, 0, 0);
+            }
+          }
           setReady(true);
         };
         img.onerror = () => {
@@ -416,7 +442,7 @@ export function DecomposeStudio({
     return () => {
       cancelled = true;
     };
-  }, [adapter, layer, existingMask, existingTexture, highDpiMask]);
+  }, [adapter, layer, existingMask, existingTexture, highDpiMask, embedded]);
 
   // ----- E.2: hydrate region canvases from persisted IDB blobs -----
   // Runs once `ready` flips and persistedRegions arrives. Each
