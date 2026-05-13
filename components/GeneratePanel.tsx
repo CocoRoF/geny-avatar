@@ -1052,7 +1052,12 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // raw-mask path keeps consuming the Decompose mask verbatim
       // since it isn't an inpainter and the convention question
       // doesn't apply.
-      const isInpaintingModel = providerId === "falai" && modelId === "flux-inpainting";
+      // Any fal.ai mask-aware model — both flux-inpainting (FLUX.1 dev)
+      // and the higher-quality flux-pro-fill go through the same source
+      // bake + mask forward path. flux-2/edit doesn't take a mask so
+      // it's excluded.
+      const isInpaintingModel =
+        providerId === "falai" && (modelId === "flux-inpainting" || modelId === "flux-pro-fill");
       let geminiSourceBlob: Blob | undefined;
       let geminiMaskBlob: Blob | undefined;
       // OpenAI inpaint records the padding metadata so the

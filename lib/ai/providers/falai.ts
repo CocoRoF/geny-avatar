@@ -50,22 +50,30 @@ const QUEUE_BASE = "https://queue.fal.run";
 /** Per-model endpoint paths on queue.fal.run. */
 const FLUX_2_EDIT_PATH = "fal-ai/flux-2/edit";
 const FLUX_INPAINTING_PATH = "fal-ai/flux-general/inpainting";
+const FLUX_PRO_FILL_PATH = "fal-ai/flux-pro/v1/fill";
 
 const FLUX_2_EDIT_ID = "flux-2-edit";
 const FLUX_INPAINTING_ID = "flux-inpainting";
+const FLUX_PRO_FILL_ID = "flux-pro-fill";
 
 const MODELS: readonly ModelInfo[] = [
+  {
+    id: FLUX_PRO_FILL_ID,
+    displayName: "FLUX.1 [pro] Fill (mask-aware, recommended)",
+    description:
+      "Top-tier mask-aware inpainting on FLUX.1 [pro]. Takes image + mask + prompt; only the masked region is repainted. Pro tier handles atlas crops considerably better than the [dev] inpainter, with stronger prompt fidelity inside the masked region. Pick this first when the result quality matters.",
+  },
+  {
+    id: FLUX_INPAINTING_ID,
+    displayName: "FLUX.1 [dev] inpainting (cheap fallback)",
+    description:
+      "Mask-aware inpainting on the older FLUX.1 [dev] base. Cheaper than [pro] Fill but tends to interpret isolated atlas crops as character thumbnails and fill the silhouette with face/body. Use only when [pro] Fill is over budget.",
+  },
   {
     id: FLUX_2_EDIT_ID,
     displayName: "FLUX.2 [edit]",
     description:
-      "Instruction-following editor. Cheap bulk fan-out. Best when you want to describe the change in plain words. Struggles on isolated atlas crops (face hallucination, tendril loss).",
-  },
-  {
-    id: FLUX_INPAINTING_ID,
-    displayName: "FLUX.1 inpainting (mask-aware)",
-    description:
-      "Mask-aware inpainting on FLUX.1 [dev]. Sends a binary mask alongside the source so the model only repaints the silhouette region — best fit for atlas-crop layer editing. Slower and base-model is older than flux-2.",
+      "Instruction-following editor. Cheap bulk fan-out, no mask channel. Best when you want to describe the change in plain words and don't need a precise edit region. Struggles on isolated atlas crops (face hallucination, tendril loss).",
   },
 ];
 
@@ -86,7 +94,10 @@ export const falaiConfig: ProviderConfig = {
     // advertise refs at the capability level so the UI keeps the user
     // ref affordances when fal.ai is picked.
     supportsReferenceImages: true,
-    defaultModelId: FLUX_2_EDIT_ID,
+    // Default to the highest-quality mask-aware option. Users can
+    // still pick flux-2/edit or the cheaper [dev] inpainter from the
+    // model dropdown.
+    defaultModelId: FLUX_PRO_FILL_ID,
     models: MODELS,
   },
 };
@@ -287,6 +298,39 @@ export class FalAIProvider implements AIProvider {
     modelId: string,
     input: ProviderGenerateInput,
   ): Promise<{ modelPath: string; body: Record<string, unknown> }> {
+    if (modelId === FLUX_PRO_FILL_ID) {
+      // **flux-pro/v1/fill** — top-tier FLUX mask-aware inpainting.
+      // The endpoint takes `image_url` + `mask_url` + `prompt`. The
+      // mask convention follows standard diffusion inpainting (white
+      // = inpaint, black = preserve) which already matches what the
+      // client sends in inpaint convention. Pro tier handles atlas
+      // crops considerably better than the [dev] inpainter — first
+      // pick when quality matters.
+      if (!input.maskImage) {
+        throw new Error(
+          "fal.ai flux-pro/v1/fill requires a binary mask. The client normally " +
+            "derives one from the source alpha when the user hasn't painted one in " +
+            "the MASK tab.",
+        );
+      }
+      const imageDataUri = await blobToDataUri(input.sourceImage);
+      const maskDataUri = await maskBlobToBinaryDataUri(input.maskImage);
+      const promptText = this.composeInpaintingPrompt(input);
+      const body: Record<string, unknown> = {
+        prompt: promptText,
+        image_url: imageDataUri,
+        mask_url: maskDataUri,
+        // pro/fill exposes safety tolerance (1–6, default 2). Anime
+        // texture work occasionally trips photoreal-trained safety;
+        // raising the tolerance reduces accidental refusal without
+        // turning safety off entirely.
+        safety_tolerance: 5,
+        output_format: "png",
+      };
+      if (typeof input.seed === "number") body.seed = input.seed;
+      return { modelPath: FLUX_PRO_FILL_PATH, body };
+    }
+
     if (modelId === FLUX_INPAINTING_ID) {
       if (!input.maskImage) {
         // The client (`GeneratePanel`) is expected to derive a mask
