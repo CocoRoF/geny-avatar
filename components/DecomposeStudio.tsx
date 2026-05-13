@@ -263,6 +263,14 @@ export function DecomposeStudio({
   // the canvas for the currently-selected region; save bakes each
   // canvas to a PNG blob and persists the bundle to IDB.
   const [studioMode, setStudioMode] = useState<StudioMode>("mask");
+  // Embedded callers only want the single-mask brush surface. The
+  // mode toggle UI is hidden in that path, but this guard catches any
+  // accidental setStudioMode call (future shortcut, hot reload state
+  // bleed, etc.) so the inpaint flow can never end up in split/paint
+  // mode by mistake.
+  useEffect(() => {
+    if (embedded && studioMode !== "mask") setStudioMode("mask");
+  }, [embedded, studioMode]);
   const {
     regions: persistedRegions,
     save: saveRegions,
@@ -1982,45 +1990,50 @@ export function DecomposeStudio({
         )}
         {/* Top mode toggle (E.2). Trim = single layer mask
               (existing); split = multi-region named masks for the
-              GeneratePanel multi-region pipeline. */}
-        <div className="ml-3 flex gap-0.5">
-          <button
-            type="button"
-            onClick={() => setStudioMode("mask")}
-            className={`rounded-l border px-2 py-0.5 ${
-              studioMode === "mask"
-                ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-            }`}
-            title="단일 마스크로 픽셀 숨기기 / 복원"
-          >
-            Mask
-          </button>
-          <button
-            type="button"
-            onClick={() => setStudioMode("split")}
-            className={`border px-2 py-0.5 ${
-              studioMode === "split"
-                ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-            }`}
-            title="여러 region 별 named 마스크 — GeneratePanel 이 사용"
-          >
-            Split
-          </button>
-          <button
-            type="button"
-            onClick={() => setStudioMode("paint")}
-            className={`rounded-r border px-2 py-0.5 ${
-              studioMode === "paint"
-                ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
-            }`}
-            title="실제 텍스처 픽셀에 색을 칠하거나 지우기"
-          >
-            Paint
-          </button>
-        </div>
+              GeneratePanel multi-region pipeline. Hidden in embedded
+              mode (GeneratePanel MASK tab) — split/paint outputs
+              wouldn't reach the inpaint state and would only confuse
+              the user. */}
+        {!embedded && (
+          <div className="ml-3 flex gap-0.5">
+            <button
+              type="button"
+              onClick={() => setStudioMode("mask")}
+              className={`rounded-l border px-2 py-0.5 ${
+                studioMode === "mask"
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+              }`}
+              title="단일 마스크로 픽셀 숨기기 / 복원"
+            >
+              Mask
+            </button>
+            <button
+              type="button"
+              onClick={() => setStudioMode("split")}
+              className={`border px-2 py-0.5 ${
+                studioMode === "split"
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+              }`}
+              title="여러 region 별 named 마스크 — GeneratePanel 이 사용"
+            >
+              Split
+            </button>
+            <button
+              type="button"
+              onClick={() => setStudioMode("paint")}
+              className={`rounded-r border px-2 py-0.5 ${
+                studioMode === "paint"
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-dim)]"
+              }`}
+              title="실제 텍스처 픽셀에 색을 칠하거나 지우기"
+            >
+              Paint
+            </button>
+          </div>
+        )}
         <button
           type="button"
           onClick={onClear}
