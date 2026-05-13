@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-fix-decompose-wrapper-remount-loop.md](2026-05-13-fix-decompose-wrapper-remount-loop.md) | 1.x crash fix | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-embedded-mask-format-and-context.md](2026-05-13-embedded-mask-format-and-context.md) | 1.x inpaint convention | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-fix-decompose-wrapper-remount-loop.md](2026-05-13-fix-decompose-wrapper-remount-loop.md) | 1.x crash fix | [#22](https://github.com/CocoRoF/geny-avatar/pull/22) | done |
 | 2026-05-13 | [2026-05-13-embedded-hide-split-paint.md](2026-05-13-embedded-hide-split-paint.md) | 1.x mode hide | [#21](https://github.com/CocoRoF/geny-avatar/pull/21) | done |
 | 2026-05-13 | [2026-05-13-decompose-embedded-in-mask-tab.md](2026-05-13-decompose-embedded-in-mask-tab.md) | 1.x MASK = DecomposeStudio | [#20](https://github.com/CocoRoF/geny-avatar/pull/20) | done |
 | 2026-05-13 | [2026-05-13-mask-tab-full-features.md](2026-05-13-mask-tab-full-features.md) | 1.x MASK full | [#19](https://github.com/CocoRoF/geny-avatar/pull/19) | done |

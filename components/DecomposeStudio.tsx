@@ -1378,6 +1378,17 @@ export function DecomposeStudio({
     const srcData = srcCtx.getImageData(0, 0, source.width, source.height);
     const maskData = maskCtx.getImageData(0, 0, source.width, source.height);
     const out = ctx.createImageData(baked.width, baked.height);
+    // **Output convention split**:
+    //   Standalone (hide-mask, store): RGB black + variable alpha.
+    //     `setLayerOverrides` reads the alpha channel as "erase this
+    //     pixel from the baked atlas".
+    //   Embedded (inpaint-mask, AI provider): RGB white = regenerate,
+    //     RGB black = preserve, alpha always 255. Standard FLUX/SDXL
+    //     inpaint convention; the alpha-based output the standalone
+    //     path produces would read as "all black = preserve" through a
+    //     luma-aware inpainter and the model would skip the edit
+    //     entirely.
+    const inpaintConvention = !!onMaskCommit;
     for (let i = 0; i < srcData.data.length; i += 4) {
       const sa = srcData.data[i + 3];
       const ma = maskData.data[i + 3];
@@ -1387,10 +1398,18 @@ export function DecomposeStudio({
       // and `setLayerMasks` would erase atlas neighbors.
       const thresholded = sa > 0 && sa < threshold ? 255 : 0;
       const effective = Math.max(thresholded, ma);
-      out.data[i] = 0;
-      out.data[i + 1] = 0;
-      out.data[i + 2] = 0;
-      out.data[i + 3] = effective;
+      if (inpaintConvention) {
+        const v = effective >= 128 ? 255 : 0;
+        out.data[i] = v;
+        out.data[i + 1] = v;
+        out.data[i + 2] = v;
+        out.data[i + 3] = 255;
+      } else {
+        out.data[i] = 0;
+        out.data[i + 1] = 0;
+        out.data[i + 2] = 0;
+        out.data[i + 3] = effective;
+      }
     }
     ctx.putImageData(out, 0, 0);
     const blob = await new Promise<Blob | null>((resolve) =>
@@ -1400,7 +1419,8 @@ export function DecomposeStudio({
       // Embedded mode (GeneratePanel MASK tab) — route to caller's
       // inpaint-mask channel instead of the store. The two destinations
       // are distinct concepts (hide vs edit zone) and must not share
-      // state.
+      // state. The blob above was already encoded in the inpaint
+      // convention via `inpaintConvention` branch.
       onMaskCommit(blob);
     } else if (blob) {
       setMask(layer.id, blob);
@@ -1955,8 +1975,18 @@ export function DecomposeStudio({
   const inner = (
     <>
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
-        <span className="font-mono text-[var(--color-accent)]">decompose · v1</span>
+        <span className="font-mono text-[var(--color-accent)]">
+          {embedded ? "inpaint mask · v1" : "decompose · v1"}
+        </span>
         <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
+        {embedded && (
+          <span
+            className="rounded border border-[var(--color-accent)]/40 px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-accent)]/80"
+            title="이 탭에서 그리는 마스크는 fal.ai flux-inpainting 의 edit zone 입력으로 전송됩니다 (RGB white = AI 가 다시 그림, RGB black = 보존). Edit MASK 의 hide-mask 와 별개 채널."
+          >
+            edit zone
+          </span>
+        )}
         {(studioMode === "mask" ? dirty : studioMode === "split" ? splitDirty : paintDirty) && (
           <span className="text-yellow-400">· unsaved</span>
         )}
@@ -2031,26 +2061,36 @@ export function DecomposeStudio({
           type="button"
           onClick={onSave}
           className="rounded border border-[var(--color-accent)] px-2 py-0.5 text-[var(--color-accent)]"
+          title={embedded ? "save mask → return to GEN tab" : "save & close"}
         >
-          save & close
+          {embedded ? "save → GEN" : "save & close"}
         </button>
-        {/* Sprint 6.5: fullscreen toggle for big-canvas work. */}
-        <button
-          type="button"
-          onClick={() => setFullscreen((v) => !v)}
-          className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-          title={fullscreen ? "shrink to modal" : "expand to fullscreen"}
-        >
-          {fullscreen ? "shrink" : "fullscreen"}
-        </button>
-        <button
-          type="button"
-          onClick={requestClose}
-          className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-          title="esc"
-        >
-          close
-        </button>
+        {/* Sprint 6.5: fullscreen toggle for big-canvas work. Hidden
+              in embedded mode — the parent modal already controls
+              size and there's no place to "expand" into. */}
+        {!embedded && (
+          <button
+            type="button"
+            onClick={() => setFullscreen((v) => !v)}
+            className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title={fullscreen ? "shrink to modal" : "expand to fullscreen"}
+          >
+            {fullscreen ? "shrink" : "fullscreen"}
+          </button>
+        )}
+        {/* Standalone has its own "close" button. Embedded skips it —
+              the parent (GeneratePanel) header owns the close
+              affordance via the GEN/MASK tab toggle. */}
+        {!embedded && (
+          <button
+            type="button"
+            onClick={requestClose}
+            className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+            title="esc"
+          >
+            close
+          </button>
+        )}
       </header>
 
       {/* Body: left toolbox · top options bar · canvas · right
@@ -2238,7 +2278,7 @@ export function DecomposeStudio({
                     onUndo={onUndo}
                     onRedo={onRedo}
                   />
-                  <MaskHelp />
+                  {embedded ? <InpaintMaskHelp /> : <MaskHelp />}
                 </>
               ) : studioMode === "paint" ? (
                 <>
@@ -2721,6 +2761,43 @@ function MaskHelp() {
         </li>
         <li>상단 Alpha 슬라이더로 feathered edge 제거</li>
         <li>save 시 마스크 + threshold 모두 PNG 로 baked</li>
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Embedded (GeneratePanel MASK tab) help panel. Inpaint convention,
+ * not the hide convention — same brush UX, opposite meaning. The
+ * MaskHelp text above stays unchanged for the standalone editor.
+ */
+function InpaintMaskHelp() {
+  return (
+    <div className="mt-auto leading-relaxed text-[var(--color-fg-dim)]">
+      <div className="mb-1 uppercase tracking-widest">How (Inpaint Mask)</div>
+      <ul className="space-y-1 list-disc list-inside">
+        <li>
+          마스크가 칠해진 영역만 AI 가 다시 그립니다 (white = regenerate). 칠하지 않은 영역은 원본
+          그대로 보존.
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">B</span> 브러시 = edit zone 확장,{" "}
+          <span className="text-[var(--color-fg)]">E</span> 지우개 = preserve 영역으로 되돌림.{" "}
+          <span className="text-[var(--color-fg)]">X</span> 로 빠른 전환
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">G</span> 버킷 /{" "}
+          <span className="text-[var(--color-fg)]">W</span> 매직 셀렉터로 컴포넌트 일부를 한 번에
+          선택 → AI 재생성 영역으로 지정
+        </li>
+        <li>
+          마스크가 비어 있으면 source 알파 전체를 자동 edit zone 으로 사용 (= 컴포넌트 전체 재생성)
+        </li>
+        <li>
+          <span className="text-[var(--color-fg)]">save → GEN</span> 버튼: 마스크를 inpaint 채널
+          (RGB white-on-black) 로 baked → GEN 탭으로 돌아옴
+        </li>
+        <li>Edit MASK 의 hide-mask 와 완전히 별개 — 상호 영향 없음</li>
       </ul>
     </div>
   );
