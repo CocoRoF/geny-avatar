@@ -35,7 +35,7 @@ import {
   saveAIJob,
 } from "@/lib/persistence/db";
 import { useEditorStore } from "@/lib/store/editor";
-import { GenerateMaskEditor } from "./GenerateMaskEditor";
+import { DecomposeStudio } from "./DecomposeStudio";
 
 type Props = {
   adapter: AvatarAdapter | null;
@@ -1647,10 +1647,21 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         </header>
 
         {activeTab === "mask" ? (
-          <GenerateMaskEditor
-            sourceCanvas={aiSourceCanvasRef.current}
-            value={inpaintMaskBlob}
-            onChange={setInpaintMaskBlob}
+          // Reuse DecomposeStudio in embedded mode — same brush UX
+          // (Toolbox, OptionsBar, BrushCursor, viewport, history,
+          // shortcuts) as the standalone Edit-flow mask editor. The
+          // `embedded` flag drops the modal chrome and the
+          // `onMaskCommit` callback routes the saved mask back into
+          // GeneratePanel's inpaint state instead of the
+          // hide-mask store.
+          <DecomposeStudio
+            adapter={adapter}
+            layer={layer}
+            puppetKey={puppetKey}
+            embedded
+            maskBaseline={inpaintMaskBlob}
+            onMaskCommit={setInpaintMaskBlob}
+            onClose={() => setActiveTab("gen")}
           />
         ) : null}
 
