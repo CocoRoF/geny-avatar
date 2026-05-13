@@ -9,6 +9,7 @@ import {
   fetchProviders,
   type ProviderAvailability,
   postprocessGeneratedBlob,
+  prepareOpenAISource,
   prepareOpenAISourcesFromMasks,
   prepareOpenAISourcesPerComponent,
   refinePrompt,
@@ -22,7 +23,10 @@ import {
   componentThumbnail,
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
-import { buildInpaintMaskFromAlpha } from "@/lib/avatar/inpaintMask";
+import {
+  buildInpaintMaskFromAlpha,
+  convertInpaintMaskToOpenAIPadded,
+} from "@/lib/avatar/inpaintMask";
 import { bakeTransparencyToNeutral } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -992,7 +996,16 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       //
       // For Gemini we still pass the raw mask through — Gemini does
       // accept a binary mask and uses it correctly.
-      const useMultiComponent = providerId === "openai";
+      //
+      // **OpenAI inpaint mode**: when the user has painted an inpaint
+      // mask in the MASK tab AND picked OpenAI, we switch to the
+      // single-source + mask path (the one OpenAI's `/v1/images/edits`
+      // was actually designed for). OpenAI handles atlas-crop edits
+      // correctly without the "character thumbnail" hallucination
+      // fal-general/inpainting suffers from. The multi-component
+      // split path stays the default for OpenAI without a mask.
+      const isOpenAIInpaint = providerId === "openai" && !!inpaintMaskBlob;
+      const useMultiComponent = providerId === "openai" && !isOpenAIInpaint;
       // F.2: prefer the mount-time cached prepared bundle so we don't
       // pay isolation/pad cost on every submit. Falls through to the
       // recompute path only if the cache hasn't filled yet.
@@ -1042,17 +1055,47 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       const isInpaintingModel = providerId === "falai" && modelId === "flux-inpainting";
       let geminiSourceBlob: Blob | undefined;
       let geminiMaskBlob: Blob | undefined;
+      // OpenAI inpaint records the padding metadata so the
+      // postprocess step can crop the model's output back into the
+      // atlas slot. Other paths leave this null.
+      let openaiInpaintPadding: {
+        paddingOffset: { x: number; y: number; w: number; h: number };
+        sourceBBox: { x: number; y: number; w: number; h: number };
+        canvasSize: number;
+      } | null = null;
       if (!useMultiComponent) {
-        if (isInpaintingModel) {
-          // **Source pre-processing for inpainting**: bake the layer's
-          // transparent area to neutral grey before handing it to the
-          // model. The default behaviour of an isolated atlas crop
-          // (transparent background, lone silhouette) makes fal's
-          // inpainter read the silhouette as "outline of a character
-          // to fill in" — face / body / accessories appear inside.
-          // A grey backdrop reframes the input as "texture region
-          // embedded in a neutral frame", which the model handles
-          // correctly. Mask channel stays the same.
+        if (isOpenAIInpaint && inpaintMaskBlob) {
+          // **OpenAI inpaint path**: send the silhouette as a normal
+          // OpenAI-padded square + the inpaint mask converted into
+          // gpt-image-2's `alpha=0 = edit` convention, aligned to the
+          // same padding offset. gpt-image-2 handles atlas crops
+          // correctly (no "character thumbnail" hallucination) so
+          // this path is the one to pick when the user actually wants
+          // mask-bounded edits.
+          const prep = prepareOpenAISource(sourceCanvas);
+          openaiInpaintPadding = {
+            paddingOffset: prep.paddingOffset,
+            sourceBBox: prep.sourceBBox,
+            canvasSize: prep.padded.width,
+          };
+          geminiSourceBlob = await canvasToPngBlob(prep.padded);
+          geminiMaskBlob = await convertInpaintMaskToOpenAIPadded(
+            inpaintMaskBlob,
+            prep.paddingOffset,
+            prep.padded.width,
+          );
+          console.info(
+            `[generate] openai inpaint: padded source=${prep.padded.width}x${prep.padded.height}, ` +
+              `mask aligned at offset=(${prep.paddingOffset.x},${prep.paddingOffset.y}) ` +
+              `subrect=${prep.paddingOffset.w}x${prep.paddingOffset.h}. ` +
+              "Mask convention inverted to gpt-image-2 (alpha=0 = edit).",
+          );
+        } else if (isInpaintingModel) {
+          // **fal flux-inpainting path** — kept around for cheap fan-
+          // out, even though atlas-crop quality is poor. Source is
+          // baked to neutral grey to dampen the "character thumbnail"
+          // prior; mask is forwarded in the standard FLUX/SDXL
+          // convention (RGB white = edit).
           geminiSourceBlob = await bakeTransparencyToNeutral(sourceCanvas);
           console.info(
             `[generate] inpaint source: baked transparency to neutral grey (${geminiSourceBlob.size}B). ` +
@@ -1347,7 +1390,12 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           sourceCanvas,
         });
       } else {
-        // Gemini path stays single-source / mask-aware.
+        // Gemini / fal / OpenAI-inpaint share the single-source +
+        // mask submit path. The postprocess crop differs: OpenAI
+        // inpaint went through `prepareOpenAISource`, so its result
+        // needs the same `paddingOffset` / `sourceBBox` matching that
+        // the multi-component OpenAI path uses. Gemini / fal paths
+        // stay at native dims.
         if (!geminiSourceBlob) throw new Error("gemini source not prepared");
         const rawResult = await submitGenerate({
           providerId,
@@ -1359,10 +1407,10 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           maskImage: geminiMaskBlob,
           referenceImages: submitRefs.length > 0 ? submitRefs : undefined,
         });
-        // No tight-crop / sourceBBox for Gemini — it reads native dims.
         processed = await postprocessGeneratedBlob({
           blob: rawResult,
           sourceCanvas,
+          openAIPadding: openaiInpaintPadding ?? undefined,
         });
       }
 

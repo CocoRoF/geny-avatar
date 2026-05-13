@@ -74,3 +74,81 @@ export async function buildInpaintMaskFromAlpha(sourceCanvas: HTMLCanvasElement)
     }, "image/png");
   });
 }
+
+/**
+ * Convert an inpaint-convention mask blob (RGB white = edit, alpha 255)
+ * into the OpenAI gpt-image-2 mask convention (`alpha=0` = edit zone,
+ * `alpha=255` = preserve), aligned to the OpenAI-padded source dims.
+ *
+ * Why this exists: gpt-image-2 treats atlas crops correctly — it
+ * doesn't try to "complete" the silhouette into a character thumbnail
+ * the way fal-general/inpainting does. But its mask convention is
+ * inverted from the FLUX/SDXL standard our inpaint canvas produces.
+ * This helper bakes both transforms at once:
+ *   1. Bake the mask's luma → alpha (RGB white → alpha=0 edit; RGB
+ *      black → alpha=255 preserve).
+ *   2. Paste at `paddingOffset` inside a `canvasSize`² canvas so the
+ *      mask dims match `prepareOpenAISource`'s padded output. OpenAI
+ *      requires the mask and source to share dims exactly.
+ *
+ * Pixels outside `paddingOffset` (the white border `padToOpenAISquare`
+ * adds around the silhouette) get alpha=255 = preserve. The model
+ * never edits the border so the postprocess crop reads it as
+ * untouched padding.
+ */
+export async function convertInpaintMaskToOpenAIPadded(
+  inpaintMaskBlob: Blob,
+  paddingOffset: { x: number; y: number; w: number; h: number },
+  canvasSize: number,
+): Promise<Blob> {
+  // Decode the inpaint mask blob to an Image we can draw.
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("inpaint mask blob decode failed"));
+    i.src = URL.createObjectURL(inpaintMaskBlob);
+  });
+
+  // Draw the mask into a temp canvas at the padded subrect to read
+  // its RGB at the resampled scale.
+  const inner = document.createElement("canvas");
+  inner.width = paddingOffset.w;
+  inner.height = paddingOffset.h;
+  const innerCtx = inner.getContext("2d", { willReadFrequently: true });
+  if (!innerCtx) throw new Error("inpaint mask convert 2d context unavailable");
+  innerCtx.drawImage(img, 0, 0, paddingOffset.w, paddingOffset.h);
+  URL.revokeObjectURL(img.src);
+
+  const innerData = innerCtx.getImageData(0, 0, paddingOffset.w, paddingOffset.h);
+  const inPx = innerData.data;
+  // Re-encode pixel-by-pixel: luma → alpha. Convention inversion
+  // bakes in here: edit (white) becomes alpha=0, preserve (black)
+  // becomes alpha=255.
+  for (let i = 0; i < inPx.length; i += 4) {
+    const luma = (inPx[i] + inPx[i + 1] + inPx[i + 2]) / 3;
+    inPx[i] = 255;
+    inPx[i + 1] = 255;
+    inPx[i + 2] = 255;
+    inPx[i + 3] = luma >= 128 ? 0 : 255;
+  }
+  innerCtx.putImageData(innerData, 0, 0);
+
+  // Compose into the final OpenAI-square mask. The whole canvas
+  // starts as preserve (white RGB + alpha 255 everywhere) so border
+  // pixels outside the source silhouette stay untouched.
+  const out = document.createElement("canvas");
+  out.width = canvasSize;
+  out.height = canvasSize;
+  const outCtx = out.getContext("2d");
+  if (!outCtx) throw new Error("inpaint mask padded canvas 2d context unavailable");
+  outCtx.fillStyle = "rgba(255,255,255,1)";
+  outCtx.fillRect(0, 0, canvasSize, canvasSize);
+  outCtx.drawImage(inner, paddingOffset.x, paddingOffset.y);
+
+  return await new Promise<Blob>((resolve, reject) => {
+    out.toBlob((b) => {
+      if (b) resolve(b);
+      else reject(new Error("openai-padded mask toBlob returned null"));
+    }, "image/png");
+  });
+}
