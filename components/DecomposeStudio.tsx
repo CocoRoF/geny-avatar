@@ -1943,32 +1943,17 @@ export function DecomposeStudio({
   // it lives inside another modal that already owns the dismiss
   // affordance. Standalone mode keeps the original fixed-inset
   // overlay + click-to-dismiss backdrop.
-  const Wrapper = embedded
-    ? ({ children }: { children: React.ReactNode }) => (
-        <div className="flex h-full min-h-0 w-full flex-col">{children}</div>
-      )
-    : ({ children }: { children: React.ReactNode }) => (
-        <div className="fixed inset-0 z-40 flex items-stretch bg-black/70 backdrop-blur-sm">
-          <button
-            type="button"
-            aria-label="close"
-            onClick={requestClose}
-            className="absolute inset-0 cursor-default"
-          />
-          <div
-            className={`relative z-10 m-auto flex flex-col border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl ${
-              fullscreen
-                ? "h-screen w-screen rounded-none"
-                : "h-[95vh] w-[min(96vw,1800px)] rounded"
-            }`}
-          >
-            {children}
-          </div>
-        </div>
-      );
-
-  return (
-    <Wrapper>
+  //
+  // The wrapper is built as JSX (NOT a component defined inside this
+  // function). Defining `function Wrapper({children})` here would
+  // give React a fresh component type on every render, which makes
+  // every child — canvases, refs, effects — unmount + remount.
+  // That ping-ponged through `setPreviewRef` → `setPreviewEl` →
+  // re-render → unmount → mount → setState until React tripped its
+  // "Maximum update depth exceeded" guard. JSX inline keeps the
+  // DOM tree stable across renders.
+  const inner = (
+    <>
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
         <span className="font-mono text-[var(--color-accent)]">decompose · v1</span>
         <span className="text-[var(--color-fg-dim)]">{layer.name}</span>
@@ -2520,7 +2505,27 @@ export function DecomposeStudio({
           </div>
         </div>
       </div>
-    </Wrapper>
+    </>
+  );
+
+  return embedded ? (
+    <div className="flex h-full min-h-0 w-full flex-col">{inner}</div>
+  ) : (
+    <div className="fixed inset-0 z-40 flex items-stretch bg-black/70 backdrop-blur-sm">
+      <button
+        type="button"
+        aria-label="close"
+        onClick={requestClose}
+        className="absolute inset-0 cursor-default"
+      />
+      <div
+        className={`relative z-10 m-auto flex flex-col border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl ${
+          fullscreen ? "h-screen w-screen rounded-none" : "h-[95vh] w-[min(96vw,1800px)] rounded"
+        }`}
+      >
+        {inner}
+      </div>
+    </div>
   );
 }
 
