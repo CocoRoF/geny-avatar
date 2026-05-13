@@ -452,6 +452,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
   // user is editing (not the whole layer with other regions visible
   // in the corners). Single-component layers and the picker view
   // both fall through to painting the full preview.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeTab is intentional — forces redraw when the GEN body remounts after a MASK-tab visit
   useEffect(() => {
     if (!ready) return;
     const display = sourceRef.current;
@@ -490,7 +491,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     display.width = preview.width;
     display.height = preview.height;
     display.getContext("2d")?.drawImage(preview, 0, 0);
-  }, [ready, focusedRegionIdx, components]);
+    // `activeTab` is in deps so the SOURCE canvas redraws when the
+    // user comes back from the MASK tab — the GEN body is unmounted
+    // while MASK is active, so the new canvas DOM is blank on
+    // remount and we have to repaint it.
+  }, [ready, focusedRegionIdx, components, activeTab]);
 
   // ----- G.7: focus-mode RESULT preview -----
   // Paints the focused region's `regionStates[idx].resultBlob`
@@ -499,6 +504,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
   // focused) this canvas isn't rendered; in single-component /
   // Gemini paths the legacy `<img src={phase.url}>` still drives
   // RESULT.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeTab forces redraw on GEN-tab remount (mirrors the SOURCE preview effect)
   useEffect(() => {
     if (!ready) return;
     if (!isFocusedMulti || focusedRegionIdx === null) return;
@@ -536,7 +542,9 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [ready, isFocusedMulti, focusedRegionIdx, components, regionStates]);
+    // `activeTab` so RESULT canvas redraws on GEN-tab remount, same
+    // reason as the SOURCE preview effect above.
+  }, [ready, isFocusedMulti, focusedRegionIdx, components, regionStates, activeTab]);
 
   // ----- mount: load AI job history for this layer -----
   useEffect(() => {
