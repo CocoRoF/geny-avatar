@@ -256,16 +256,24 @@ export class FalAIProvider implements AIProvider {
 
   /**
    * Inpainting scaffold — used only for the flux-general/inpainting
-   * endpoint. The model already honours the mask channel for region
-   * containment, so we don't need the "isolated atlas texture / no
-   * character features" guardrails that flux-2/edit needs. We do
-   * still want to bias toward anime/illustration and against
-   * photoreal drift on anime puppets.
+   * endpoint. The mask channel handles spatial containment, but the
+   * model's prior still wants to "complete" the silhouette into a
+   * character (face, body, accessories) when the masked region looks
+   * like an isolated atlas crop. The scaffold attacks this directly:
+   *
+   *   - Names the source as a texture region, not a thumbnail.
+   *   - Forbids character features explicitly (strongest negative
+   *     signal flux honours).
+   *   - Anime / illustration style negation against photoreal drift.
+   *   - Keeps the user intent at the end so it reads as the primary
+   *     instruction.
    */
   private composeInpaintingPrompt(input: ProviderGenerateInput): string {
     const userIntent = (input.refinedPrompt ?? input.prompt).trim();
     return [
-      userIntent.length > 0 ? userIntent : "preserve the existing region",
+      "The image is one drawable from a multi-part Live2D-style 2D rigged puppet — an ISOLATED ATLAS TEXTURE REGION, NOT a portrait or character thumbnail.",
+      "Repaint ONLY the masked region. DO NOT add face, eyes, mouth, body, hands, accessories, or any character feature that is not already present. The grey background outside the mask is just padding; do not bleed colours into it and do not treat the silhouette as a complete character to draw.",
+      `Edit instruction: ${userIntent.length > 0 ? userIntent : "(no-op edit — keep the region close to the original)"}`,
       "Style: anime / illustration, soft cel shading. NOT photoreal. NOT 3D. Keep the line weight and shading style of the original.",
     ].join("\n\n");
   }
