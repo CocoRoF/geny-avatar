@@ -49,6 +49,17 @@ export type ProviderGenerateInput = {
    *  this. Order matters for prompt scaffolding — we put user-uploaded
    *  refs first, iterative-history refs (Sprint 5.3) after. */
   referenceImages?: Blob[];
+  /** Optional binary mask the user painted in the GeneratePanel MASK
+   *  tab — RGB white = "focus the edit here", RGB black = "leave this
+   *  alone (hint)". This is NOT a hard inpaint mask: we route it as
+   *  an extra image[] reference so the model can read it as
+   *  region-bounded guidance while still using the multi-image edit
+   *  pipeline (which handles atlas crops correctly). The FLUX inpaint
+   *  endpoints (which read masks as hard boundaries) were tried first
+   *  and failed — they fill the silhouette with a full character
+   *  regardless of the mask. Soft-hint via reference image keeps the
+   *  user intent without the architectural prior fighting us. */
+  maskReferenceImage?: Blob;
   prompt: string;
   /** Sprint 5.4 — when the prompt-refinement pipeline reshapes the
    *  user's text via a chat model (`/api/ai/refine-prompt`), the

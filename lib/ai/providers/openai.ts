@@ -87,24 +87,24 @@ export class OpenAIProvider implements AIProvider {
     form.set("model", model);
     form.set("prompt", composedPromptText);
     form.set("n", "1");
-    // Image and mask must be PNG with matching dims. The client guarantees
-    // both via lib/ai/client.ts (padToOpenAISquare + buildOpenAIMaskCanvas)
-    // before calling /api/ai/generate. We deliberately omit `size`,
-    // `quality`, and `response_format`: the live edits endpoint
-    // validates these strictly per-model and 400s on values that the
-    // public docs *show* as valid for some siblings (e.g. gpt-image-2
-    // rejects `quality: "auto"` even though gpt-image-1 docs list it).
-    // Defaults pick a sensible size from the input dims and return
-    // b64_json, which is what we want.
     //
-    // Multi-image: the docs use `image[]` array notation
-    //   curl -F "image[]=@a.png" -F "image[]=@b.png" ...
-    // The first entry is the one the mask is applied to. We always put
-    // the layer source there; reference images come after as character
-    // / style anchors. fetch's FormData repeats the key for arrays, so
-    // a single `image` key with multiple appends would be ambiguous —
-    // we use the explicit `image[]` notation for safety.
+    // **image[] ordering — important**:
+    //   [1] source (the canvas being edited; `mask` parameter applies
+    //       to this entry, when present).
+    //   [2] mask reference (when the user painted one in the MASK
+    //       tab) — a soft region hint, not a hard inpaint mask. The
+    //       FLUX inpaint endpoints we tried earlier read masks as
+    //       strict bounds and stamped a full character inside the
+    //       silhouette regardless of mask. gpt-image-2's multi-image
+    //       pipeline lets us frame the mask as auxiliary guidance via
+    //       prompt language instead.
+    //   [3..] caller-supplied reference images (style anchor, char
+    //       snapshot, etc.).
+    //
     form.append("image[]", input.sourceImage, "source.png");
+    if (input.maskReferenceImage) {
+      form.append("image[]", input.maskReferenceImage, "mask-reference.png");
+    }
     refs.forEach((ref, idx) => {
       const ext = blobExtension(ref);
       form.append("image[]", ref, `reference-${idx}.${ext}`);
@@ -118,15 +118,21 @@ export class OpenAIProvider implements AIProvider {
     // Mirrors the client-side [ai/submit] group so the operator can
     // correlate request shape end-to-end without trusting the network
     // panel.
+    const hasMaskRef = !!input.maskReferenceImage;
+    const totalImages = 1 + (hasMaskRef ? 1 : 0) + refs.length;
+    const refStart = hasMaskRef ? 2 : 1;
     console.info(
       `[openai] POST ${ENDPOINT}\n` +
         `         model: ${model}\n` +
-        `         image[]: ${1 + refs.length} entries\n` +
+        `         image[]: ${totalImages} entries\n` +
         `           [0] source: ${input.sourceImage.size}B (${input.sourceImage.type || "?"})\n` +
+        (hasMaskRef && input.maskReferenceImage
+          ? `           [1] mask-reference: ${input.maskReferenceImage.size}B — soft edit-region hint\n`
+          : "") +
         refs
           .map(
             (r, i) =>
-              `           [${i + 1}] reference: ${r.size}B (${r.type || "?"}) — ride-along anchor`,
+              `           [${i + refStart}] reference: ${r.size}B (${r.type || "?"}) — ride-along anchor`,
           )
           .join("\n") +
         (refs.length > 0 ? "\n" : "") +
@@ -208,6 +214,11 @@ export class OpenAIProvider implements AIProvider {
     const refs = input.referenceImages ?? [];
     const hasRefs = refs.length > 0;
     const hasMask = !!input.maskImage;
+    const hasMaskRef = !!input.maskReferenceImage;
+    // image[2] is the mask reference when one is attached; the regular
+    // refs shift to image[3+]. We rebuild the labels accordingly so the
+    // prompt names every slot correctly.
+    const refSlotBase = hasMaskRef ? 3 : 2;
     // Refined prompts are instructed not to prepend "Edit [image 1]:"
     // since this method adds it. If the LLM ignored that instruction
     // (it sometimes does — model habit overrides system prompt), strip
@@ -224,9 +235,16 @@ export class OpenAIProvider implements AIProvider {
     sections.push(
       "[image 1] is the canvas to edit — it represents one drawable of a multi-part Live2D-style 2D rigged puppet (skirt, face, hair, accessory, etc.). The render pipeline alpha-clips the output to [image 1]'s silhouette automatically, so don't worry about where the shape ends — focus on what fills it.",
     );
+    if (hasMaskRef) {
+      sections.push(
+        "[image 2] is a binary edit-region HINT painted by the user — WHITE regions mark where the edit should land, BLACK regions are the user's hint to leave the original content alone. Treat this as soft guidance, not a strict boundary: keep [image 1]'s overall composition consistent, but bias the change toward the white pixels. The HINT exists at the same dimensions and alignment as [image 1].",
+      );
+    }
     if (hasRefs) {
       const refLabels =
-        refs.length === 1 ? "[image 2]" : refs.map((_, i) => `[image ${i + 2}]`).join(", ");
+        refs.length === 1
+          ? `[image ${refSlotBase}]`
+          : refs.map((_, i) => `[image ${i + refSlotBase}]`).join(", ");
       sections.push(
         `${refLabels} ${
           refs.length === 1 ? "is a visual reference" : "are visual references"
