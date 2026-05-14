@@ -9,7 +9,6 @@ import {
   fetchProviders,
   type ProviderAvailability,
   postprocessGeneratedBlob,
-  prepareOpenAISource,
   prepareOpenAISourcesFromMasks,
   prepareOpenAISourcesPerComponent,
   refinePrompt,
@@ -23,10 +22,7 @@ import {
   componentThumbnail,
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
-import {
-  buildInpaintMaskFromAlpha,
-  convertInpaintMaskToOpenAIPadded,
-} from "@/lib/avatar/inpaintMask";
+import { buildInpaintMaskFromAlpha } from "@/lib/avatar/inpaintMask";
 import { bakeTransparencyToNeutral, padInpaintMaskToFrame } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -797,6 +793,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         negativePrompt: negativePrompt.trim() || undefined,
         modelId: modelId || undefined,
         sourceImage: compSourceBlob,
+        // User MASK travels as a soft region hint via image[] (see
+        // openai.ts composePrompt). Each region call gets the same
+        // layer-level mask — the prompt language tells the model to
+        // treat the white pixels as "focus the edit here".
+        maskReferenceImage: inpaintMaskBlob ?? undefined,
         referenceImages: refsBlobs.length > 0 ? refsBlobs : undefined,
       });
       return await postprocessGeneratedBlob({
@@ -808,7 +809,16 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         },
       });
     },
-    [componentPrompts, components, componentLabels, providerId, prompt, negativePrompt, modelId],
+    [
+      componentPrompts,
+      components,
+      componentLabels,
+      providerId,
+      prompt,
+      negativePrompt,
+      modelId,
+      inpaintMaskBlob,
+    ],
   );
 
   /** F.2: composite the panel's current set of per-region result blobs
@@ -997,15 +1007,16 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // For Gemini we still pass the raw mask through — Gemini does
       // accept a binary mask and uses it correctly.
       //
-      // **OpenAI inpaint mode**: when the user has painted an inpaint
-      // mask in the MASK tab AND picked OpenAI, we switch to the
-      // single-source + mask path (the one OpenAI's `/v1/images/edits`
-      // was actually designed for). OpenAI handles atlas-crop edits
-      // correctly without the "character thumbnail" hallucination
-      // fal-general/inpainting suffers from. The multi-component
-      // split path stays the default for OpenAI without a mask.
-      const isOpenAIInpaint = providerId === "openai" && !!inpaintMaskBlob;
-      const useMultiComponent = providerId === "openai" && !isOpenAIInpaint;
+      // **User MASK = soft hint, not a hard inpaint mask**. Every FLUX
+      // inpaint endpoint we tried (PR #15/#27/#28) reads the mask as
+      // a strict bound and fills the silhouette with a complete
+      // character regardless. gpt-image-2's multi-image edit pipeline
+      // (the multi-component path we already use) handles atlas crops
+      // correctly because there's no inpaint prior to fight. So we
+      // ride the mask as an extra `image[]` entry + a prompt-language
+      // hint, instead of switching paths based on its presence. See
+      // `lib/ai/providers/openai.ts` composePrompt for the hint text.
+      const useMultiComponent = providerId === "openai";
       // F.2: prefer the mount-time cached prepared bundle so we don't
       // pay isolation/pad cost on every submit. Falls through to the
       // recompute path only if the cache hasn't filled yet.
@@ -1069,33 +1080,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         canvasSize: number;
       } | null = null;
       if (!useMultiComponent) {
-        if (isOpenAIInpaint && inpaintMaskBlob) {
-          // **OpenAI inpaint path**: send the silhouette as a normal
-          // OpenAI-padded square + the inpaint mask converted into
-          // gpt-image-2's `alpha=0 = edit` convention, aligned to the
-          // same padding offset. gpt-image-2 handles atlas crops
-          // correctly (no "character thumbnail" hallucination) so
-          // this path is the one to pick when the user actually wants
-          // mask-bounded edits.
-          const prep = prepareOpenAISource(sourceCanvas);
-          openaiInpaintPadding = {
-            paddingOffset: prep.paddingOffset,
-            sourceBBox: prep.sourceBBox,
-            canvasSize: prep.padded.width,
-          };
-          geminiSourceBlob = await canvasToPngBlob(prep.padded);
-          geminiMaskBlob = await convertInpaintMaskToOpenAIPadded(
-            inpaintMaskBlob,
-            prep.paddingOffset,
-            prep.padded.width,
-          );
-          console.info(
-            `[generate] openai inpaint: padded source=${prep.padded.width}x${prep.padded.height}, ` +
-              `mask aligned at offset=(${prep.paddingOffset.x},${prep.paddingOffset.y}) ` +
-              `subrect=${prep.paddingOffset.w}x${prep.paddingOffset.h}. ` +
-              "Mask convention inverted to gpt-image-2 (alpha=0 = edit).",
-          );
-        } else if (isInpaintingModel) {
+        if (isInpaintingModel) {
           // **fal flux-inpainting / flux-pro-fill path** — pad the
           // source into an oversized grey frame so the silhouette
           // becomes a small clipped patch rather than the whole

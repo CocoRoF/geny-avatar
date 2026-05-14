@@ -47,6 +47,7 @@ export async function POST(request: Request) {
   const refinedPrompt = form.get("refinedPrompt");
   const sourceFile = form.get("sourceImage");
   const maskFile = form.get("maskImage");
+  const maskReferenceFile = form.get("maskReferenceImage");
   const negativePrompt = form.get("negativePrompt");
   const modelId = form.get("modelId");
   const seedStr = form.get("seed");
@@ -104,6 +105,7 @@ export async function POST(request: Request) {
   void runJob(job.id, provider.generate.bind(provider), {
     sourceImage: sourceFile,
     maskImage: maskFile instanceof Blob ? maskFile : undefined,
+    maskReferenceImage: maskReferenceFile instanceof Blob ? maskReferenceFile : undefined,
     referenceImages: forwardedRefs.length > 0 ? forwardedRefs : undefined,
     prompt,
     refinedPrompt:

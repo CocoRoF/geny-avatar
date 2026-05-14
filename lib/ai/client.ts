@@ -684,6 +684,12 @@ export type SubmitGenerateInput = {
    *  preserved end-to-end. Caller is responsible for filtering out
    *  refs when the picked provider doesn't support them. */
   referenceImages?: Blob[];
+  /** Optional binary mask the user painted in the MASK tab. Routed as
+   *  an extra image[] reference so the model reads it as a soft
+   *  edit-region hint (not a hard inpaint boundary). RGB white = focus
+   *  the edit, RGB black = leave alone. OpenAI is the only provider
+   *  that currently consumes it; others drop it at the route. */
+  maskReferenceImage?: Blob;
   /** How long to keep polling before giving up. */
   timeoutMs?: number;
   /** How often to poll status. */
@@ -701,6 +707,9 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
   if (typeof input.seed === "number") form.set("seed", String(input.seed));
   form.set("sourceImage", input.sourceImage, "source.png");
   if (input.maskImage) form.set("maskImage", input.maskImage, "mask.png");
+  if (input.maskReferenceImage) {
+    form.set("maskReferenceImage", input.maskReferenceImage, "mask-reference.png");
+  }
   // Reference images: repeat the same key. The route reads them with
   // `formData.getAll("referenceImage")` and forwards as an array to
   // the provider. We use an indexed filename for diagnostics — none
