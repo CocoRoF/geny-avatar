@@ -522,6 +522,22 @@ export async function postprocessGeneratedBlob(opts: {
     sourceBBox?: { x: number; y: number; w: number; h: number };
     canvasSize?: number;
   };
+  /** Optional user-painted inpaint mask in our own convention
+   *  (RGB white = edit, RGB black = preserve, alpha 255 throughout).
+   *  When set, the model output is hard-masked against this blob:
+   *  pixels where the mask is white keep the AI's result, pixels
+   *  where the mask is black fall back to the original source pixels.
+   *  This is the last line of defence against models that *say* they
+   *  treat the mask as a hint and then redraw the entire silhouette
+   *  anyway — gpt-image-2 has been observed doing exactly that, see
+   *  https://community.openai.com/t/1244275. With this step the user
+   *  intent is enforced after the fact regardless of how the model
+   *  interpreted the prompt.
+   *
+   *  The mask is expected at the same dimensions as `sourceCanvas`
+   *  (the upright atlas crop) — the caller resamples / aligns it
+   *  before passing in if needed. */
+  inpaintMaskBlob?: Blob;
 }): Promise<Blob> {
   const img = await blobToImage(opts.blob);
   const targetW = opts.sourceCanvas.width;
@@ -604,6 +620,54 @@ export async function postprocessGeneratedBlob(opts: {
       cropData.data[i + 3] = Math.round((cropData.data[i + 3] * srcData.data[i + 3]) / 255);
     }
     ctx.putImageData(cropData, 0, 0);
+  }
+
+  // Step 3: hard mask-based blend (user inpaint mask, when present).
+  // After alpha enforcement, replace every pixel outside the user
+  // mask with the original source pixel. The AI's output stays only
+  // inside the white-masked region; the black-masked region is the
+  // user's untouched original. This is the post-hoc enforcement that
+  // makes the mask actually mean what the user wants regardless of
+  // whether the model honoured the prompt hint.
+  if (opts.inpaintMaskBlob) {
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = targetW;
+    maskCanvas.height = targetH;
+    const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
+    if (maskCtx) {
+      const maskImg = await blobToImage(opts.inpaintMaskBlob);
+      maskCtx.drawImage(maskImg, 0, 0, targetW, targetH);
+      const maskData = maskCtx.getImageData(0, 0, targetW, targetH);
+      const srcCtx2 = opts.sourceCanvas.getContext("2d");
+      if (srcCtx2) {
+        const srcData2 = srcCtx2.getImageData(0, 0, targetW, targetH);
+        const resultData = ctx.getImageData(0, 0, targetW, targetH);
+        const px = resultData.data;
+        const sp = srcData2.data;
+        const mp = maskData.data;
+        let editedCount = 0;
+        let preservedCount = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          // Mask luma; white = edit (keep AI result), black = preserve
+          // (revert to source).
+          const luma = (mp[i] + mp[i + 1] + mp[i + 2]) / 3;
+          if (luma >= 128) {
+            editedCount++;
+          } else {
+            px[i] = sp[i];
+            px[i + 1] = sp[i + 1];
+            px[i + 2] = sp[i + 2];
+            px[i + 3] = sp[i + 3];
+            preservedCount++;
+          }
+        }
+        ctx.putImageData(resultData, 0, 0);
+        const total = editedCount + preservedCount;
+        console.info(
+          `[postprocess] mask blend: ${editedCount}/${total} px = AI result, ${preservedCount}/${total} px = preserved source.`,
+        );
+      }
+    }
   }
 
   return await canvasToPngBlob(out);

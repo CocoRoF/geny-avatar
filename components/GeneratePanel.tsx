@@ -1443,6 +1443,12 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           blob: rawResult,
           sourceCanvas,
           openAIPadding: openaiInpaintPadding ?? undefined,
+          // Hard mask enforcement after the AI run. The model may
+          // ignore the soft-hint prompt and redraw the whole layer;
+          // this step replaces every pixel outside the painted mask
+          // with the original source, so the user's region intent
+          // is honoured regardless of model behaviour.
+          inpaintMaskBlob: isOpenAIMaskRef ? (inpaintMaskBlob ?? undefined) : undefined,
         });
       }
 
