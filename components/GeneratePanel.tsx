@@ -27,7 +27,7 @@ import {
   buildInpaintMaskFromAlpha,
   convertInpaintMaskToOpenAIPadded,
 } from "@/lib/avatar/inpaintMask";
-import { bakeTransparencyToNeutral } from "@/lib/avatar/inpaintSourcePrep";
+import { bakeTransparencyToNeutral, padInpaintMaskToFrame } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
 import { componentSignature, useComponentLabels } from "@/lib/avatar/useComponentLabels";
@@ -1096,30 +1096,42 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
               "Mask convention inverted to gpt-image-2 (alpha=0 = edit).",
           );
         } else if (isInpaintingModel) {
-          // **fal flux-inpainting path** — kept around for cheap fan-
-          // out, even though atlas-crop quality is poor. Source is
-          // baked to neutral grey to dampen the "character thumbnail"
-          // prior; mask is forwarded in the standard FLUX/SDXL
-          // convention (RGB white = edit).
-          geminiSourceBlob = await bakeTransparencyToNeutral(sourceCanvas);
+          // **fal flux-inpainting / flux-pro-fill path** — pad the
+          // source into an oversized grey frame so the silhouette
+          // becomes a small clipped patch rather than the whole
+          // canvas. Naive PR #25 baking still let the silhouette fill
+          // the frame edge to edge, which kept the "character outline
+          // — fill this in" prior fully active. Shrinking the silhouette
+          // to ~1/3 of the frame breaks that prior. The same padding
+          // metadata aligns the mask and drives the postprocess crop.
+          const baked = await bakeTransparencyToNeutral(sourceCanvas, { scale: 3 });
+          geminiSourceBlob = baked.blob;
+          openaiInpaintPadding = baked.padding;
           console.info(
-            `[generate] inpaint source: baked transparency to neutral grey (${geminiSourceBlob.size}B). ` +
-              "Drops the 'character thumbnail' prior that hallucinates face/body inside the silhouette.",
+            `[generate] inpaint source: padded ${sourceCanvas.width}x${sourceCanvas.height} ` +
+              `into ${baked.padding.canvasSize}x${baked.padding.canvasSize} grey frame ` +
+              `(silhouette at offset=(${baked.padding.paddingOffset.x},${baked.padding.paddingOffset.y}), ` +
+              `${baked.padding.paddingOffset.w}x${baked.padding.paddingOffset.h}). ` +
+              "Forces the inpainter to read the silhouette as a patch, not a character outline.",
           );
           // Priority: user-painted MASK tab > derived from source alpha.
-          // DecomposeStudio mask is intentionally ignored — different
-          // semantics (hide vs edit). See GenerateMaskEditor doc.
+          // Either way the mask must be aligned to the same padded frame.
+          let rawMask: Blob;
           if (inpaintMaskBlob) {
-            geminiMaskBlob = inpaintMaskBlob;
+            rawMask = inpaintMaskBlob;
             console.info(
               `[generate] inpaint mask: user-painted in MASK tab (${inpaintMaskBlob.size}B).`,
             );
           } else {
-            geminiMaskBlob = await buildInpaintMaskFromAlpha(sourceCanvas);
+            rawMask = await buildInpaintMaskFromAlpha(sourceCanvas);
             console.info(
-              `[generate] inpaint mask: derived from source alpha (${geminiMaskBlob.size}B). DecomposeStudio mask ignored (hide-vs-edit convention conflict).`,
+              `[generate] inpaint mask: derived from source alpha (${rawMask.size}B). DecomposeStudio mask ignored (hide-vs-edit convention conflict).`,
             );
           }
+          geminiMaskBlob = await padInpaintMaskToFrame(rawMask, baked.padding);
+          console.info(
+            `[generate] inpaint mask: padded to ${baked.padding.canvasSize}² frame (${geminiMaskBlob.size}B).`,
+          );
         } else {
           geminiSourceBlob = await canvasToPngBlob(sourceCanvas);
           geminiMaskBlob = existingMask ?? undefined;
