@@ -727,7 +727,12 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
   }
   const { jobId } = (await submit.json()) as { jobId: string };
 
-  const timeoutMs = input.timeoutMs ?? 120_000;
+  // OpenAI gpt-image-2 multi-image edits (3 image[] entries + long
+  // refined prompt + mask reference) can run 60-150s in our use case.
+  // The old 120s ceiling cut off legitimate in-flight calls; 300s
+  // covers the worst observed runs without letting genuinely broken
+  // submits hang forever.
+  const timeoutMs = input.timeoutMs ?? 300_000;
   const intervalMs = input.pollIntervalMs ?? 1500;
   const start = Date.now();
 

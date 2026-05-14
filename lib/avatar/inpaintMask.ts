@@ -76,6 +76,51 @@ export async function buildInpaintMaskFromAlpha(sourceCanvas: HTMLCanvasElement)
 }
 
 /**
+ * Pad an inpaint-convention mask blob (RGB white = edit, RGB black =
+ * preserve) onto an OpenAI-padded square frame WITHOUT inverting the
+ * convention. Used when the mask travels as an `image[]` reference
+ * hint (not a hard inpaint mask), so the model reads "[image N] is a
+ * white-on-black region hint" via the prompt scaffold.
+ *
+ * Output: white inside the silhouette offset (matches the original
+ * mask), black everywhere else (the padded border preserves). Alpha
+ * always 255 — keeps the multi-image edit pipeline happy regardless
+ * of whether the model reads alpha or luma.
+ */
+export async function padInpaintMaskRefToOpenAI(
+  inpaintMaskBlob: Blob,
+  paddingOffset: { x: number; y: number; w: number; h: number },
+  canvasSize: number,
+): Promise<Blob> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("inpaint mask ref blob decode failed"));
+    i.src = URL.createObjectURL(inpaintMaskBlob);
+  });
+
+  const out = document.createElement("canvas");
+  out.width = canvasSize;
+  out.height = canvasSize;
+  const ctx = out.getContext("2d");
+  if (!ctx) {
+    URL.revokeObjectURL(img.src);
+    throw new Error("padInpaintMaskRefToOpenAI 2d context unavailable");
+  }
+  ctx.fillStyle = "rgb(0,0,0)";
+  ctx.fillRect(0, 0, canvasSize, canvasSize);
+  ctx.drawImage(img, paddingOffset.x, paddingOffset.y, paddingOffset.w, paddingOffset.h);
+  URL.revokeObjectURL(img.src);
+
+  return await new Promise<Blob>((resolve, reject) => {
+    out.toBlob((b) => {
+      if (b) resolve(b);
+      else reject(new Error("padded inpaint mask ref toBlob returned null"));
+    }, "image/png");
+  });
+}
+
+/**
  * Convert an inpaint-convention mask blob (RGB white = edit, alpha 255)
  * into the OpenAI gpt-image-2 mask convention (`alpha=0` = edit zone,
  * `alpha=255` = preserve), aligned to the OpenAI-padded source dims.

@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-mask-as-reference-hint.md](2026-05-13-mask-as-reference-hint.md) | 1.x Option X (mask = hint) | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-openai-timeout-and-mask-ref-alignment.md](2026-05-13-openai-timeout-and-mask-ref-alignment.md) | 1.x timeout + dim align | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-mask-as-reference-hint.md](2026-05-13-mask-as-reference-hint.md) | 1.x Option X (mask = hint) | [#29](https://github.com/CocoRoF/geny-avatar/pull/29) | done |
 | 2026-05-13 | [2026-05-13-inpaint-oversized-frame.md](2026-05-13-inpaint-oversized-frame.md) | 1.x oversized frame | [#28](https://github.com/CocoRoF/geny-avatar/pull/28) | done |
 | 2026-05-13 | [2026-05-13-falai-flux-pro-fill.md](2026-05-13-falai-flux-pro-fill.md) | 1.x FLUX pro fill | [#27](https://github.com/CocoRoF/geny-avatar/pull/27) | done |
 | 2026-05-13 | [2026-05-13-openai-inpaint-path.md](2026-05-13-openai-inpaint-path.md) | 1.x OpenAI inpaint | [#26](https://github.com/CocoRoF/geny-avatar/pull/26) | done |
