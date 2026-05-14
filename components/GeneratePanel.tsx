@@ -303,10 +303,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
-  /** RESULT-toolbar blend mode. `ai-only` matches the legacy behaviour
-   *  (whole AI output as-is). `mask-hard` enforces the user's MASK
-   *  region post-hoc — pixels outside the painted mask fall back to
-   *  the original source. Pure client-side, no extra provider call. */
+  /** RESULT-toolbar blend mode. `ai-only` keeps the model's full
+   *  output. `mask-soft` lerp-blends with a feathered mask (default
+   *  for natural edges like hair). `mask-hard` is a binary cut at the
+   *  mask edge (for clean rectangular / lasso intent). All three are
+   *  pure client-side — toggling never calls the provider again. */
   const [blendMode, setBlendMode] = useState<BlendMode>("ai-only");
   /** Re-blend the displayed RESULT whenever the mode changes after a
    *  generation has succeeded. We never call the provider again — the
@@ -2005,7 +2006,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                     {phase.kind === "succeeded" && (
                       <span
                         className="flex items-center gap-1 normal-case tracking-normal"
-                        title="결과 합성 방식 — 마스크가 있을 때만 mask-hard 의미. 변경하면 즉시 RESULT 미리보기 갱신."
+                        title="결과 합성 방식 — 변경하면 즉시 RESULT 미리보기 갱신. mask-* 은 MASK 탭에서 영역을 그렸을 때만 활성화."
                       >
                         <span className="text-[var(--color-fg-dim)]">blend:</span>
                         <button
@@ -2023,6 +2024,25 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setBlendMode("mask-soft")}
+                          disabled={!inpaintMaskBlob}
+                          className={[
+                            "rounded border px-2 py-0.5 font-mono text-[10px] transition",
+                            blendMode === "mask-soft"
+                              ? "border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                              : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                            !inpaintMaskBlob ? "cursor-not-allowed opacity-30" : "",
+                          ].join(" ")}
+                          title={
+                            inpaintMaskBlob
+                              ? "마스크를 흐리게 깃털 처리해서 경계를 부드럽게 합성. 머리카락 등 자연스러운 가장자리에 권장."
+                              : "MASK 탭에서 마스크를 먼저 그려야 활성화됩니다."
+                          }
+                        >
+                          mask-soft
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setBlendMode("mask-hard")}
                           disabled={!inpaintMaskBlob}
                           className={[
@@ -2034,7 +2054,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                           ].join(" ")}
                           title={
                             inpaintMaskBlob
-                              ? "마스크 white 영역은 AI 결과, black 영역은 원본 소스 유지."
+                              ? "마스크 경계를 칼같이 잘라서 white = AI, black = 원본. 직선/사각 영역에 권장."
                               : "MASK 탭에서 마스크를 먼저 그려야 활성화됩니다."
                           }
                         >
