@@ -9,6 +9,7 @@ import {
   fetchProviders,
   type ProviderAvailability,
   postprocessGeneratedBlob,
+  prepareOpenAISource,
   prepareOpenAISourcesFromMasks,
   prepareOpenAISourcesPerComponent,
   refinePrompt,
@@ -22,7 +23,7 @@ import {
   componentThumbnail,
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
-import { buildInpaintMaskFromAlpha } from "@/lib/avatar/inpaintMask";
+import { buildInpaintMaskFromAlpha, padInpaintMaskRefToOpenAI } from "@/lib/avatar/inpaintMask";
 import { bakeTransparencyToNeutral, padInpaintMaskToFrame } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -1007,16 +1008,17 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // For Gemini we still pass the raw mask through — Gemini does
       // accept a binary mask and uses it correctly.
       //
-      // **User MASK = soft hint, not a hard inpaint mask**. Every FLUX
-      // inpaint endpoint we tried (PR #15/#27/#28) reads the mask as
-      // a strict bound and fills the silhouette with a complete
-      // character regardless. gpt-image-2's multi-image edit pipeline
-      // (the multi-component path we already use) handles atlas crops
-      // correctly because there's no inpaint prior to fight. So we
-      // ride the mask as an extra `image[]` entry + a prompt-language
-      // hint, instead of switching paths based on its presence. See
-      // `lib/ai/providers/openai.ts` composePrompt for the hint text.
-      const useMultiComponent = providerId === "openai";
+      // **OpenAI + user MASK**: drop the multi-component split and
+      // route through a single padded source so the mask reference
+      // can share dims and stay spatially aligned with the source.
+      // The mask travels as an extra `image[]` entry (soft hint, not
+      // a hard inpaint mask) — `lib/ai/providers/openai.ts`
+      // composePrompt names it and tells the model "white = focus,
+      // black = preserve" guidance. Multi-component split is kept
+      // for OpenAI calls without a mask (the legacy atlas-per-island
+      // flow stays the default for unmasked edits).
+      const isOpenAIMaskRef = providerId === "openai" && !!inpaintMaskBlob;
+      const useMultiComponent = providerId === "openai" && !isOpenAIMaskRef;
       // F.2: prefer the mount-time cached prepared bundle so we don't
       // pay isolation/pad cost on every submit. Falls through to the
       // recompute path only if the cache hasn't filled yet.
@@ -1079,8 +1081,32 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         sourceBBox: { x: number; y: number; w: number; h: number };
         canvasSize: number;
       } | null = null;
+      // OpenAI + mask travels here too — the mask reference image
+      // needs to share dims with the padded source so the model can
+      // align them. PR #26's `prepareOpenAISource` already builds the
+      // 1024² square; we reuse it and pad the mask with
+      // `padInpaintMaskRefToOpenAI` to the same offset.
+      let openaiMaskRefBlob: Blob | undefined;
       if (!useMultiComponent) {
-        if (isInpaintingModel) {
+        if (isOpenAIMaskRef && inpaintMaskBlob) {
+          const prep = prepareOpenAISource(sourceCanvas);
+          openaiInpaintPadding = {
+            paddingOffset: prep.paddingOffset,
+            sourceBBox: prep.sourceBBox,
+            canvasSize: prep.padded.width,
+          };
+          geminiSourceBlob = await canvasToPngBlob(prep.padded);
+          openaiMaskRefBlob = await padInpaintMaskRefToOpenAI(
+            inpaintMaskBlob,
+            prep.paddingOffset,
+            prep.padded.width,
+          );
+          console.info(
+            `[generate] openai mask-ref hint: padded source=${prep.padded.width}x${prep.padded.height}, ` +
+              `mask aligned at offset=(${prep.paddingOffset.x},${prep.paddingOffset.y}) ` +
+              `subrect=${prep.paddingOffset.w}x${prep.paddingOffset.h}.`,
+          );
+        } else if (isInpaintingModel) {
           // **fal flux-inpainting / flux-pro-fill path** — pad the
           // source into an oversized grey frame so the silhouette
           // becomes a small clipped patch rather than the whole
@@ -1407,6 +1433,10 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           modelId: modelId || undefined,
           sourceImage: geminiSourceBlob,
           maskImage: geminiMaskBlob,
+          // OpenAI + mask path: route the user mask as a soft hint
+          // reference (dim-aligned to padded source). fal/Gemini paths
+          // leave this undefined.
+          maskReferenceImage: openaiMaskRefBlob,
           referenceImages: submitRefs.length > 0 ? submitRefs : undefined,
         });
         processed = await postprocessGeneratedBlob({
