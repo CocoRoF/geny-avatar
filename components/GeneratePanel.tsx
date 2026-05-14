@@ -4,7 +4,9 @@ import type { Application } from "pixi.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import {
+  type BlendMode,
   canvasToPngBlob,
+  composeAIResultWithMask,
   compositeProcessedComponents,
   fetchProviders,
   type ProviderAvailability,
@@ -293,10 +295,52 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     | { kind: "idle" }
     | { kind: "submitting" }
     | { kind: "running" }
-    | { kind: "succeeded"; url: string; blob: Blob }
+    /** `aiBlob` = postprocess output untouched by mask blending (the
+     *  raw AI edit at atlas dims). `blob` = the user's currently
+     *  selected blend, which is what `onApply` writes to the atlas. */
+    | { kind: "succeeded"; url: string; blob: Blob; aiBlob: Blob }
     | { kind: "applying" }
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
+
+  /** RESULT-toolbar blend mode. `ai-only` matches the legacy behaviour
+   *  (whole AI output as-is). `mask-hard` enforces the user's MASK
+   *  region post-hoc — pixels outside the painted mask fall back to
+   *  the original source. Pure client-side, no extra provider call. */
+  const [blendMode, setBlendMode] = useState<BlendMode>("ai-only");
+  /** Re-blend the displayed RESULT whenever the mode changes after a
+   *  generation has succeeded. We never call the provider again — the
+   *  AI blob is cached in `phase.aiBlob` and re-composed against the
+   *  current mask + source. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: source canvas is a ref + composition is intentional
+  useEffect(() => {
+    if (phase.kind !== "succeeded") return;
+    const sourceCanvas = aiSourceCanvasRef.current;
+    if (!sourceCanvas) return;
+    let cancelled = false;
+    (async () => {
+      const blended = await composeAIResultWithMask({
+        aiResultBlob: phase.aiBlob,
+        sourceCanvas,
+        maskBlob: inpaintMaskBlob,
+        mode: blendMode,
+      });
+      if (cancelled) return;
+      setPhase((prev) => {
+        if (prev.kind !== "succeeded") return prev;
+        URL.revokeObjectURL(prev.url);
+        return {
+          kind: "succeeded",
+          url: URL.createObjectURL(blended),
+          blob: blended,
+          aiBlob: prev.aiBlob,
+        };
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [blendMode, inpaintMaskBlob, phase.kind]);
 
   // ----- mount: extract two source canvases -----
   // The display canvas mirrors the live atlas (post-gen + post-mask)
@@ -838,6 +882,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         kind: "succeeded" as const,
         url: URL.createObjectURL(composite),
         blob: composite,
+        aiBlob: composite,
       };
     });
     // Update the iteration anchor source-of-truth alongside the
@@ -1443,17 +1488,20 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           blob: rawResult,
           sourceCanvas,
           openAIPadding: openaiInpaintPadding ?? undefined,
-          // Hard mask enforcement after the AI run. The model may
-          // ignore the soft-hint prompt and redraw the whole layer;
-          // this step replaces every pixel outside the painted mask
-          // with the original source, so the user's region intent
-          // is honoured regardless of model behaviour.
-          inpaintMaskBlob: isOpenAIMaskRef ? (inpaintMaskBlob ?? undefined) : undefined,
         });
       }
 
-      const url = URL.createObjectURL(processed);
-      setPhase({ kind: "succeeded", url, blob: processed });
+      // Apply the user's currently-selected blend mode. `aiBlob`
+      // stays around so the user can flip modes after the AI returns
+      // without re-calling the provider.
+      const blended = await composeAIResultWithMask({
+        aiResultBlob: processed,
+        sourceCanvas,
+        maskBlob: inpaintMaskBlob,
+        mode: blendMode,
+      });
+      const url = URL.createObjectURL(blended);
+      setPhase({ kind: "succeeded", url, blob: blended, aiBlob: processed });
     } catch (e) {
       setPhase({ kind: "failed", reason: e instanceof Error ? e.message : String(e) });
     }
@@ -1534,7 +1582,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     setNegativePrompt(row.negativePrompt ?? "");
     setProviderId(row.providerId);
     if (row.modelId) setModelId(row.modelId);
-    setPhase({ kind: "succeeded", url, blob: row.resultBlob });
+    setPhase({ kind: "succeeded", url, blob: row.resultBlob, aiBlob: row.resultBlob });
   }
 
   function onReset() {
@@ -1634,7 +1682,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     // Clear any pending preview so the panel reflects the new state.
     if (phase.kind === "succeeded") URL.revokeObjectURL(phase.url);
     const url = URL.createObjectURL(composite);
-    setPhase({ kind: "succeeded", url, blob: composite });
+    setPhase({ kind: "succeeded", url, blob: composite, aiBlob: composite });
   }
 
   const submitDisabled =
@@ -1945,15 +1993,55 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                   className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 p-4"
                   style={previewBg}
                 >
-                  <div className="text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
-                    result
+                  <div className="flex w-full max-w-full items-center justify-center gap-3 text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+                    <span>result</span>
                     {isFocusedMulti &&
                       focusedRegionIdx !== null &&
                       components[focusedRegionIdx] && (
-                        <span className="ml-2 text-[var(--color-accent)]">
+                        <span className="text-[var(--color-accent)]">
                           · region {focusedRegionIdx + 1} of {components.length}
                         </span>
                       )}
+                    {phase.kind === "succeeded" && (
+                      <span
+                        className="flex items-center gap-1 normal-case tracking-normal"
+                        title="결과 합성 방식 — 마스크가 있을 때만 mask-hard 의미. 변경하면 즉시 RESULT 미리보기 갱신."
+                      >
+                        <span className="text-[var(--color-fg-dim)]">blend:</span>
+                        <button
+                          type="button"
+                          onClick={() => setBlendMode("ai-only")}
+                          className={[
+                            "rounded border px-2 py-0.5 font-mono text-[10px] transition",
+                            blendMode === "ai-only"
+                              ? "border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                              : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                          ].join(" ")}
+                          title="AI 결과 전체를 그대로 사용. 마스크 무시."
+                        >
+                          AI only
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBlendMode("mask-hard")}
+                          disabled={!inpaintMaskBlob}
+                          className={[
+                            "rounded border px-2 py-0.5 font-mono text-[10px] transition",
+                            blendMode === "mask-hard"
+                              ? "border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                              : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                            !inpaintMaskBlob ? "cursor-not-allowed opacity-30" : "",
+                          ].join(" ")}
+                          title={
+                            inpaintMaskBlob
+                              ? "마스크 white 영역은 AI 결과, black 영역은 원본 소스 유지."
+                              : "MASK 탭에서 마스크를 먼저 그려야 활성화됩니다."
+                          }
+                        >
+                          mask-hard
+                        </button>
+                      </span>
+                    )}
                   </div>
                   {/* G.7: focus-mode RESULT — show this region's result
                   tight-cropped on a canvas (matches SOURCE preview).

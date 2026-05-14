@@ -64,7 +64,8 @@ progress/
 
 | 날짜 | 파일 | Phase | PR | 상태 |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-postprocess-mask-blend.md](2026-05-13-postprocess-mask-blend.md) | 1.x hard mask blend | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-blend-mode-selectable.md](2026-05-13-blend-mode-selectable.md) | 1.x blend mode UI | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-postprocess-mask-blend.md](2026-05-13-postprocess-mask-blend.md) | 1.x hard mask blend | [#31](https://github.com/CocoRoF/geny-avatar/pull/31) | done |
 | 2026-05-13 | [2026-05-13-openai-timeout-and-mask-ref-alignment.md](2026-05-13-openai-timeout-and-mask-ref-alignment.md) | 1.x timeout + dim align | [#30](https://github.com/CocoRoF/geny-avatar/pull/30) | done |
 | 2026-05-13 | [2026-05-13-mask-as-reference-hint.md](2026-05-13-mask-as-reference-hint.md) | 1.x Option X (mask = hint) | [#29](https://github.com/CocoRoF/geny-avatar/pull/29) | done |
 | 2026-05-13 | [2026-05-13-inpaint-oversized-frame.md](2026-05-13-inpaint-oversized-frame.md) | 1.x oversized frame | [#28](https://github.com/CocoRoF/geny-avatar/pull/28) | done |
