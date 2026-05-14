@@ -616,7 +616,20 @@ export async function postprocessGeneratedBlob(opts: {
  * RESULT toolbar so the user picks what they actually want, instead
  * of the pipeline silently forcing one interpretation.
  */
-export type BlendMode = "ai-only" | "mask-hard";
+export type BlendMode = "ai-only" | "mask-hard" | "mask-soft";
+
+/**
+ * Default feather radius for `mask-soft`, derived from canvas dims.
+ * ~1.5% of the shorter side, clamped to [3, 32]. A 512px atlas crop
+ * gets ~8px feather; a 1024px crop gets ~15px. Big enough to kill the
+ * obvious staircase artifact a hard binary mask produces, small enough
+ * that the mask still tracks the user's painted region instead of
+ * bleeding far outside it.
+ */
+function defaultFeatherRadiusPx(w: number, h: number): number {
+  const r = Math.round(Math.min(w, h) * 0.015);
+  return Math.max(3, Math.min(32, r));
+}
 
 /**
  * Composite the AI's postprocess result with the original source,
@@ -628,15 +641,16 @@ export type BlendMode = "ai-only" | "mask-hard";
  *   - `ai-only`: returns `aiResultBlob` unchanged. Use when the
  *     model handled the edit cleanly and the user wants to keep
  *     every pixel of the AI output.
- *   - `mask-hard`: pixels where the mask is WHITE keep the AI
- *     result; pixels where the mask is BLACK revert to the original
- *     source. Use when the model overflowed the intended region —
- *     gpt-image-2 has been observed redrawing the whole silhouette
- *     in response to a "soft hint" mask. This is the post-hoc
- *     enforcement of the user's region intent.
- *
- * Future modes (soft blend / feathered edge / preserve-luma-only)
- * land here without touching the AI pipeline.
+ *   - `mask-hard`: binary threshold. Pixels where the mask is WHITE
+ *     keep the AI result; pixels where the mask is BLACK revert to
+ *     the original source. Sharpest possible region enforcement —
+ *     useful when the user wants a clean rectangular / lasso cut.
+ *   - `mask-soft`: gaussian-feathered alpha blend. The mask is
+ *     blurred by `featherRadius` (default ~1.5% of canvas), then
+ *     used as a per-pixel weight to lerp between source and AI.
+ *     The painted-region center is fully AI, the painted edge fades
+ *     smoothly back to source. Kills the staircase artifact the
+ *     hard binary cut produces at hair / silhouette edges.
  *
  * `maskBlob` is expected at any dims — drawImage resamples to
  * `sourceCanvas` dims. `null`/undefined disables blending regardless
@@ -647,9 +661,10 @@ export async function composeAIResultWithMask(opts: {
   sourceCanvas: HTMLCanvasElement;
   maskBlob: Blob | null;
   mode: BlendMode;
+  /** Override for `mask-soft` feather radius (px on source-canvas
+   *  dims). Ignored by other modes. */
+  featherRadius?: number;
 }): Promise<Blob> {
-  // No mask attached → there's nothing to blend with. Same for the
-  // AI-only mode regardless of mask presence.
   if (opts.mode === "ai-only" || !opts.maskBlob) {
     return opts.aiResultBlob;
   }
@@ -668,11 +683,10 @@ export async function composeAIResultWithMask(opts: {
   if (!ctx) return opts.aiResultBlob;
 
   // Start from the source so any pixel we don't overwrite stays
-  // untouched. Then paint the AI result on top inside masked pixels.
+  // untouched. AI pixels are blended on top using the mask weight.
   ctx.drawImage(opts.sourceCanvas, 0, 0);
   const baseData = ctx.getImageData(0, 0, w, h);
 
-  // Resample AI + mask to source dims so we can iterate per-pixel.
   const aiCanvas = document.createElement("canvas");
   aiCanvas.width = w;
   aiCanvas.height = h;
@@ -681,32 +695,64 @@ export async function composeAIResultWithMask(opts: {
   aiCtx.drawImage(aiImg, 0, 0, w, h);
   const aiData = aiCtx.getImageData(0, 0, w, h);
 
+  // Mask is drawn into its own canvas. For mask-soft we also apply a
+  // gaussian blur via the 2D filter so the mask edge fades instead of
+  // stepping. Browser-native blur is fast and good enough for our
+  // sizes (~512..2048).
   const maskCanvas = document.createElement("canvas");
   maskCanvas.width = w;
   maskCanvas.height = h;
   const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
   if (!maskCtx) return opts.aiResultBlob;
+  const isSoft = opts.mode === "mask-soft";
+  const feather = isSoft ? (opts.featherRadius ?? defaultFeatherRadiusPx(w, h)) : 0;
+  if (isSoft && feather > 0) {
+    maskCtx.filter = `blur(${feather}px)`;
+  }
   maskCtx.drawImage(maskImg, 0, 0, w, h);
+  if (isSoft) maskCtx.filter = "none";
   const maskData = maskCtx.getImageData(0, 0, w, h);
 
   const out0 = baseData.data;
   const ai = aiData.data;
   const mk = maskData.data;
-  let edited = 0;
-  for (let i = 0; i < out0.length; i += 4) {
-    const luma = (mk[i] + mk[i + 1] + mk[i + 2]) / 3;
-    if (luma >= 128) {
-      // Mask = edit → take the AI pixel.
-      out0[i] = ai[i];
-      out0[i + 1] = ai[i + 1];
-      out0[i + 2] = ai[i + 2];
-      out0[i + 3] = ai[i + 3];
-      edited++;
+
+  if (isSoft) {
+    // Alpha-weighted lerp: w = mask luma / 255 ∈ [0,1].
+    //   result = source * (1 - w) + ai * w
+    // The source canvas already lives in `out0`, so we lerp in place.
+    let sumWeight = 0;
+    for (let i = 0; i < out0.length; i += 4) {
+      const lumW = (mk[i] + mk[i + 1] + mk[i + 2]) / (3 * 255);
+      const inv = 1 - lumW;
+      out0[i] = out0[i] * inv + ai[i] * lumW;
+      out0[i + 1] = out0[i + 1] * inv + ai[i + 1] * lumW;
+      out0[i + 2] = out0[i + 2] * inv + ai[i + 2] * lumW;
+      out0[i + 3] = out0[i + 3] * inv + ai[i + 3] * lumW;
+      sumWeight += lumW;
     }
-    // else: keep the source pixel that's already in `out0`.
+    ctx.putImageData(baseData, 0, 0);
+    console.info(
+      `[compose] mask-soft (feather=${feather}px): mean weight ${(
+        sumWeight / (out0.length / 4)
+      ).toFixed(3)}.`,
+    );
+  } else {
+    // mask-hard: binary threshold at luma ≥ 128.
+    let edited = 0;
+    for (let i = 0; i < out0.length; i += 4) {
+      const luma = (mk[i] + mk[i + 1] + mk[i + 2]) / 3;
+      if (luma >= 128) {
+        out0[i] = ai[i];
+        out0[i + 1] = ai[i + 1];
+        out0[i + 2] = ai[i + 2];
+        out0[i + 3] = ai[i + 3];
+        edited++;
+      }
+    }
+    ctx.putImageData(baseData, 0, 0);
+    console.info(`[compose] mask-hard: ${edited}/${out0.length / 4} px replaced with AI output.`);
   }
-  ctx.putImageData(baseData, 0, 0);
-  console.info(`[compose] mask-hard: ${edited}/${out0.length / 4} px replaced with AI output.`);
 
   return await canvasToPngBlob(out);
 }
