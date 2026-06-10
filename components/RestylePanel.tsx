@@ -1,7 +1,7 @@
 "use client";
 
 import type { Application } from "pixi.js";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { submitGenerate } from "@/lib/ai/client";
 import {
@@ -43,14 +43,49 @@ type Props = {
  */
 export function RestylePanel({ open, onClose, adapter, avatar, app, puppetKey }: Props) {
   const setPageTextureOverride = useEditorStore((s) => s.setPageTextureOverride);
-  const { references } = useReferences(puppetKey);
+  // Shared with the sidebar References panel (same IDB rows) — an image
+  // uploaded here also appears there and rides along in per-layer
+  // generations, and vice versa.
+  const { references, upload: uploadReference, remove: removeReference } = useReferences(puppetKey);
 
   const [pages, setPages] = useState<PageState[]>([]);
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [running, setRunning] = useState(false);
   const [bakeError, setBakeError] = useState<string | null>(null);
+  const [refError, setRefError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Thumbnail URLs for the reference strip. The cleanup runs with the
+  // PREVIOUS list whenever references change — those URLs are no longer
+  // rendered (the new memo minted fresh ones), so revoking is safe.
+  const refThumbs = useMemo(
+    () => references.map((r) => ({ id: r.id, name: r.name, url: URL.createObjectURL(r.blob) })),
+    [references],
+  );
+  useEffect(() => {
+    return () => {
+      for (const t of refThumbs) URL.revokeObjectURL(t.url);
+    };
+  }, [refThumbs]);
+
+  const onUploadRefs = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      e.target.value = ""; // allow re-picking the same file
+      if (files.length === 0) return;
+      setRefError(null);
+      try {
+        for (const file of files) {
+          if (!file.type.startsWith("image/")) continue;
+          await uploadReference(file);
+        }
+      } catch (err) {
+        setRefError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [uploadReference],
+  );
 
   // Bake current page composites when the panel opens.
   useEffect(() => {
@@ -259,6 +294,58 @@ export function RestylePanel({ open, onClose, adapter, avatar, app, puppetKey }:
               className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1.5 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:border-[var(--color-accent)] focus:outline-none"
             />
           </label>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between text-xs text-[var(--color-fg-dim)]">
+              <span className="uppercase tracking-widest">
+                References — 스타일 레퍼런스 ({references.length})
+              </span>
+              <label
+                className={`cursor-pointer rounded border border-[var(--color-accent)]/60 px-2 py-0.5 text-[var(--color-accent)] ${
+                  running || !puppetKey ? "cursor-not-allowed opacity-40" : ""
+                }`}
+                title="이 캐릭터의 스타일 레퍼런스 이미지 추가 — 사이드바 References 패널과 공유됩니다"
+              >
+                + upload
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={onUploadRefs}
+                  disabled={running || !puppetKey}
+                  className="sr-only"
+                />
+              </label>
+            </div>
+            {refError && <div className="text-[11px] text-red-300">업로드 실패: {refError}</div>}
+            {refThumbs.length === 0 ? (
+              <div className="rounded border border-dashed border-[var(--color-border)] px-2 py-2 text-[11px] text-[var(--color-fg-dim)]">
+                레퍼런스가 없으면 프롬프트 + 전신 스냅샷만으로 변환합니다. 원하는 화풍/의상 이미지를
+                올리면 모든 페이지 호출에 함께 전송되어 결과가 그 스타일을 따라갑니다.
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {refThumbs.map((t) => (
+                  <div key={t.id} className="group relative" title={t.name}>
+                    {/* biome-ignore lint/performance/noImgElement: blob URL preview */}
+                    <img
+                      src={t.url}
+                      alt={t.name}
+                      className="h-16 w-16 rounded border border-[var(--color-border)] object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void removeReference(t.id)}
+                      disabled={running}
+                      className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-bg)] text-[10px] leading-none text-red-300 group-hover:flex"
+                      title="레퍼런스 삭제"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="text-[11px] text-[var(--color-fg-dim)]">
             references {references.length}개 + 전신 스냅샷이 모든 페이지 호출에 동승 · 페이지 결과는
             다음 페이지의 스타일 앵커로 체이닝 · provider: OpenAI gpt-image (페이지당 1콜, 1–3분)
