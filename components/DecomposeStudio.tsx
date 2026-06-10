@@ -11,11 +11,7 @@ import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import { submitSam } from "@/lib/ai/sam/client";
 import type { SamCandidate, SamPoint } from "@/lib/ai/sam/types";
 import { findAlphaComponents } from "@/lib/avatar/connectedComponents";
-import {
-  type Compositor,
-  type CompositorInputs,
-  createCompositor,
-} from "@/lib/avatar/decompose/compositor";
+import { type Compositor, createCompositor } from "@/lib/avatar/decompose/compositor";
 import {
   runFlood,
   maskToCanvas as workerMaskToCanvas,
@@ -170,13 +166,30 @@ export function DecomposeStudio({
    *  reach atlas neighbors that aren't part of this layer. */
   const clipPathRef = useRef<Path2D | null>(null);
   const paintingRef = useRef(false);
-  /** Ref to the latest pointer position in source-pixel space. The
-   *  brush cursor overlay reads this every frame to redraw the
-   *  outline circle without forcing a React re-render. */
-  const pointerPosRef = useRef<{ x: number; y: number } | null>(null);
 
   // ── Viewport (zoom + pan) ─────────────────────────────────────────
   const viewport = useCanvasViewport({ containerRef: canvasWrapperRef });
+
+  /** True pixel-perfect 100%: zoom such that 1 source pixel = 1 CSS
+   *  pixel. zoom=1 is the CSS fit-to-modal baseline, so the factor is
+   *  source.width / (wrapper width at zoom 1). The old "1:1" merely
+   *  set zoom=1 — identical to Fit, with a percentage readout that was
+   *  fit-relative rather than pixel-relative. */
+  const actualSize = useCallback(() => {
+    const wrapper = canvasWrapperRef.current;
+    const source = sourceCanvasRef.current;
+    if (!wrapper || !source || source.width <= 0) {
+      viewport.zoomTo(1);
+      return;
+    }
+    const rect = wrapper.getBoundingClientRect();
+    if (rect.width <= 0 || viewport.zoom <= 0) {
+      viewport.zoomTo(1);
+      return;
+    }
+    const fitWidth = rect.width / viewport.zoom;
+    viewport.zoomTo(source.width / fitWidth);
+  }, [viewport]);
 
   /** GPU-aware compositor. Created lazily after the preview canvas
    *  mounts (so it can claim the WebGL2 context). The studio just
@@ -240,16 +253,6 @@ export function DecomposeStudio({
     if (selectedTool === "eraser") return "erase";
     return "paint";
   }, [selectedTool]);
-  /** Compatibility shim for legacy call sites that still call
-   *  `setMode("paint" | "erase" | "auto")`. Routes the legacy mode
-   *  back onto the new (selectedTool, brushOp) pair so the existing
-   *  sidebar buttons keep working until they're swapped out for
-   *  the new Toolbox + OptionsBar UI. */
-  const setMode = useCallback((next: BrushMode) => {
-    if (next === "auto") setSelectedTool("sam");
-    else if (next === "erase") setSelectedTool("eraser");
-    else setSelectedTool("brush");
-  }, []);
   /** Effective brush op — Eraser is permanently "remove"; other
    *  tools follow the explicit toggle. Bucket uses the same. */
   const effectiveBrushOp = useCallback(
@@ -504,17 +507,6 @@ export function DecomposeStudio({
   // The compositor is created the first time the preview canvas
   // mounts. Subsequent renders flow through `compositor.setInputs +
   // invalidate()` which the compositor itself rAF-coalesces.
-  //
-  // Inputs are pushed via a single `pushInputs` helper kept stable
-  // across renders so every callback below has one well-named door
-  // into the renderer — avoids "did I forget to call invalidate?"
-  // landmines.
-  const pushInputs = useCallback((patch: Partial<CompositorInputs>) => {
-    const c = compositorRef.current;
-    if (!c) return;
-    c.setInputs(patch);
-    c.invalidate();
-  }, []);
 
   /** Tell the compositor what the studio's current inputs are.
    *  Calls `setInputs` with a fresh snapshot (assembled from the
@@ -752,54 +744,6 @@ export function DecomposeStudio({
   // alternative — declaring it inline — forces every paint callback
   // that uses it to include it in their dep array even though the
   // function never closes over component state.
-
-  /**
-   * Single brush dab at (sx, sy) in source-pixel space. Stroke
-   * colour and composite mode depend on the studio mode:
-   *
-   *   trim / split  — strokes are opaque white into the mask, with
-   *                   composite=source-over for "add" or
-   *                   destination-out for "remove" (eraser).
-   *   paint         — strokes use the foreground colour for "add"
-   *                   (Brush) and destination-out (clear pixels to
-   *                   transparent) for "remove" (Eraser). Bucket /
-   *                   Wand-fill share the same path.
-   *
-   * Hardness % defines the inner solid radius as a fraction of the
-   * brush radius. The remaining annulus blends to alpha 0 via a
-   * radial gradient — same on both modes.
-   */
-  const applyBrushDab = useCallback(
-    (target: HTMLCanvasElement, sx: number, sy: number, op: BrushOp) => {
-      const tctx = target.getContext("2d");
-      if (!tctx) return;
-      const radius = Math.max(0.5, brushSize / 2);
-      tctx.save();
-      if (clipPathRef.current) tctx.clip(clipPathRef.current);
-      tctx.globalCompositeOperation = compositeForOp(op);
-      // Pick the dab colour. In paint mode "add" is the foreground
-      // colour; the "remove" eraser uses destination-out so the
-      // gradient just needs alpha-modulated white.
-      const fillRGB =
-        studioMode === "paint" && op === "add"
-          ? hexToRgb(foregroundColor)
-          : { r: 255, g: 255, b: 255 };
-      if (brushHardness >= 100) {
-        tctx.fillStyle = `rgba(${fillRGB.r}, ${fillRGB.g}, ${fillRGB.b}, 1)`;
-      } else {
-        const inner = radius * (brushHardness / 100);
-        const grad = tctx.createRadialGradient(sx, sy, inner, sx, sy, radius);
-        grad.addColorStop(0, `rgba(${fillRGB.r},${fillRGB.g},${fillRGB.b},1)`);
-        grad.addColorStop(1, `rgba(${fillRGB.r},${fillRGB.g},${fillRGB.b},0)`);
-        tctx.fillStyle = grad;
-      }
-      tctx.beginPath();
-      tctx.arc(sx, sy, radius, 0, Math.PI * 2);
-      tctx.fill();
-      tctx.restore();
-    },
-    [brushSize, brushHardness, studioMode, foregroundColor],
-  );
 
   // ── Pointer → source-pixel conversion (hot path) ─────────────────
   //
@@ -1180,8 +1124,11 @@ export function DecomposeStudio({
 
       switch (selectedTool) {
         case "move":
-          // Move tool is a no-op on click; viewport gestures still
-          // work via wheel + space.
+          // Move tool drags the canvas — same pan gesture as Hand.
+          // (Was a silent no-op while its tooltip promised panning.)
+          e.preventDefault();
+          (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+          viewport.onPanPointerDown(e.nativeEvent);
           return;
         case "zoom": {
           // Click = zoom in around point; Alt+click = zoom out.
@@ -1261,14 +1208,6 @@ export function DecomposeStudio({
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      // Track pointer in source-pixel space for the brush cursor +
-      // status readouts. Cheap — no React state involved.
-      const preview = previewRef.current;
-      const source = sourceCanvasRef.current;
-      if (preview && source) {
-        const { x, y } = clientToSrc(e.clientX, e.clientY);
-        pointerPosRef.current = { x, y };
-      }
       // Hand-tool / Space drag.
       if (viewport.isPanning) {
         viewport.onPanPointerMove(e.nativeEvent);
@@ -1294,7 +1233,6 @@ export function DecomposeStudio({
       invalidatePreview();
     },
     [
-      clientToSrc,
       continueBrushStroke,
       invalidatePreview,
       viewport.isPanning,
@@ -1552,11 +1490,26 @@ export function DecomposeStudio({
       }
       let action: "replace" | "add" = "replace";
       if (regionEntries.length > 0 && typeof window !== "undefined") {
-        const ok = window.confirm(
-          `기존 region ${regionEntries.length}개를 자동 검출된 component ${detected.length}개로 교체하시겠습니까?\n` +
-            `확인 = 교체 · 취소 = 기존 region 뒤에 추가`,
-        );
-        action = ok ? "replace" : "add";
+        // Two-step confirm so "취소" is a REAL cancel. The old single
+        // confirm mapped Cancel to "append" — there was no way to back
+        // out of an accidental click.
+        if (
+          window.confirm(
+            `기존 region ${regionEntries.length}개를 자동 검출된 component ${detected.length}개로 교체하시겠습니까?\n` +
+              `확인 = 교체 · 취소 = 다음 단계(추가/취소 선택)`,
+          )
+        ) {
+          action = "replace";
+        } else if (
+          window.confirm(
+            `교체 대신 자동 검출 ${detected.length}개를 기존 region 뒤에 추가하시겠습니까?\n` +
+              `확인 = 추가 · 취소 = 아무것도 안 함`,
+          )
+        ) {
+          action = "add";
+        } else {
+          return;
+        }
       }
       if (action === "replace") {
         regionCanvasMap.current.clear();
@@ -1977,7 +1930,7 @@ export function DecomposeStudio({
         }
         if (ev.key === "1") {
           ev.preventDefault();
-          viewport.actualSize();
+          actualSize();
           return;
         }
         // Undo / Redo (Photoshop bindings: Ctrl+Z back, Ctrl+Shift+Z
@@ -1998,6 +1951,7 @@ export function DecomposeStudio({
     selectedTool,
     studioMode,
     viewport,
+    actualSize,
     wandSelection,
     focusRegionId,
     applyWandSelection,
@@ -2190,7 +2144,7 @@ export function DecomposeStudio({
             onZoomIn={viewport.zoomIn}
             onZoomOut={viewport.zoomOut}
             onFit={viewport.fit}
-            onActualSize={viewport.actualSize}
+            onActualSize={actualSize}
             foregroundColor={foregroundColor}
             onForegroundColor={setForegroundColor}
           />

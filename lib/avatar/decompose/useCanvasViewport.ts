@@ -57,8 +57,10 @@ export interface UseCanvasViewportReturn {
   panY: number;
   /** Reset to fit-to-screen (1.0 zoom, centered). */
   fit: () => void;
-  /** Snap to 100% (1.0 zoom) without changing pan. */
-  actualSize: () => void;
+  /** Snap to an absolute zoom level (1.0 = fit baseline) without
+   *  changing pan. Callers that know the source dimensions use this
+   *  for a true pixel-perfect 100%. */
+  zoomTo: (z: number) => void;
   /** Programmatically zoom in around the canvas centre. */
   zoomIn: () => void;
   /** Programmatically zoom out around the canvas centre. */
@@ -66,8 +68,6 @@ export interface UseCanvasViewportReturn {
   /** Set zoom while keeping the point under (clientX, clientY)
    *  stationary. */
   zoomAtClient: (zoomFactor: number, clientX: number, clientY: number) => void;
-  /** Apply a pan delta in client-pixel units (matches drag distance). */
-  panBy: (dx: number, dy: number) => void;
   /** Hand-tool / Space drag state — the pointer handler listens to
    *  this to know whether it should pan instead of paint. */
   isPanning: boolean;
@@ -111,10 +111,13 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
   const fit = useCallback(() => {
     applyView(1, 0, 0);
   }, [applyView]);
-  const actualSize = useCallback(() => {
-    const v = viewRef.current;
-    applyView(1, v.panX, v.panY);
-  }, [applyView]);
+  const zoomTo = useCallback(
+    (z: number) => {
+      const v = viewRef.current;
+      applyView(clamp(z), v.panX, v.panY);
+    },
+    [applyView],
+  );
 
   /**
    * Canonical cursor-anchored zoom: scale pan by the zoom ratio and
@@ -151,14 +154,6 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
     const v = viewRef.current;
     applyView(clamp(v.zoom / 1.25), v.panX, v.panY);
   }, [applyView]);
-  const panBy = useCallback(
-    (dx: number, dy: number) => {
-      const v = viewRef.current;
-      applyView(v.zoom, v.panX + dx, v.panY + dy);
-    },
-    [applyView],
-  );
-
   const onWheel = useCallback(
     (e: WheelEvent) => {
       e.preventDefault();
@@ -231,13 +226,12 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
     panX,
     panY,
     fit,
-    actualSize,
+    zoomTo,
     zoomIn,
     zoomOut,
     // Public name kept for consumers (zoom tool); implementation is the
     // single corrected cursor-anchored variant.
     zoomAtClient: zoomAroundPoint,
-    panBy,
     isPanning,
     onWheel,
     onPanPointerDown,
@@ -250,26 +244,4 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
 function clamp(z: number): number {
   if (!Number.isFinite(z)) return 1;
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
-}
-
-/**
- * Convert a client-pixel pointer position into source-pixel space.
- *
- * Both Brush, Bucket, and Magic Wand call into this. The CSS
- * transform on the canvas wrapper is already baked into the
- * bounding rect we read here, so we don't need to do any
- * zoom-aware math ourselves — multiplying by `source.width /
- * rect.width` divides out the scale automatically.
- */
-export function clientToSourcePixel(
-  clientX: number,
-  clientY: number,
-  canvas: HTMLCanvasElement,
-  source: HTMLCanvasElement,
-): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
-  const x = ((clientX - rect.left) / rect.width) * source.width;
-  const y = ((clientY - rect.top) / rect.height) * source.height;
-  return { x, y };
 }

@@ -172,15 +172,9 @@ export function brushOpLabels(studioMode: StudioMode): {
 
 /** Selection op for the magic wand: how the new selection blends
  *  with whatever was previously selected. Same semantics as
- *  Photoshop's magic-wand option bar. */
+ *  Photoshop's magic-wand option bar. (Shift=add, Alt=subtract,
+ *  Shift+Alt=intersect — dispatched in DecomposeStudio's wand case.) */
 export type SelectionOp = "replace" | "add" | "subtract" | "intersect";
-
-export const SELECTION_OPS: { id: SelectionOp; label: string; tooltip: string }[] = [
-  { id: "replace", label: "New", tooltip: "기존 선택 대체" },
-  { id: "add", label: "Add", tooltip: "선택 추가 (Shift)" },
-  { id: "subtract", label: "Sub", tooltip: "선택 제거 (Alt)" },
-  { id: "intersect", label: "Int", tooltip: "교집합 (Shift+Alt)" },
-];
 
 /** Sample mode used by the magic wand's flood fill. Drives the
  *  per-pixel distance comparator inside the worker:

@@ -277,7 +277,7 @@ function BrushOptions({
           value={brushSize}
           onChange={(e) => onBrushSize(Number(e.target.value))}
           className="w-32"
-          title="브러시 크기 — [ / ] 키로 ±5px"
+          title="브러시 크기 — [ 축소 ×0.85 · ] 확대 ×1.15"
         />
         <span className="w-10 font-mono text-[var(--color-fg-dim)]">{brushSize}px</span>
       </div>

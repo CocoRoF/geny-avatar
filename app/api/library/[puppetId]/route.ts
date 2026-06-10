@@ -64,7 +64,7 @@ export async function DELETE(
   }
 
   const { puppetId } = await ctx.params;
-  if (!puppetId || !puppetId.trim()) {
+  if (!puppetId?.trim()) {
     return NextResponse.json({ error: "puppetId is required" }, { status: 400 });
   }
 
