@@ -30,6 +30,7 @@ import { NextResponse } from "next/server";
 import { getProvider } from "@/lib/ai/providers/registry";
 import { createJob, getJob, setResult, setStatus } from "@/lib/ai/server/jobs";
 import type { ProviderId } from "@/lib/ai/types";
+import { isAuthError, readConfigApiKeys } from "@/lib/config/serverConfig";
 
 /** Server-side ceiling on a single provider call. The client gives up
  *  polling at 300s; without this the abandoned upstream fetch kept the
@@ -76,13 +77,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "sourceImage required" }, { status: 400 });
   }
 
-  const { provider, reason } = getProvider(providerId);
+  // config.json key overrides .env; .env stays the default AND the
+  // auth-failure fallback below.
+  const overrides = await readConfigApiKeys();
+  const overrideKey = overrides[providerId];
+  const { provider, reason } = getProvider(providerId, overrideKey);
   if (!provider) {
     return NextResponse.json(
       { error: reason ?? `provider ${providerId} unavailable` },
       { status: 503 },
     );
   }
+  // Env-keyed twin for the fallback path. Only meaningful when an
+  // override was actually used.
+  const envProvider = overrideKey ? getProvider(providerId).provider : null;
 
   const job = createJob(providerId);
 
@@ -107,7 +115,26 @@ export async function POST(request: Request) {
       `\n              promptLength=${prompt.length}`,
   );
 
-  void runJob(job.id, provider.generate.bind(provider), {
+  // Fallback wrapper: a config.json key that fails AUTH (401/403 —
+  // rejected before any generation, so no double billing) retries
+  // once with the .env key.
+  const generateWithFallback = async (
+    input: import("@/lib/ai/providers/interface").ProviderGenerateInput,
+  ): Promise<Blob> => {
+    try {
+      return await provider.generate(input);
+    } catch (e) {
+      if (overrideKey && envProvider && isAuthError(e)) {
+        console.warn(
+          `[ai/generate] config.json key for ${providerId} failed auth — falling back to .env key`,
+        );
+        return await envProvider.generate(input);
+      }
+      throw e;
+    }
+  };
+
+  void runJob(job.id, generateWithFallback, {
     sourceImage: sourceFile,
     maskImage: maskFile instanceof Blob ? maskFile : undefined,
     maskReferenceImage: maskReferenceFile instanceof Blob ? maskReferenceFile : undefined,

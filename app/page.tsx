@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ApiKeysConfig } from "@/components/ApiKeysConfig";
 import { AttributionFooter } from "@/components/AttributionFooter";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { publishPuppetNow } from "@/lib/autoPublish/libraryPublisher";
@@ -73,6 +74,8 @@ export default function Home() {
   const [puppets, setPuppets] = useState<PuppetRow[] | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
+  /** Main-page API key config modal (browser keys > server .env). */
+  const [apiConfigOpen, setApiConfigOpen] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   // Map of puppetId → on-disk bake metadata. `null` while we haven't
@@ -305,8 +308,16 @@ export default function Home() {
     <div className="flex min-h-screen flex-col bg-[var(--color-bg)]">
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-12 sm:px-8 sm:py-16">
         <header className="mb-10">
-          <div className="mb-2 font-mono text-xs text-[var(--color-fg-dim)]">
-            v0.3.1 · animation tab
+          <div className="mb-2 flex items-center gap-3 font-mono text-xs text-[var(--color-fg-dim)]">
+            <span>v0.3.1 · animation tab</span>
+            <button
+              type="button"
+              onClick={() => setApiConfigOpen(true)}
+              className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg-dim)] hover:border-[var(--color-accent)]/60 hover:text-[var(--color-accent)]"
+              title="AI provider API key 설정 — 브라우저에 저장되고 서버 .env 보다 우선합니다"
+            >
+              ⚙ API 설정
+            </button>
           </div>
           <h1 className="mb-3 text-4xl font-semibold tracking-tight">geny-avatar</h1>
           <p className="max-w-2xl text-lg text-[var(--color-fg-dim)]">
@@ -416,6 +427,7 @@ export default function Home() {
         </section>
       </main>
       <AttributionFooter />
+      <ApiKeysConfig open={apiConfigOpen} onClose={() => setApiConfigOpen(false)} />
     </div>
   );
 }

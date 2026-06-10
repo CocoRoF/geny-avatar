@@ -32,6 +32,7 @@
 
 import { NextResponse } from "next/server";
 import type { SamPoint } from "@/lib/ai/sam/types";
+import { readConfigApiKeys } from "@/lib/config/serverConfig";
 
 const REPLICATE_BASE = "https://api.replicate.com/v1";
 const DEFAULT_SAM_MODEL = process.env.REPLICATE_SAM_MODEL ?? "meta/sam-2";
@@ -39,10 +40,18 @@ const DEFAULT_SAM_MODEL = process.env.REPLICATE_SAM_MODEL ?? "meta/sam-2";
 const WAIT_BUDGET_S = 60;
 
 export async function POST(request: Request) {
-  const apiKey = process.env.REPLICATE_API_TOKEN;
-  if (!apiKey) {
+  // config.json key overrides .env; .env is the default and the
+  // 401/403 fallback (second candidate below).
+  const overrideKey = (await readConfigApiKeys()).replicate;
+  const envKey = process.env.REPLICATE_API_TOKEN;
+  const keyCandidates = [
+    ...(overrideKey ? [overrideKey] : []),
+    ...(envKey && envKey !== overrideKey ? [envKey] : []),
+  ];
+  if (keyCandidates.length === 0) {
     return NextResponse.json({ error: "REPLICATE_API_TOKEN not set" }, { status: 503 });
   }
+  let apiKey = keyCandidates[0];
 
   let form: FormData;
   try {
@@ -103,15 +112,28 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   let prediction: ReplicatePrediction;
   try {
-    const r = await fetch(`${REPLICATE_BASE}/models/${model}/predictions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Prefer: `wait=${WAIT_BUDGET_S}`,
-      },
-      body: JSON.stringify({ input }),
-    });
+    let r: Response | null = null;
+    for (const candidate of keyCandidates) {
+      apiKey = candidate;
+      r = await fetch(`${REPLICATE_BASE}/models/${model}/predictions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          Prefer: `wait=${WAIT_BUDGET_S}`,
+        },
+        body: JSON.stringify({ input }),
+      });
+      // Auth failure on a browser-configured key → retry with .env.
+      if ((r.status === 401 || r.status === 403) && keyCandidates.length > 1) {
+        console.warn("[ai/sam] config.json key failed auth — falling back to .env key");
+        continue;
+      }
+      break;
+    }
+    if (!r) {
+      return NextResponse.json({ error: "sam produced no response" }, { status: 502 });
+    }
     if (!r.ok) {
       const text = await r.text().catch(() => "");
       console.warn(`[ai/sam] error ${r.status}: ${text.slice(0, 500)}`);

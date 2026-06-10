@@ -15,12 +15,16 @@
 
 import { NextResponse } from "next/server";
 import { listProviders, providerConfigs } from "@/lib/ai/providers/registry";
+import { readConfigApiKeys } from "@/lib/config/serverConfig";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
-  const availability = listProviders();
+  // config.json keys override .env, so the availability snapshot must
+  // reflect the EFFECTIVE config, not just the server env.
+  const overrides = await readConfigApiKeys();
+  const availability = listProviders(overrides);
   // Pair availability with capabilities so the picker can render model
   // dropdowns and mask-aware hints without a second request.
   const detailed = providerConfigs.map((cfg) => {
@@ -31,6 +35,8 @@ export async function GET() {
       capabilities: cfg.capabilities,
       available: !!avail?.available,
       reason: avail?.reason,
+      source: avail?.source,
+      envConfigured: avail?.envConfigured,
     };
   });
   return NextResponse.json({ providers: detailed });

@@ -34,6 +34,11 @@ export type ProviderAvailability = {
   };
   available: boolean;
   reason?: string;
+  /** Where the effective key comes from (config.json vs server .env). */
+  source?: "config" | "env";
+  /** Whether the server .env has a key — the config modal shows this
+   *  as the fallback/default indicator. */
+  envConfigured?: boolean;
 };
 
 export async function fetchProviders(): Promise<ProviderAvailability[]> {

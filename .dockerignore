@@ -39,3 +39,4 @@ docs
 
 # certs / pem
 *.pem
+config.json

@@ -35,6 +35,13 @@ export type ProviderAvailability = {
   available: boolean;
   /** Reason a provider is unavailable, e.g. "GEMINI_API_KEY not set". */
   reason?: string;
+  /** Where the effective key comes from: config.json ("config"),
+   *  server .env ("env"), or absent. The main-page API config modal
+   *  surfaces this so the user can tell which key is in effect. */
+  source?: "config" | "env";
+  /** Whether the server .env has a key for this provider — shown in
+   *  the config modal as "(.env 기본값 있음)". */
+  envConfigured?: boolean;
 };
 
 /**
@@ -42,59 +49,73 @@ export type ProviderAvailability = {
  * `GET /api/ai/providers` so the UI can disable picker entries when
  * keys aren't set.
  */
-export function listProviders(): ProviderAvailability[] {
+export function listProviders(
+  overrides?: Partial<Record<ProviderId, string>>,
+): ProviderAvailability[] {
   return providerConfigs.map((cfg) => {
+    const env = envKeyForProvider(cfg.id);
+    const envValue = env ? process.env[env] : undefined;
+    const overrideValue = overrides?.[cfg.id];
     // Replicate's image generation is a shape-only stub (`generate()`
     // always throws) — advertising it as available whenever the token
     // was set put a guaranteed-failure entry in the picker. SAM (the
     // only real Replicate integration) goes through /api/ai/sam and
-    // doesn't use this picker.
+    // doesn't use this picker — but the config modal still wants to
+    // know the key sources, so report those.
     if (cfg.id === "replicate") {
       return {
         id: cfg.id,
         displayName: cfg.displayName,
         available: false,
         reason: "image generation not implemented (SAM segmentation only)",
+        source: overrideValue ? ("config" as const) : envValue ? ("env" as const) : undefined,
+        envConfigured: !!envValue,
       };
     }
-    const env = envKeyForProvider(cfg.id);
-    const value = env ? process.env[env] : undefined;
+    const effective = overrideValue ?? envValue;
     return {
       id: cfg.id,
       displayName: cfg.displayName,
-      available: !!value,
-      reason: value ? undefined : `${env ?? "(env)"} not set`,
+      available: !!effective,
+      reason: effective ? undefined : `${env ?? "(env)"} not set`,
+      source: overrideValue ? ("config" as const) : envValue ? ("env" as const) : undefined,
+      envConfigured: !!envValue,
     };
   });
 }
 
 /**
- * Construct a provider instance for `id`. Returns `null` (with an
- * explanatory error in `reason`) when the env key is missing.
+ * Construct a provider instance for `id`. `overrideKey` (from
+ * config.json — see lib/config/serverConfig.ts) takes precedence; the
+ * `.env` key is the default. Returns `null` (with an explanatory
+ * error in `reason`) when neither is set.
  */
-export function getProvider(id: ProviderId): {
+export function getProvider(
+  id: ProviderId,
+  overrideKey?: string,
+): {
   provider: AIProvider | null;
   reason?: string;
 } {
   switch (id) {
     case "gemini": {
-      const key = process.env.GEMINI_API_KEY;
+      const key = overrideKey ?? process.env.GEMINI_API_KEY;
       if (!key) return { provider: null, reason: "GEMINI_API_KEY not set" };
       return { provider: new GeminiProvider(key) };
     }
     case "openai": {
-      const key = process.env.OPENAI_API_KEY;
+      const key = overrideKey ?? process.env.OPENAI_API_KEY;
       if (!key) return { provider: null, reason: "OPENAI_API_KEY not set" };
       return { provider: new OpenAIProvider(key) };
     }
     case "replicate": {
-      const key = process.env.REPLICATE_API_TOKEN;
+      const key = overrideKey ?? process.env.REPLICATE_API_TOKEN;
       if (!key) return { provider: null, reason: "REPLICATE_API_TOKEN not set" };
       // Provider is shape-only — generate() throws a clear message.
       return { provider: new ReplicateProvider(key) };
     }
     case "falai": {
-      const key = process.env.FAL_KEY;
+      const key = overrideKey ?? process.env.FAL_KEY;
       if (!key) return { provider: null, reason: "FAL_KEY not set" };
       return { provider: new FalAIProvider(key) };
     }

@@ -37,6 +37,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { readConfigApiKeys } from "@/lib/config/serverConfig";
 
 // Default to OpenAI's flagship `gpt-5.4` so the refinement pass has the
 // best language- and vision-quality lever available — looking at a
@@ -92,8 +93,15 @@ Common failure patterns to fix:
 - User uses informal language → tighten to imperative voice without losing meaning.`;
 
 export async function POST(request: Request) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  // config.json key overrides .env; .env remains the default and
+  // the 401/403 fallback (second candidate in the retry list below).
+  const overrideKey = (await readConfigApiKeys()).openai;
+  const envKey = process.env.OPENAI_API_KEY;
+  const keyCandidates = [
+    ...(overrideKey ? [overrideKey] : []),
+    ...(envKey && envKey !== overrideKey ? [envKey] : []),
+  ];
+  if (keyCandidates.length === 0) {
     return NextResponse.json({ error: "OPENAI_API_KEY not set" }, { status: 503 });
   }
 
@@ -177,32 +185,44 @@ export async function POST(request: Request) {
     `[refine-prompt] POST ${ENDPOINT} model=${REFINER_MODEL} refCount=${refCount} hasMask=${hasMask} sourceBytes=${sourceImage.size} refBytes=${refImages.map((r) => r.size).join(",")} userPromptLen=${userPrompt.length}`,
   );
 
-  let response: Response;
+  let response: Response | null = null;
   try {
-    response = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: REFINER_MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        // Low-ish temperature so the rewrite stays close to user intent
-        // while still naming what's in the reference. 0 would make the
-        // model parrot the user prompt verbatim and skip the design
-        // description; >0.5 starts inventing details that aren't in the
-        // reference.
-        temperature: 0.3,
-      }),
-    });
+    for (const apiKey of keyCandidates) {
+      response = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: REFINER_MODEL,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+          // Low-ish temperature so the rewrite stays close to user intent
+          // while still naming what's in the reference. 0 would make the
+          // model parrot the user prompt verbatim and skip the design
+          // description; >0.5 starts inventing details that aren't in the
+          // reference.
+          temperature: 0.3,
+        }),
+      });
+      // Auth failure on a browser-configured key → retry with .env.
+      // Anything else (success or non-auth error) exits the loop.
+      if ((response.status === 401 || response.status === 403) && keyCandidates.length > 1) {
+        console.warn("[refine-prompt] config.json key failed auth — falling back to .env key");
+        continue;
+      }
+      break;
+    }
   } catch (e) {
     const reason = (e as Error).message;
     console.error("[refine-prompt] network error", reason);
     return NextResponse.json({ error: `network: ${reason}` }, { status: 502 });
+  }
+  if (!response) {
+    return NextResponse.json({ error: "refine-prompt produced no response" }, { status: 502 });
   }
 
   const elapsed = Date.now() - startedAt;
