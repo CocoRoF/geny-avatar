@@ -32,6 +32,8 @@ export interface OptionsBarProps {
   onBrushOp: (op: BrushOp) => void;
   brushHardness: number; // 0..100
   onBrushHardness: (n: number) => void;
+  brushOpacity: number; // 0..100, Photoshop's Opacity
+  onBrushOpacity: (n: number) => void;
 
   // Bucket tolerance (independent of wand)
   tolerance: number;
@@ -80,6 +82,8 @@ export function OptionsBar(props: OptionsBarProps) {
     onBrushOp,
     brushHardness,
     onBrushHardness,
+    brushOpacity,
+    onBrushOpacity,
     tolerance,
     onTolerance,
     wand,
@@ -134,6 +138,8 @@ export function OptionsBar(props: OptionsBarProps) {
             onBrushSize={onBrushSize}
             brushHardness={brushHardness}
             onBrushHardness={onBrushHardness}
+            brushOpacity={brushOpacity}
+            onBrushOpacity={onBrushOpacity}
             pressureSize={pressureSize}
             pressureOpacity={pressureOpacity}
             onPressureSize={onPressureSize}
@@ -247,12 +253,16 @@ function BrushOptions({
   onPressureOpacity,
   highDpiMask,
   onHighDpiMask,
+  brushOpacity,
+  onBrushOpacity,
 }: {
   studioMode: StudioMode;
   brushSize: number;
   onBrushSize: (n: number) => void;
   brushHardness: number;
   onBrushHardness: (n: number) => void;
+  brushOpacity: number;
+  onBrushOpacity: (n: number) => void;
   pressureSize: boolean;
   pressureOpacity: boolean;
   onPressureSize: (v: boolean) => void;
@@ -293,6 +303,19 @@ function BrushOptions({
           title="브러시 가장자리 부드러움 — 100% 가 가장 단단함"
         />
         <span className="w-10 font-mono text-[var(--color-fg-dim)]">{brushHardness}%</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[var(--color-fg-dim)]">Opacity:</span>
+        <input
+          type="range"
+          min={1}
+          max={100}
+          value={brushOpacity}
+          onChange={(e) => onBrushOpacity(Number(e.target.value))}
+          className="w-24"
+          title="브러시 불투명도 (1–100%) — pressure-opacity 와 곱으로 합성"
+        />
+        <span className="w-10 font-mono text-[var(--color-fg-dim)]">{brushOpacity}%</span>
       </div>
       {/* Pen pressure dynamics — only meaningful when a pen tablet is
           plugged in, but the toggle is harmless on a mouse (defaults

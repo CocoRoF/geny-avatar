@@ -56,6 +56,9 @@ export interface BrushConfig {
   /** Dab spacing as a fraction of the radius. 0.25 = stamp every 25%
    *  of the radius. Lower = more dabs = smoother but more expensive. */
   spacing: number;
+  /** Base dab opacity 0..1 (multiplied with pressure opacity when
+   *  that dynamic is on). 1 = fully opaque, Photoshop's Opacity. */
+  opacity: number;
 }
 
 /** Default config used by the studio's brush / eraser tool. The
@@ -69,6 +72,7 @@ export function defaultBrushConfig(): BrushConfig {
     pressureSize: false,
     pressureOpacity: false,
     spacing: 0.25,
+    opacity: 1,
   };
 }
 
@@ -187,7 +191,7 @@ export class StrokeEngine {
     const baseRadius = Math.max(0.5, this.cfg.size / 2);
     const pressureT = clamp01(s.pressure);
     const radius = this.cfg.pressureSize ? baseRadius * (0.25 + 0.75 * pressureT) : baseRadius;
-    const opacity = this.cfg.pressureOpacity ? pressureT : 1;
+    const opacity = clamp01(this.cfg.opacity) * (this.cfg.pressureOpacity ? pressureT : 1);
 
     ctx.save();
     if (this.clip) ctx.clip(this.clip);

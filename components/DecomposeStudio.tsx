@@ -207,6 +207,12 @@ export function DecomposeStudio({
   const [threshold, setThreshold] = useState(0); // 0..255, 0 = no threshold mask
   const [brushSize, setBrushSize] = useState(20);
   const [brushHardness, setBrushHardness] = useState(80); // 0..100; 100=hard, 0=soft
+  /** Base brush opacity 0..100 (Photoshop's Opacity; composes with the
+   *  pressure-opacity dynamic). */
+  const [brushOpacity, setBrushOpacity] = useState(100);
+  /** End point of the last completed stroke, in source-pixel coords.
+   *  Shift+click draws a straight interpolated stroke from here. */
+  const lastStrokeEndRef = useRef<{ x: number; y: number } | null>(null);
   const [bucketTolerance, setBucketTolerance] = useState(32); // 0..128 — bucket only
   /** Magic wand options — Photoshop-class panel (tolerance, sample
    *  mode, sample size, contiguous, anti-alias). The studio holds
@@ -820,7 +826,7 @@ export function DecomposeStudio({
   // shortcut tweaks (e.g. `[` / `]`) only take effect on the next
   // stroke, matching Photoshop.
   const beginBrushStroke = useCallback(
-    (clientX: number, clientY: number) => {
+    (clientX: number, clientY: number, shiftLine = false) => {
       const target = activeTargetCanvas();
       const source = sourceCanvasRef.current;
       if (!target || !source) return;
@@ -847,16 +853,26 @@ export function DecomposeStudio({
         pressureSize,
         pressureOpacity,
         spacing: 0.25,
+        opacity: brushOpacity / 100,
       });
       strokeEngineRef.current.beginStroke(target, scaledClip);
       const src = clientToSrc(clientX, clientY);
+      // Shift+click = straight line from the previous stroke's end
+      // (Photoshop). Feed the start point first so the engine's
+      // spacing interpolation lays dabs along the segment.
+      if (shiftLine && lastStrokeEndRef.current) {
+        const from = lastStrokeEndRef.current;
+        strokeEngineRef.current.addSample({ x: from.x * scale, y: from.y * scale, pressure: 0.5 });
+      }
       strokeEngineRef.current.addSample({ x: src.x * scale, y: src.y * scale, pressure: 0.5 });
+      lastStrokeEndRef.current = { x: src.x, y: src.y };
       markDirty();
       invalidatePreview();
     },
     [
       activeTargetCanvas,
       brushHardness,
+      brushOpacity,
       brushSize,
       clientToSrc,
       effectiveBrushOp,
@@ -889,6 +905,8 @@ export function DecomposeStudio({
         y: src.y * scale,
         pressure: ev.pressure || 0.5,
       });
+      // Keep the Shift+line anchor on the latest point of the drag.
+      lastStrokeEndRef.current = { x: src.x, y: src.y };
     },
     [activeTargetCanvas, clientToSrc],
   );
@@ -1235,7 +1253,7 @@ export function DecomposeStudio({
         case "eraser":
           paintingRef.current = true;
           (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-          beginBrushStroke(e.clientX, e.clientY);
+          beginBrushStroke(e.clientX, e.clientY, e.shiftKey);
           return;
       }
     },
@@ -2180,6 +2198,8 @@ export function DecomposeStudio({
             onBrushOp={setBrushOp}
             brushHardness={brushHardness}
             onBrushHardness={setBrushHardness}
+            brushOpacity={brushOpacity}
+            onBrushOpacity={setBrushOpacity}
             tolerance={bucketTolerance}
             onTolerance={setBucketTolerance}
             wand={wandOpts}
@@ -2307,6 +2327,11 @@ export function DecomposeStudio({
                 brushSize={brushSize}
                 sourceWidth={sourceDim?.width ?? 0}
                 enabled={isSizedBrushTool(selectedTool) && !viewport.spaceHeld}
+                // Paint-mode brush previews the actual stroke colour;
+                // mask/split (and the eraser) keep the accent ring.
+                color={
+                  studioMode === "paint" && selectedTool === "brush" ? foregroundColor : undefined
+                }
               />
               {/* Floating wand action bar — visible whenever a
                     selection exists. Above the canvas so the user
