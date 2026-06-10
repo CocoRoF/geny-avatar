@@ -303,6 +303,15 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     | { kind: "failed"; reason: string }
   >({ kind: "idle" });
 
+  /** Abort controller for the current submit session (whole-layer or
+   *  per-region). Cancel aborts client polling AND the server job
+   *  (which aborts the upstream provider fetch). A new submit replaces
+   *  the controller, so stale aborts can't touch a fresh run. */
+  const generateAbortRef = useRef<AbortController | null>(null);
+  const cancelGeneration = useCallback(() => {
+    generateAbortRef.current?.abort();
+  }, []);
+
   /** RESULT-toolbar blend mode. `ai-only` keeps the model's full
    *  output. `mask-soft` lerp-blends with a feathered mask (default
    *  for natural edges like hair). `mask-hard` is a binary cut at the
@@ -673,11 +682,17 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       phase.kind === "applying" ||
       refining
     ) {
+      // The modal used to hard-lock here (alert pointing at a button
+      // that only exists in the succeeded state) — up to 300s trapped.
+      // Now: offer to cancel the in-flight job and leave.
       if (typeof window !== "undefined") {
-        window.alert(
-          "생성이 진행 중입니다. 완료될 때까지 기다리거나 'reset · keep generating' 으로 진행 중인 작업을 취소한 후 닫아주세요.",
+        const ok = window.confirm(
+          "생성이 진행 중입니다.\n\n확인 = 생성을 취소하고 닫기\n취소 = 계속 기다리기",
         );
+        if (!ok) return;
       }
+      cancelGeneration();
+      close(null);
       return;
     }
     const hasUnappliedComposite = phase.kind === "succeeded";
@@ -693,7 +708,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       }
     }
     close(null);
-  }, [phase.kind, refining, regionStates, close]);
+  }, [phase.kind, refining, regionStates, close, cancelGeneration]);
 
   // Esc routes through the guard so in-flight jobs are protected
   // and unsaved results prompt a confirm.
@@ -845,6 +860,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         // treat the white pixels as "focus the edit here".
         maskReferenceImage: inpaintMaskBlob ?? undefined,
         referenceImages: refsBlobs.length > 0 ? refsBlobs : undefined,
+        signal: generateAbortRef.current?.signal,
       });
       return await postprocessGeneratedBlob({
         blob: rawResult,
@@ -902,6 +918,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       const prepared = preparedRef.current;
       if (!prepared || providerId !== "openai") return;
       if (!provider) return;
+      generateAbortRef.current = new AbortController();
 
       // F.4: fail fast on empty-prompt — the API rejects a request
       // without `prompt`, and the surfaced "failed" tile with no
@@ -1294,6 +1311,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         setRefinement(null);
       }
 
+      generateAbortRef.current = new AbortController();
       setPhase({ kind: "running" });
       // ── structured submit log ────────────────────────────────────
       // Surfaces exactly what's about to leave the browser so the
@@ -1484,6 +1502,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
           // leave this undefined.
           maskReferenceImage: openaiMaskRefBlob,
           referenceImages: submitRefs.length > 0 ? submitRefs : undefined,
+          signal: generateAbortRef.current?.signal,
         });
         processed = await postprocessGeneratedBlob({
           blob: rawResult,
@@ -2107,11 +2126,19 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                         <div className="text-sm text-[var(--color-fg-dim)]">제출 중…</div>
                       )}
                       {phase.kind === "running" && (
-                        <div className="flex flex-col items-center gap-1 text-sm text-[var(--color-fg-dim)]">
+                        <div className="flex flex-col items-center gap-2 text-sm text-[var(--color-fg-dim)]">
                           <span>생성 중 · provider 호출 중</span>
                           <span className="text-xs">
-                            Gemini ~5–15초 · OpenAI ~10–30초 · 닫지 마세요
+                            Gemini ~5–15초 · fal ~10–30초 · OpenAI 멀티이미지는 1–3분 걸릴 수 있음
                           </span>
+                          <button
+                            type="button"
+                            onClick={cancelGeneration}
+                            className="rounded border border-red-400/50 px-2 py-0.5 text-xs text-red-300 hover:border-red-400"
+                            title="진행 중인 생성을 취소합니다 (서버 측 provider 호출도 중단)"
+                          >
+                            취소
+                          </button>
                         </div>
                       )}
                       {phase.kind === "failed" && (

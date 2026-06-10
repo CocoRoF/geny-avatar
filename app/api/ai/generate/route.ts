@@ -2,15 +2,15 @@
  * POST /api/ai/generate
  *
  * Body (multipart/form-data):
- *   providerId      string   "gemini" | "openai" | "replicate"
+ *   providerId      string   "openai" | "falai" | "gemini" | "replicate"
  *   prompt          string
  *   negativePrompt  string?  optional
  *   modelId         string?  optional override
  *   seed            string?  optional integer
  *   sourceImage     File     PNG bytes of the source region
  *   maskImage       File?    PNG mask, **already in the provider's
- *                            convention** (client-side conversion in
- *                            lib/ai/maskConvert.ts)
+ *                            convention** (client prepares it in
+ *                            lib/avatar/inpaintMask.ts)
  *   referenceImage  File*    Zero or more reference images. Order is
  *                            preserved (`formData.getAll`). Forwarded
  *                            as `input.referenceImages` to the
@@ -28,8 +28,13 @@
 
 import { NextResponse } from "next/server";
 import { getProvider } from "@/lib/ai/providers/registry";
-import { createJob, setResult, setStatus } from "@/lib/ai/server/jobs";
+import { createJob, getJob, setResult, setStatus } from "@/lib/ai/server/jobs";
 import type { ProviderId } from "@/lib/ai/types";
+
+/** Server-side ceiling on a single provider call. The client gives up
+ *  polling at 300s; without this the abandoned upstream fetch kept the
+ *  job "running" (and the socket open) indefinitely. */
+const PROVIDER_TIMEOUT_MS = 290_000;
 
 export async function POST(request: Request) {
   let form: FormData;
@@ -113,6 +118,7 @@ export async function POST(request: Request) {
     negativePrompt: typeof negativePrompt === "string" ? negativePrompt : undefined,
     modelId: typeof modelId === "string" && modelId ? modelId : undefined,
     seed: typeof seedStr === "string" && seedStr ? Number(seedStr) : undefined,
+    signal: job.controller.signal,
   });
 
   return NextResponse.json({ jobId: job.id });
@@ -124,13 +130,29 @@ async function runJob(
   input: import("@/lib/ai/providers/interface").ProviderGenerateInput,
 ): Promise<void> {
   setStatus(jobId, { kind: "running" });
+  // Hard ceiling: abort the provider fetch through the job's own
+  // controller. Cleared on completion either way.
+  const timer = setTimeout(() => {
+    const job = getJob(jobId);
+    if (job && job.status.kind === "running") {
+      console.warn(`[ai/generate] job ${jobId} hit ${PROVIDER_TIMEOUT_MS}ms ceiling — aborting`);
+      job.controller.abort();
+      setStatus(jobId, { kind: "failed", reason: `provider timed out (${PROVIDER_TIMEOUT_MS}ms)` });
+    }
+  }, PROVIDER_TIMEOUT_MS);
   try {
     const blob = await generate(input);
     setResult(jobId, blob, blob.type || "image/png");
   } catch (e) {
+    const job = getJob(jobId);
+    // User-initiated cancel aborts the same signal; keep that status
+    // instead of overwriting it with the abort error.
+    if (job?.status.kind === "canceled") return;
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`[ai/generate] job ${jobId} failed:`, reason);
-    setStatus(jobId, { kind: "failed", reason });
+    if (job?.status.kind !== "failed") setStatus(jobId, { kind: "failed", reason });
+  } finally {
+    clearTimeout(timer);
   }
 }
 

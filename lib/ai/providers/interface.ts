@@ -72,6 +72,10 @@ export type ProviderGenerateInput = {
   seed?: number;
   /** Model override; falls back to `capabilities.defaultModelId`. */
   modelId?: string;
+  /** Abort signal from the job runner — wired into upstream fetches so
+   *  a user cancel (or the server-side timeout) actually stops the
+   *  provider call instead of letting it run to completion unobserved. */
+  signal?: AbortSignal;
 };
 
 export interface AIProvider {

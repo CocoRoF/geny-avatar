@@ -21,10 +21,11 @@
  *   - total pixels 655,360 – 8,294,400
  *   - image and mask must be same format and same dimensions
  *
- * Mask convention conversion: our DecomposeStudio saves alpha=255 where
- * the user marked "edit me", but OpenAI uses alpha=0 = edit zone. The
- * client (`lib/ai/maskConvert.ts`) inverts before this provider sees
- * the request so server-side stays simple.
+ * Mask handling: the app does NOT send OpenAI a hard `mask` param. The
+ * user's MASK-tab painting rides along as `maskReferenceImage` — an
+ * extra image[] entry plus prompt scaffold ("soft hint") — because the
+ * model-side hard mask proved unreliable on atlas crops. The final
+ * region guarantee is the client-side blend (composeAIResultWithMask).
  */
 
 import type { ModelInfo } from "../types";
@@ -145,6 +146,7 @@ export class OpenAIProvider implements AIProvider {
       method: "POST",
       headers: { Authorization: `Bearer ${this.apiKey}` },
       body: form,
+      signal: input.signal,
     });
 
     const elapsed = Date.now() - startedAt;
@@ -167,7 +169,7 @@ export class OpenAIProvider implements AIProvider {
       return blob;
     }
     if (typeof first.url === "string") {
-      const r = await fetch(first.url);
+      const r = await fetch(first.url, { signal: input.signal });
       if (!r.ok) throw new Error(`OpenAI url fetch failed: ${r.status}`);
       const blob = await r.blob();
       console.info(`[openai] result blob: ${blob.size} bytes (url path)`);

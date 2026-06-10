@@ -5,7 +5,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getJob } from "@/lib/ai/server/jobs";
+import { deleteJob, getJob } from "@/lib/ai/server/jobs";
 
 export async function GET(_request: Request, context: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await context.params;
@@ -20,6 +20,11 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
     );
   }
   const buf = await job.result.blob.arrayBuffer();
+  // One-shot delivery: drop the job once the bytes are on the wire.
+  // Result blobs used to sit in the in-memory map for the full 1h TTL
+  // (pruned only when the NEXT job was created) — megabytes per
+  // generation held for nothing. The client never re-fetches.
+  deleteJob(jobId);
   return new NextResponse(buf, {
     status: 200,
     headers: {

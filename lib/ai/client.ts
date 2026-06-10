@@ -366,104 +366,6 @@ export function padToOpenAISquare(canvas: HTMLCanvasElement): {
   return { canvas: out, offset: { x: dx, y: dy, w: drawW, h: drawH } };
 }
 
-/**
- * Build the OpenAI edit mask. The output is always dimension-matched
- * to the padded source canvas and uses a clean **bbox-based binary**
- * alpha channel:
- *
- *   - alpha=255 (preserve): outside the layer's offset rectangle, or
- *     inside the rectangle but covered by the user's painted mask.
- *   - alpha=0 (edit):       inside the offset rectangle and outside
- *     the user's painted mask. When no user mask exists the whole
- *     offset rectangle is editable.
- *
- * Why bbox instead of triangle silhouette. The earlier design read
- * the padded source's alpha channel and built a footprint-shaped
- * editable region — but that shape has anti-aliased edges and is
- * broken into tiny fragments along the silhouette boundary, which
- * gpt-image-2 handles inconsistently (often producing dark or
- * generation-only outputs). A solid rectangular edit region is much
- * easier for the model to reason about, and the over-paint that
- * spills into the bbox corners outside the actual silhouette gets
- * clipped during postprocess (alpha enforce against the source layer
- * canvas).
- *
- * Why this is also the user's mental model. DecomposeStudio's mask
- * means "erase this region from the final render"; the live
- * compositor applies it destination-out. When sent here, marked
- * pixels become alpha=255 (preserve) so the AI doesn't waste effort
- * on a region that's about to be erased — the compositor finishes
- * the erase after the AI texture lands.
- */
-export async function buildOpenAIEditMask(
-  paddedSource: HTMLCanvasElement,
-  userMaskBlob: Blob | null,
-  /** Where the layer's upright canvas was placed inside the padded square. */
-  offset: { x: number; y: number; w: number; h: number },
-): Promise<HTMLCanvasElement> {
-  const W = paddedSource.width;
-  const H = paddedSource.height;
-  if (!W || !H) throw new Error("padded source has zero dimensions");
-
-  const out = document.createElement("canvas");
-  out.width = W;
-  out.height = H;
-  const outCtx = out.getContext("2d");
-  if (!outCtx) throw new Error("2d context unavailable");
-
-  // Rasterize the user mask into the padded coordinate space (if any).
-  let userData: ImageData | null = null;
-  if (userMaskBlob) {
-    const um = document.createElement("canvas");
-    um.width = W;
-    um.height = H;
-    const umCtx = um.getContext("2d");
-    if (umCtx) {
-      try {
-        const img = await blobToImage(userMaskBlob);
-        umCtx.drawImage(img, offset.x, offset.y, offset.w, offset.h);
-        userData = umCtx.getImageData(0, 0, W, H);
-      } catch (e) {
-        console.warn("[buildOpenAIEditMask] user mask load failed; ignoring", e);
-      }
-    }
-  }
-
-  const xMin = offset.x;
-  const yMin = offset.y;
-  const xMax = offset.x + offset.w;
-  const yMax = offset.y + offset.h;
-
-  const outData = outCtx.createImageData(W, H);
-  let i = 0;
-  for (let py = 0; py < H; py++) {
-    for (let px = 0; px < W; px++, i += 4) {
-      // RGB irrelevant to OpenAI alpha-only mask; white is a friendly
-      // placeholder for any debug viewer.
-      outData.data[i] = 255;
-      outData.data[i + 1] = 255;
-      outData.data[i + 2] = 255;
-
-      const insideBbox = px >= xMin && px < xMax && py >= yMin && py < yMax;
-      if (!insideBbox) {
-        outData.data[i + 3] = 255; // preserve outside the bbox
-        continue;
-      }
-
-      if (userData) {
-        // Threshold to 0/255 for a binary mask — anti-aliased mask
-        // edges otherwise leave intermediate alpha that can confuse
-        // gpt-image-2.
-        outData.data[i + 3] = userData.data[i + 3] >= 128 ? 255 : 0;
-      } else {
-        outData.data[i + 3] = 0;
-      }
-    }
-  }
-  outCtx.putImageData(outData, 0, 0);
-  return out;
-}
-
 async function blobToImage(blob: Blob): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(blob);
   try {
@@ -842,6 +744,9 @@ export type SubmitGenerateInput = {
   timeoutMs?: number;
   /** How often to poll status. */
   pollIntervalMs?: number;
+  /** Abort the generation: stops polling AND cancels the server job
+   *  (DELETE /api/ai/status/:id aborts the upstream provider fetch). */
+  signal?: AbortSignal;
 };
 
 /** Submit a generation and resolve to the final image blob. */
@@ -884,13 +789,48 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
   const intervalMs = input.pollIntervalMs ?? 1500;
   const start = Date.now();
 
+  const cancelServerJob = () => {
+    void fetch(apiUrl(`/api/ai/status/${encodeURIComponent(jobId)}`), { method: "DELETE" }).catch(
+      () => {},
+    );
+  };
+
+  // One transient poll hiccup (proxy 502, network blip) used to throw
+  // and strand a PAID in-flight generation. Tolerate a few consecutive
+  // failures; a hard 404 (job lost — server restarted) still fails
+  // fast because retrying can't bring it back.
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 4;
+
   while (Date.now() - start < timeoutMs) {
     await delay(intervalMs);
-    const r = await fetch(apiUrl(`/api/ai/status/${encodeURIComponent(jobId)}`));
-    if (!r.ok) {
-      throw new Error(`status ${r.status}`);
+    if (input.signal?.aborted) {
+      cancelServerJob();
+      throw new Error("사용자가 생성을 취소했습니다");
     }
-    const status = (await r.json()) as AIJobStatus;
+    let status: AIJobStatus;
+    try {
+      const r = await fetch(apiUrl(`/api/ai/status/${encodeURIComponent(jobId)}`));
+      if (r.status === 404) {
+        throw new HardPollError("status 404 — job lost (server restart?)");
+      }
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      status = (await r.json()) as AIJobStatus;
+      consecutiveFailures = 0;
+    } catch (e) {
+      if (e instanceof HardPollError) throw new Error(e.message);
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        throw new Error(
+          `status polling failed ${consecutiveFailures}x in a row: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+      // Linear backoff on top of the base interval.
+      await delay(intervalMs * consecutiveFailures);
+      continue;
+    }
     if (status.kind === "succeeded") {
       const result = await fetch(apiUrl(`/api/ai/result/${encodeURIComponent(jobId)}`));
       if (!result.ok) throw new Error(`result ${result.status}`);
@@ -903,8 +843,11 @@ export async function submitGenerate(input: SubmitGenerateInput): Promise<Blob> 
       throw new Error("job was canceled");
     }
   }
+  cancelServerJob();
   throw new Error(`generate timed out after ${timeoutMs}ms`);
 }
+
+class HardPollError extends Error {}
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

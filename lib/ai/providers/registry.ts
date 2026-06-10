@@ -17,11 +17,16 @@ import type { AIProvider, ProviderConfig } from "./interface";
 import { OpenAIProvider, openaiConfig } from "./openai";
 import { ReplicateProvider, replicateConfig } from "./replicate";
 
+// Order matters: the GeneratePanel defaults to the FIRST available
+// provider. OpenAI gpt-image leads — the docs-upgrade progress logs
+// concluded it's the only provider that handles atlas crops reliably
+// (FLUX family hallucinates characters into silhouettes; Gemini has
+// no refs and inverted mask semantics).
 export const providerConfigs: ProviderConfig[] = [
-  geminiConfig,
   openaiConfig,
-  replicateConfig,
   falaiConfig,
+  geminiConfig,
+  replicateConfig,
 ];
 
 export type ProviderAvailability = {
@@ -39,6 +44,19 @@ export type ProviderAvailability = {
  */
 export function listProviders(): ProviderAvailability[] {
   return providerConfigs.map((cfg) => {
+    // Replicate's image generation is a shape-only stub (`generate()`
+    // always throws) — advertising it as available whenever the token
+    // was set put a guaranteed-failure entry in the picker. SAM (the
+    // only real Replicate integration) goes through /api/ai/sam and
+    // doesn't use this picker.
+    if (cfg.id === "replicate") {
+      return {
+        id: cfg.id,
+        displayName: cfg.displayName,
+        available: false,
+        reason: "image generation not implemented (SAM segmentation only)",
+      };
+    }
     const env = envKeyForProvider(cfg.id);
     const value = env ? process.env[env] : undefined;
     return {

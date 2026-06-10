@@ -129,6 +129,7 @@ export class FalAIProvider implements AIProvider {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: input.signal,
     });
 
     if (!submit.ok) {
@@ -163,10 +164,12 @@ export class FalAIProvider implements AIProvider {
     const timeoutMs = 180_000;
     const pollMs = 1500;
 
+    let completed = false;
     while (Date.now() - startedAt < timeoutMs) {
       await delay(pollMs);
       const s = await fetch(statusUrl, {
         headers: { Authorization: `Key ${this.apiKey}` },
+        signal: input.signal,
       });
       if (!s.ok) {
         const text = await safeText(s);
@@ -179,6 +182,7 @@ export class FalAIProvider implements AIProvider {
       }
       const state = (await s.json()) as FalStatusResponse;
       if (state.status === "COMPLETED") {
+        completed = true;
         break;
       }
       if (state.status === "FAILED" || state.status === "CANCELED") {
@@ -187,8 +191,15 @@ export class FalAIProvider implements AIProvider {
       // IN_QUEUE / IN_PROGRESS — keep polling.
     }
 
+    // The old code fell through to the result fetch on timeout and the
+    // user got a misleading "fal.ai result 4xx" instead of the truth.
+    if (!completed) {
+      throw new Error(`fal.ai timed out after ${timeoutMs}ms (request_id=${requestId})`);
+    }
+
     const r = await fetch(resultUrl, {
       headers: { Authorization: `Key ${this.apiKey}` },
+      signal: input.signal,
     });
     if (!r.ok) {
       const text = await safeText(r);
@@ -203,7 +214,7 @@ export class FalAIProvider implements AIProvider {
     console.info(`[falai] completed in ${elapsed}ms → ${first.url}`);
 
     // fal.media URLs are publicly accessible — no auth header needed.
-    const blob = await fetch(first.url).then((res) => {
+    const blob = await fetch(first.url, { signal: input.signal }).then((res) => {
       if (!res.ok) throw new Error(`fal.media fetch ${res.status}`);
       return res.blob();
     });

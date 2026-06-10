@@ -28,6 +28,9 @@ type ServerJob = {
   status: AIJobStatus;
   result?: { blob: Blob; mime: string };
   createdAt: number;
+  /** Aborts the in-flight provider fetch when the client cancels
+   *  (DELETE /api/ai/status/:id) or the server-side timeout fires. */
+  controller: AbortController;
 };
 
 type JobGlobal = typeof globalThis & {
@@ -50,6 +53,7 @@ export function createJob(providerId: ProviderId): ServerJob {
     providerId,
     status: { kind: "queued" },
     createdAt: Date.now(),
+    controller: new AbortController(),
   };
   jobs.set(id, job);
   return job;
@@ -57,6 +61,21 @@ export function createJob(providerId: ProviderId): ServerJob {
 
 export function getJob(id: AIJobId): ServerJob | null {
   return jobs.get(id) ?? null;
+}
+
+/**
+ * Cancel a job: abort the provider fetch (the runner's catch maps the
+ * abort to a `canceled` status) and mark it immediately so polls that
+ * race the abort see the right state. Idempotent; no-op on finished
+ * jobs.
+ */
+export function cancelJob(id: AIJobId): boolean {
+  const job = jobs.get(id);
+  if (!job) return false;
+  if (job.status.kind === "succeeded" || job.status.kind === "failed") return false;
+  job.status = { kind: "canceled" };
+  job.controller.abort();
+  return true;
 }
 
 export function setStatus(id: AIJobId, status: AIJobStatus): void {
@@ -68,6 +87,9 @@ export function setStatus(id: AIJobId, status: AIJobStatus): void {
 export function setResult(id: AIJobId, blob: Blob, mime: string): void {
   const job = jobs.get(id);
   if (!job) return;
+  // A cancellation that raced the provider's completion wins — the
+  // client already walked away; don't flip the job back to succeeded.
+  if (job.status.kind === "canceled") return;
   job.result = { blob, mime };
   job.status = { kind: "succeeded", resultMime: mime };
 }
