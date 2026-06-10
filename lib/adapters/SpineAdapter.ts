@@ -51,6 +51,13 @@ export class SpineAdapter implements AvatarAdapter {
   private pixiTextureById = new Map<TextureId, PixiTexture>();
   /** Serializes + coalesces override applies. Created on first use. */
   private overrideApplier: LayerOverrideApplier | null = null;
+  /** Triangles captured at load from the setup-pose attachment — the
+   *  same attachment `layer.texture` (the slice) was computed from.
+   *  Static on purpose: reading the LIVE attachment made triangles
+   *  vanish for hidden slots (attachment null), which dropped the
+   *  override compositor to its rect-clip fallback and let the wipe
+   *  erase atlas neighbors packed inside the bbox. */
+  private trianglesByExternalId = new Map<string, LayerTriangles>();
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -113,6 +120,10 @@ export class SpineAdapter implements AvatarAdapter {
       const attachment = slot.getAttachment();
       this.slotIndexByExternalId.set(externalId, i);
       const slice = sliceFromAttachment(attachment, textureIdByPageName);
+      if (slice) {
+        const tris = trianglesFromAttachment(attachment as SpineAttachmentLike | null, slice);
+        if (tris) this.trianglesByExternalId.set(externalId, tris);
+      }
       const layer: Layer = {
         id,
         externalId,
@@ -166,47 +177,12 @@ export class SpineAdapter implements AvatarAdapter {
   }
 
   getLayerTriangles(layerId: LayerId): LayerTriangles | null {
-    const spine = this.spine;
-    if (!spine) return null;
     const layer = this.findLayerById(layerId);
     if (!layer?.texture) return null;
-    const slotIndex = this.slotIndexByExternalId.get(layer.externalId);
-    if (slotIndex == null) return null;
-    const slot = spine.skeleton.slots[slotIndex];
-    const attachment = slot.getAttachment() as SpineAttachmentLike | null;
-    if (!attachment) return null;
-    const region = attachment.region;
-    if (!region?.page) return null;
-
-    const pageW = region.page.width;
-    const pageH = region.page.height;
-    if (!pageW || !pageH) return null;
-
-    // MeshAttachment carries its own UV array + triangle indices; we use
-    // those verbatim. RegionAttachment is just the on-page rect, so we
-    // fabricate a quad (2 triangles).
-    const meshUVs = attachment.regionUVs;
-    const meshTris = attachment.triangles;
-    if (meshUVs && meshTris && meshUVs.length >= 6 && meshTris.length >= 3) {
-      const out = new Float32Array(meshTris.length * 2);
-      for (let i = 0; i < meshTris.length; i++) {
-        const v = meshTris[i];
-        out[i * 2] = meshUVs[v * 2];
-        out[i * 2 + 1] = meshUVs[v * 2 + 1];
-      }
-      return { textureId: layer.texture.textureId, uvs: out };
-    }
-
-    // RegionAttachment fallback — quad covering the on-page rect.
-    const u1 = region.x / pageW;
-    const v1 = region.y / pageH;
-    const u2 = (region.x + region.width) / pageW;
-    const v2 = (region.y + region.height) / pageH;
-    return {
-      textureId: layer.texture.textureId,
-      // prettier-ignore
-      uvs: new Float32Array([u1, v1, u2, v1, u2, v2, u1, v1, u2, v2, u1, v2]),
-    };
+    // Static load-time capture — see `trianglesByExternalId`. The cached
+    // footprint always matches `layer.texture`, regardless of whether the
+    // slot is currently hidden or an animation swapped its attachment.
+    return this.trianglesByExternalId.get(layer.externalId) ?? null;
   }
 
   async setLayerOverrides(opts: {
@@ -335,6 +311,7 @@ export class SpineAdapter implements AvatarAdapter {
     this.slotIndexByExternalId.clear();
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
+    this.trianglesByExternalId.clear();
   }
 
   // ----- helpers -----
@@ -428,6 +405,47 @@ function isCanvasImageSource(v: unknown): v is CanvasImageSource {
  * `rotated: true` when the region is stored sideways so renderers can
  * un-rotate when displaying upright.
  */
+/**
+ * Triangle footprint for an attachment, in top-down page UVs. Mesh
+ * attachments carry their own UV array + triangle indices which we use
+ * verbatim; RegionAttachment is just the on-page rect, so we fabricate
+ * a quad (2 triangles). Called once per slot at load — the result is
+ * cached so it stays valid while the slot is hidden.
+ */
+function trianglesFromAttachment(
+  attachment: SpineAttachmentLike | null,
+  slice: TextureSlice,
+): LayerTriangles | null {
+  const region = attachment?.region;
+  if (!region?.page) return null;
+  const pageW = region.page.width;
+  const pageH = region.page.height;
+  if (!pageW || !pageH) return null;
+
+  const meshUVs = attachment?.regionUVs;
+  const meshTris = attachment?.triangles;
+  if (meshUVs && meshTris && meshUVs.length >= 6 && meshTris.length >= 3) {
+    const out = new Float32Array(meshTris.length * 2);
+    for (let i = 0; i < meshTris.length; i++) {
+      const v = meshTris[i];
+      out[i * 2] = meshUVs[v * 2];
+      out[i * 2 + 1] = meshUVs[v * 2 + 1];
+    }
+    return { textureId: slice.textureId, uvs: out };
+  }
+
+  // RegionAttachment fallback — quad covering the on-page rect.
+  const u1 = region.x / pageW;
+  const v1 = region.y / pageH;
+  const u2 = (region.x + region.width) / pageW;
+  const v2 = (region.y + region.height) / pageH;
+  return {
+    textureId: slice.textureId,
+    // prettier-ignore
+    uvs: new Float32Array([u1, v1, u2, v1, u2, v2, u1, v1, u2, v2, u1, v2]),
+  };
+}
+
 function sliceFromAttachment(
   attachment: unknown,
   textureIdByPageName: Map<string, TextureId>,

@@ -72,9 +72,23 @@ export class Live2DAdapter implements AvatarAdapter {
   /** Reverse lookup: layerId → its Cubism part index. */
   private partIndexByLayerId = new Map<LayerId, number>();
 
-  /** part-index → opacity multiplier (0 = hide, 1 = show). 1.0 means "no
-   *  override needed", so we delete instead of storing 1. */
-  private partOpacityOverrides = new Map<number, number>();
+  /**
+   * Per-LAYER visibility/tint state. Keyed by LayerId (not part index)
+   * because multi-page parts expose one virtual layer per atlas page —
+   * keying by part index made page rows clobber each other: hiding
+   * "page 1" hid every page, and undo/redo replay order could un-hide
+   * a part whose other page row was still off. Only non-default values
+   * are stored (visible=false / alpha<1).
+   */
+  private layerHidden = new Set<LayerId>();
+  private layerAlphaById = new Map<LayerId, number>();
+  /**
+   * Derived from the two maps above by `rebuildDrawableMultipliers` on
+   * every visibility/tint change: drawable index → opacity multiplier.
+   * `applyOverridesAfterUpdate` only iterates this — keeps the per-frame
+   * hook allocation-free and O(overridden drawables).
+   */
+  private drawableMultipliers = new Map<number, number>();
   /**
    * part-index → drawables whose `parentPartIndex` *is* this part. Used
    * for the part's own footprint (thumbnail, DecomposeStudio, Layer.texture).
@@ -559,11 +573,11 @@ export class Live2DAdapter implements AvatarAdapter {
     this._hookFireCount++;
     const cm = this.coreModel;
     if (!cm) return;
-    if (this.partOpacityOverrides.size === 0) return;
+    if (this.drawableMultipliers.size === 0) return;
 
     if (this._hookFireCount === 1 || this._hookFireCount % 240 === 0) {
       console.log(
-        `[Live2DAdapter] post-update fire #${this._hookFireCount}, applying ${this.partOpacityOverrides.size} overrides`,
+        `[Live2DAdapter] post-update fire #${this._hookFireCount}, applying ${this.drawableMultipliers.size} drawable multipliers`,
       );
     }
 
@@ -571,28 +585,69 @@ export class Live2DAdapter implements AvatarAdapter {
     const opacities: Float32Array | undefined = drawables?.opacities;
     if (!opacities) return;
 
-    for (const [partIdx, multiplier] of this.partOpacityOverrides) {
-      if (multiplier === 1) continue;
-      // Visibility cascades down the part tree — hiding a parent must
-      // hide every drawable underneath, not just the parent's direct ones.
-      const list = this.partToDescendantDrawables.get(partIdx);
-      if (!list) continue;
-      for (const d of list) {
-        opacities[d] *= multiplier;
-      }
+    for (const [d, multiplier] of this.drawableMultipliers) {
+      opacities[d] *= multiplier;
     }
 
     if (!this._loggedDrawableMutate) {
-      const first = this.partOpacityOverrides.entries().next().value;
+      const first = this.drawableMultipliers.entries().next().value;
       if (first) {
-        const [idx] = first;
-        const list = this.partToDescendantDrawables.get(idx) ?? [];
-        const sample = list[0];
-        if (typeof sample === "number") {
-          console.log(
-            `[Live2DAdapter] post-update verify: part[${idx}] → drawable[${sample}] opacity now=${opacities[sample]}`,
-          );
-          this._loggedDrawableMutate = true;
+        const [d] = first;
+        console.log(
+          `[Live2DAdapter] post-update verify: drawable[${d}] opacity now=${opacities[d]}`,
+        );
+        this._loggedDrawableMutate = true;
+      }
+    }
+  }
+
+  /**
+   * Recompute the drawable→multiplier map from per-layer state. Runs on
+   * user toggles only (not per frame).
+   *
+   * Semantics:
+   *   - Hiding a layer zeroes the part's DIRECT drawables on that
+   *     layer's atlas page — page rows of a multi-page part are
+   *     independent (single-page parts: all direct drawables, exactly
+   *     the old behavior).
+   *   - Only when EVERY page row of the part is hidden does the hide
+   *     cascade to descendant parts' drawables (Cubism parent-opacity
+   *     semantics). A half-hidden part keeps its children visible.
+   *   - Tint alpha (`setLayerColor`) multiplies the same direct-on-page
+   *     set and composes with visibility instead of overwriting it.
+   */
+  private rebuildDrawableMultipliers(): void {
+    const cm = this.coreModel;
+    this.drawableMultipliers.clear();
+    if (!cm) return;
+    const apply = (d: number, m: number) => {
+      const prev = this.drawableMultipliers.get(d);
+      this.drawableMultipliers.set(d, (prev ?? 1) * m);
+    };
+
+    for (const [partIdx, partLayers] of this.layersByPartIndex) {
+      const direct = this.partToDirectDrawables.get(partIdx) ?? [];
+      let allHidden = partLayers.length > 0;
+      for (const layer of partLayers) {
+        const hidden = this.layerHidden.has(layer.id);
+        if (!hidden) allHidden = false;
+        const alpha = this.layerAlphaById.get(layer.id) ?? 1;
+        const m = (hidden ? 0 : 1) * alpha;
+        if (m === 1) continue;
+        const pageIdx = layer.texture
+          ? this.pageIndexByTextureId.get(layer.texture.textureId)
+          : undefined;
+        for (const d of direct) {
+          if (pageIdx != null && cm.getDrawableTextureIndex?.(d) !== pageIdx) continue;
+          apply(d, m);
+        }
+      }
+      if (allHidden) {
+        const descendants = this.partToDescendantDrawables.get(partIdx) ?? [];
+        const directSet = new Set(direct);
+        for (const d of descendants) {
+          // Direct drawables already got 0 from their own layer pass.
+          if (!directSet.has(d)) apply(d, 0);
         }
       }
     }
@@ -613,26 +668,28 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   setLayerVisibility(layerId: LayerId, visible: boolean): void {
-    const idx = this.findPartIndex(layerId);
-    if (idx == null) return;
+    if (this.findPartIndex(layerId) == null) return;
     if (visible) {
-      this.partOpacityOverrides.delete(idx);
+      this.layerHidden.delete(layerId);
     } else {
-      this.partOpacityOverrides.set(idx, 0);
+      this.layerHidden.add(layerId);
     }
+    this.rebuildDrawableMultipliers();
     // The patched internalModel.update will run our applyOverridesAfterUpdate
     // on the next tick — no synchronous mutation here. setPartOpacity is
     // not exposed on this engine build anyway.
   }
 
   setLayerColor(layerId: LayerId, color: RGBA): void {
-    const idx = this.findPartIndex(layerId);
-    if (idx == null) return;
+    if (this.findPartIndex(layerId) == null) return;
+    // Separate channel from visibility — alpha tint and hide compose
+    // multiplicatively instead of overwriting each other.
     if (color.a >= 1) {
-      this.partOpacityOverrides.delete(idx);
+      this.layerAlphaById.delete(layerId);
     } else {
-      this.partOpacityOverrides.set(idx, color.a);
+      this.layerAlphaById.set(layerId, color.a);
     }
+    this.rebuildDrawableMultipliers();
   }
 
   /**
@@ -945,7 +1002,9 @@ export class Live2DAdapter implements AvatarAdapter {
       }
       this.originalInternalUpdate = null;
     }
-    this.partOpacityOverrides.clear();
+    this.layerHidden.clear();
+    this.layerAlphaById.clear();
+    this.drawableMultipliers.clear();
     this.partToDirectDrawables.clear();
     this.partToDescendantDrawables.clear();
     this.maskDrawables.clear();
