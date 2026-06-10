@@ -29,6 +29,11 @@ export type ApplyContext = {
   getTriangles: (id: LayerId) => LayerTriangles | null;
   textureSources: ReadonlyMap<TextureId, TextureSourceInfo>;
   pixiTextures: ReadonlyMap<TextureId, PixiTexture>;
+  /** pageIndex ↔ TextureId translation. Page overrides persist by
+   *  pageIndex (stable across reloads); the GPU side keys by the
+   *  per-load TextureId. */
+  textureIdForPageIndex: (pageIndex: number) => TextureId | null;
+  pageIndexForTextureId: (id: TextureId) => number | null;
 };
 
 export type LayerOverrides = {
@@ -36,6 +41,10 @@ export type LayerOverrides = {
   masks: Readonly<Record<LayerId, Blob>>;
   /** PNG replacement textures sized to the layer's upright rect. */
   textures: Readonly<Record<LayerId, Blob>>;
+  /** Whole-page replacement images keyed by pageIndex. When present,
+   *  the page is rebuilt from THIS image instead of the pristine
+   *  bitmap; per-layer textures/masks still composite on top. */
+  pages?: Readonly<Record<number, Blob>>;
 };
 
 export type ApplyResult = {
@@ -105,6 +114,16 @@ export class LayerOverrideApplier {
     };
     collect(this.lastApplied.textures, next.textures);
     collect(this.lastApplied.masks, next.masks);
+    // Whole-page bases — keyed by pageIndex, diffed by Blob identity.
+    const prevPages = this.lastApplied.pages ?? {};
+    const curPages = next.pages ?? {};
+    const pageKeys = new Set([...Object.keys(prevPages), ...Object.keys(curPages)]);
+    for (const key of pageKeys) {
+      const idx = Number(key);
+      if (prevPages[idx] === curPages[idx]) continue;
+      const textureId = this.ctx.textureIdForPageIndex(idx);
+      if (textureId) dirty.add(textureId);
+    }
     return dirty;
   }
 
@@ -133,7 +152,23 @@ export class LayerOverrideApplier {
       work.height = source.height;
       const work2d = work.getContext("2d");
       if (!work2d) continue;
-      work2d.drawImage(source.image, 0, 0);
+
+      // 0. Page base — replacement image when present, pristine
+      //    otherwise. Scaled to the page dims so a downscaled AI
+      //    result still covers the full page.
+      const pageIndex = this.ctx.pageIndexForTextureId(textureId);
+      const pageBlob = pageIndex != null ? overrides.pages?.[pageIndex] : undefined;
+      let baseDrawn = false;
+      if (pageBlob) {
+        const img = await decode(pageBlob);
+        if (img) {
+          work2d.drawImage(img, 0, 0, source.width, source.height);
+          baseDrawn = true;
+        } else {
+          console.warn(`[applyOverrides] page override decode failed (page ${pageIndex})`);
+        }
+      }
+      if (!baseDrawn) work2d.drawImage(source.image, 0, 0);
 
       // 1. Textures first.
       for (const [layerId, blob] of Object.entries(overrides.textures)) {

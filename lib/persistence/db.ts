@@ -143,11 +143,20 @@ export type VariantRow = {
  * the runtime-stable `layerExternalId`. `kind` separates the two
  * channels so the upsert path can find/replace either independently.
  */
+/**
+ * Override channel. "mask" / "texture" are per-layer (keyed by the
+ * runtime-stable layerExternalId). "pageTexture" is a whole-atlas-page
+ * replacement; its rows encode the page index as `layerExternalId =
+ * "page:<index>"` so the existing compound indexes keep working with
+ * no Dexie version bump (kind is not schema-constrained).
+ */
+export type LayerOverrideKind = "mask" | "texture" | "pageTexture";
+
 export type LayerOverrideRow = {
   id: LayerOverrideRowId;
   puppetKey: string;
   layerExternalId: string;
-  kind: "mask" | "texture";
+  kind: LayerOverrideKind;
   blob: Blob;
   updatedAt: number;
 };
@@ -728,7 +737,7 @@ export async function deleteVariant(id: VariantRowId): Promise<void> {
 export type SaveLayerOverrideInput = {
   puppetKey: string;
   layerExternalId: string;
-  kind: "mask" | "texture";
+  kind: LayerOverrideKind;
   blob: Blob;
 };
 
@@ -760,7 +769,7 @@ export async function saveLayerOverride(
 export async function deleteLayerOverride(
   puppetKey: string,
   layerExternalId: string,
-  kind: "mask" | "texture",
+  kind: LayerOverrideKind,
 ): Promise<void> {
   await db()
     .layerOverrides.where("[puppetKey+layerExternalId+kind]")
@@ -772,7 +781,7 @@ export async function deleteLayerOverride(
 /** All overrides of a given kind for one puppet, used for hydrate-on-load. */
 export async function listLayerOverridesForPuppet(
   puppetKey: string,
-  kind: "mask" | "texture",
+  kind: LayerOverrideKind,
 ): Promise<LayerOverrideRow[]> {
   return await db().layerOverrides.where("[puppetKey+kind]").equals([puppetKey, kind]).toArray();
 }

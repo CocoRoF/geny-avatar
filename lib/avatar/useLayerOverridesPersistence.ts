@@ -35,6 +35,7 @@ export function useLayerOverridesPersistence(
 ) {
   const setLayerMask = useEditorStore((s) => s.setLayerMask);
   const setLayerTextureOverride = useEditorStore((s) => s.setLayerTextureOverride);
+  const setPageTextureOverride = useEditorStore((s) => s.setPageTextureOverride);
   const applyVisibilityMapState = useEditorStore((s) => s.applyVisibilityMap);
 
   // Track "did we finish hydrating for the current puppetKey" so the
@@ -44,6 +45,7 @@ export function useLayerOverridesPersistence(
   // Snapshots of the maps the LAST time we wrote to IDB. Used to diff.
   const masksRef = useRef<Record<LayerId, Blob>>({});
   const texturesRef = useRef<Record<LayerId, Blob>>({});
+  const pagesRef = useRef<Record<number, Blob>>({});
   const visibilityRef = useRef<Record<LayerId, boolean>>({});
 
   // ----- hydrate -----
@@ -55,9 +57,10 @@ export function useLayerOverridesPersistence(
         const externalToId = new Map<string, LayerId>();
         for (const layer of layers) externalToId.set(layer.externalId, layer.id);
 
-        const [maskRows, texRows, sessionRow] = await Promise.all([
+        const [maskRows, texRows, pageRows, sessionRow] = await Promise.all([
           listLayerOverridesForPuppet(puppetKey, "mask"),
           listLayerOverridesForPuppet(puppetKey, "texture"),
+          listLayerOverridesForPuppet(puppetKey, "pageTexture"),
           getPuppetSession(puppetKey),
         ]);
         if (cancelled) return;
@@ -73,11 +76,22 @@ export function useLayerOverridesPersistence(
           if (layerId) textures[layerId] = row.blob;
         }
 
+        // Page overrides persist by pageIndex inside the externalId
+        // slot ("page:<index>") — decode back to the number key.
+        const pages: Record<number, Blob> = {};
+        for (const row of pageRows) {
+          const idx = decodePageExternalId(row.layerExternalId);
+          if (idx != null) pages[idx] = row.blob;
+        }
+
         // Apply each entry through the store action so reactive
         // selectors notice. setLayerMask(null) clears, setLayerMask(blob)
         // sets — the hook never deletes during hydrate.
         for (const [id, blob] of Object.entries(masks)) setLayerMask(id, blob);
         for (const [id, blob] of Object.entries(textures)) setLayerTextureOverride(id, blob);
+        for (const [idx, blob] of Object.entries(pages)) {
+          setPageTextureOverride(Number(idx), blob);
+        }
 
         // Visibility: translate externalId-keyed map back to Layer.id and
         // apply through the store. Goes through history because we want
@@ -95,11 +109,15 @@ export function useLayerOverridesPersistence(
 
         masksRef.current = { ...masks };
         texturesRef.current = { ...textures };
+        pagesRef.current = { ...pages };
         visibilityRef.current = { ...useEditorStore.getState().visibilityOverrides };
         hydratedKeyRef.current = puppetKey;
-        if (maskRows.length + texRows.length + Object.keys(visibility).length > 0) {
+        if (
+          maskRows.length + texRows.length + pageRows.length + Object.keys(visibility).length >
+          0
+        ) {
           console.info(
-            `[overridesPersist] hydrated puppet=${puppetKey.slice(-6)} masks=${maskRows.length} textures=${texRows.length} visibility=${Object.keys(visibility).length}`,
+            `[overridesPersist] hydrated puppet=${puppetKey.slice(-6)} masks=${maskRows.length} textures=${texRows.length} pages=${pageRows.length} visibility=${Object.keys(visibility).length}`,
           );
         }
       } catch (e) {
@@ -112,6 +130,7 @@ export function useLayerOverridesPersistence(
         if (!cancelled && hydratedKeyRef.current !== puppetKey) {
           masksRef.current = { ...useEditorStore.getState().layerMasks };
           texturesRef.current = { ...useEditorStore.getState().layerTextureOverrides };
+          pagesRef.current = { ...useEditorStore.getState().pageTextureOverrides };
           visibilityRef.current = { ...useEditorStore.getState().visibilityOverrides };
           hydratedKeyRef.current = puppetKey;
         }
@@ -124,8 +143,16 @@ export function useLayerOverridesPersistence(
       hydratedKeyRef.current = null;
       masksRef.current = {};
       texturesRef.current = {};
+      pagesRef.current = {};
     };
-  }, [puppetKey, layers, setLayerMask, setLayerTextureOverride, applyVisibilityMapState]);
+  }, [
+    puppetKey,
+    layers,
+    setLayerMask,
+    setLayerTextureOverride,
+    setPageTextureOverride,
+    applyVisibilityMapState,
+  ]);
 
   // ----- persist on change -----
   useEffect(() => {
@@ -154,8 +181,14 @@ export function useLayerOverridesPersistence(
         prevMap: texturesRef.current,
         idToExternal,
       });
+      diffAndPersistPages({
+        puppetKey,
+        nextMap: state.pageTextureOverrides,
+        prevMap: pagesRef.current,
+      });
       masksRef.current = { ...state.layerMasks };
       texturesRef.current = { ...state.layerTextureOverrides };
+      pagesRef.current = { ...state.pageTextureOverrides };
 
       // Visibility: persist the whole map as a single row whenever it
       // differs from the snapshot. Cheap (<1KB) so no debounce. The
@@ -178,6 +211,41 @@ export function useLayerOverridesPersistence(
       void prev;
     });
   }, [puppetKey, layers]);
+}
+
+/** Page overrides need no externalId translation — pageIndex is the
+ *  stable key already; only the `"page:<i>"` row-key encode happens. */
+function diffAndPersistPages(input: {
+  puppetKey: string;
+  nextMap: Record<number, Blob>;
+  prevMap: Record<number, Blob>;
+}): void {
+  const { puppetKey, nextMap, prevMap } = input;
+  for (const [idx, blob] of Object.entries(nextMap)) {
+    if (prevMap[Number(idx)] === blob) continue;
+    void saveLayerOverride({
+      puppetKey,
+      layerExternalId: encodePageExternalId(Number(idx)),
+      kind: "pageTexture",
+      blob,
+    }).catch((e) => console.warn(`[overridesPersist] save pageTexture failed for page ${idx}`, e));
+  }
+  for (const idx of Object.keys(prevMap)) {
+    if (nextMap[Number(idx)] !== undefined) continue;
+    void deleteLayerOverride(puppetKey, encodePageExternalId(Number(idx)), "pageTexture").catch(
+      (e) => console.warn(`[overridesPersist] delete pageTexture failed for page ${idx}`, e),
+    );
+  }
+}
+
+function encodePageExternalId(pageIndex: number): string {
+  return `page:${pageIndex}`;
+}
+
+function decodePageExternalId(externalId: string): number | null {
+  if (!externalId.startsWith("page:")) return null;
+  const n = Number(externalId.slice(5));
+  return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
 function diffAndPersist(input: {

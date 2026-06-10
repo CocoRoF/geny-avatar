@@ -61,6 +61,7 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
   const setGenerateLayer = useEditorStore((s) => s.setGenerateLayer);
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
+  const pageTextureOverrides = useEditorStore((s) => s.pageTextureOverrides);
   const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
   const generateLayer = generateLayerId
     ? (layers.find((l) => l.id === generateLayerId) ?? null)
@@ -76,7 +77,11 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
     if (!adapter) return;
     let cancelled = false;
     adapter
-      .setLayerOverrides({ masks: layerMasks, textures: layerTextureOverrides })
+      .setLayerOverrides({
+        masks: layerMasks,
+        textures: layerTextureOverrides,
+        pages: pageTextureOverrides,
+      })
       .then((res) => {
         if (cancelled) return;
         if (res.failedLayerIds.length > 0) {
@@ -95,7 +100,7 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
     return () => {
       cancelled = true;
     };
-  }, [adapter, layerMasks, layerTextureOverrides, layers]);
+  }, [adapter, layerMasks, layerTextureOverrides, pageTextureOverrides, layers]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();

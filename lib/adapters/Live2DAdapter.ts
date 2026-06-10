@@ -958,12 +958,15 @@ export class Live2DAdapter implements AvatarAdapter {
   async setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
+    pages?: Readonly<Record<number, Blob>>;
   }): Promise<ApplyResult> {
     this.overrideApplier ??= new LayerOverrideApplier({
       findLayer: (id) => this.findLayerByLayerId(id),
       getTriangles: (id) => this.getLayerTriangles(id),
       textureSources: this.textureSourcesById,
       pixiTextures: this.pixiTextureById,
+      textureIdForPageIndex: (idx) => this.textureIdByPageIndex.get(idx) ?? null,
+      pageIndexForTextureId: (id) => this.pageIndexByTextureId.get(id) ?? null,
     });
     return this.overrideApplier.apply(opts);
   }

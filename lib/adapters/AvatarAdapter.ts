@@ -162,6 +162,10 @@ export interface AvatarAdapter {
   setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
+    /** Whole-page replacement images keyed by pageIndex — used as the
+     *  page's compositing base in place of the pristine bitmap.
+     *  Per-layer textures/masks still composite on top. */
+    pages?: Readonly<Record<number, Blob>>;
   }): Promise<ApplyResult>;
 
   /**

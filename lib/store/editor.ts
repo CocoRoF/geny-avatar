@@ -43,6 +43,13 @@ export type EditorState = {
    *  with `source-over` and triangle clipping. In-memory; IDB
    *  persistence lands in Sprint 3.4. */
   layerTextureOverrides: Record<LayerId, Blob>;
+  /** Whole-atlas-page replacements keyed by pageIndex (stable across
+   *  reloads, unlike TextureId). The adapter uses these as the page's
+   *  compositing BASE in place of the pristine bitmap; per-layer
+   *  texture/mask overrides still composite on top, so the two
+   *  features compose instead of conflicting. Set by the page editor
+   *  and the whole-character restyle pipeline. */
+  pageTextureOverrides: Record<number, Blob>;
 
   // ----- actions -----
 
@@ -78,6 +85,8 @@ export type EditorState = {
   /** Save (or clear with `null`) the AI-generated texture override
    *  that should replace the layer's atlas pixels on next render. */
   setLayerTextureOverride(id: LayerId, blob: Blob | null): void;
+  /** Save (or clear with `null`) a whole-page texture replacement. */
+  setPageTextureOverride(pageIndex: number, blob: Blob | null): void;
 
   // ----- selectors / read-helpers -----
 
@@ -98,6 +107,7 @@ export const useEditorStore = create<EditorState>()(
     generateLayerId: null,
     layerMasks: {},
     layerTextureOverrides: {},
+    pageTextureOverrides: {},
 
     setAvatar: (avatar) =>
       set((s) => {
@@ -114,6 +124,7 @@ export const useEditorStore = create<EditorState>()(
         s.generateLayerId = null;
         s.layerMasks = {};
         s.layerTextureOverrides = {};
+        s.pageTextureOverrides = {};
       }),
 
     setLayerVisibility: (id, visible) =>
@@ -209,6 +220,12 @@ export const useEditorStore = create<EditorState>()(
       set((s) => {
         if (blob == null) delete s.layerTextureOverrides[id];
         else s.layerTextureOverrides[id] = blob;
+      }),
+
+    setPageTextureOverride: (pageIndex, blob) =>
+      set((s) => {
+        if (blob == null) delete s.pageTextureOverrides[pageIndex];
+        else s.pageTextureOverrides[pageIndex] = blob;
       }),
   })),
 );

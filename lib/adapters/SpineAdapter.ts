@@ -61,6 +61,9 @@ export class SpineAdapter implements AvatarAdapter {
   /** Assets aliases registered at load — unloaded in destroy() so each
    *  puppet open/close doesn't leak GPU textures in the global cache. */
   private assetAliases: string[] = [];
+  /** pageIndex ↔ TextureId — page overrides persist by pageIndex. */
+  private textureIdByPageIndex = new Map<number, TextureId>();
+  private pageIndexByTextureId = new Map<TextureId, number>();
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -106,6 +109,8 @@ export class SpineAdapter implements AvatarAdapter {
         const id = newId(ID_PREFIX.texture);
         textureIdByPageName.set(page.name, id);
         this.textureSourcesById.set(id, info);
+        this.textureIdByPageIndex.set(idx, id);
+        this.pageIndexByTextureId.set(id, idx);
         const pixiTex = page.texture?.texture as PixiTexture | undefined;
         if (pixiTex) this.pixiTextureById.set(id, pixiTex);
         textures.push({
@@ -192,12 +197,15 @@ export class SpineAdapter implements AvatarAdapter {
   async setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
+    pages?: Readonly<Record<number, Blob>>;
   }): Promise<ApplyResult> {
     this.overrideApplier ??= new LayerOverrideApplier({
       findLayer: (id) => this.findLayerById(id) ?? null,
       getTriangles: (id) => this.getLayerTriangles(id),
       textureSources: this.textureSourcesById,
       pixiTextures: this.pixiTextureById,
+      textureIdForPageIndex: (idx) => this.textureIdByPageIndex.get(idx) ?? null,
+      pageIndexForTextureId: (id) => this.pageIndexByTextureId.get(id) ?? null,
     });
     return this.overrideApplier.apply(opts);
   }
@@ -316,6 +324,8 @@ export class SpineAdapter implements AvatarAdapter {
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
     this.trianglesByExternalId.clear();
+    this.textureIdByPageIndex.clear();
+    this.pageIndexByTextureId.clear();
     if (this.assetAliases.length > 0) {
       const aliases = this.assetAliases;
       this.assetAliases = [];
