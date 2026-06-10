@@ -163,6 +163,33 @@ export async function tryRestoreGenyAvatarZip(file: File): Promise<RestoreResult
     }
   }
 
+  // ----- 3.5) whole-page replacements → IDB layerOverrides -----
+  // Optional field (since exporter 0.4) — older zips simply lack it.
+  let pageCount = 0;
+  for (const [idxStr, zipPath] of Object.entries(manifest.session?.pages ?? {})) {
+    const bytes = unzipped[zipPath];
+    if (!bytes) {
+      warnings.push(`page override file missing: ${zipPath}`);
+      continue;
+    }
+    const idx = Number(idxStr);
+    if (!Number.isInteger(idx) || idx < 0) {
+      warnings.push(`page override has invalid index: ${idxStr}`);
+      continue;
+    }
+    try {
+      await saveLayerOverride({
+        puppetKey: puppetId,
+        layerExternalId: `page:${idx}`,
+        kind: "pageTexture",
+        blob: new Blob([new Uint8Array(bytes).buffer], { type: "image/png" }),
+      });
+      pageCount++;
+    } catch (e) {
+      warnings.push(`page override save for ${idxStr} failed: ${(e as Error).message}`);
+    }
+  }
+
   // ----- 4) visibility → puppetSessions -----
   if (manifest.session?.visibility && Object.keys(manifest.session.visibility).length > 0) {
     try {
@@ -176,7 +203,7 @@ export async function tryRestoreGenyAvatarZip(file: File): Promise<RestoreResult
   }
 
   console.info(
-    `[restore] puppet=${puppetId.slice(-6)} bundle=${bundleEntries.length} variants=${variantCount} masks=${maskCount} textures=${textureCount}${
+    `[restore] puppet=${puppetId.slice(-6)} bundle=${bundleEntries.length} variants=${variantCount} masks=${maskCount} textures=${textureCount} pages=${pageCount}${
       warnings.length > 0 ? ` warnings=${warnings.length}` : ""
     }`,
   );

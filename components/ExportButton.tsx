@@ -51,6 +51,7 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
   const visibility = useEditorStore((s) => s.visibilityOverrides);
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
+  const pageTextureOverrides = useEditorStore((s) => s.pageTextureOverrides);
   const avatar = useEditorStore((s) => s.avatar);
   const [savingMode, setSavingMode] = useState<"none" | "save" | "model">("none");
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +116,7 @@ export function ExportButton({ puppetId, adapter, className = "" }: Props) {
         visibilityOverrides: visibility,
         layerMasks,
         layerTextureOverrides,
+        pageTextureOverrides,
       });
       triggerDownload(result.zip, result.filename);
       console.info(

@@ -66,6 +66,11 @@ export class LayerOverrideApplier {
   private draining: Promise<ApplyResult> | null = null;
   /** State that is actually applied — basis for the page diff. */
   private lastApplied: LayerOverrides = { masks: {}, textures: {} };
+  /** Decoded page-override images, kept alive so read-side consumers
+   *  (thumbnails, DecomposeStudio source extraction, atlas bake) see
+   *  the same base the live render uses. `getPageBase` serves these
+   *  through the adapter's `getTextureSource`. */
+  private pageBases = new Map<TextureId, TextureSourceInfo>();
   private disposed = false;
 
   constructor(ctx: ApplyContext) {
@@ -81,6 +86,17 @@ export class LayerOverrideApplier {
   dispose(): void {
     this.disposed = true;
     this.pending = null;
+    for (const base of this.pageBases.values()) {
+      if (typeof ImageBitmap !== "undefined" && base.image instanceof ImageBitmap) {
+        base.image.close();
+      }
+    }
+    this.pageBases.clear();
+  }
+
+  /** Current page-override base for a page, when one is applied. */
+  getPageBase(textureId: TextureId): TextureSourceInfo | null {
+    return this.pageBases.get(textureId) ?? null;
   }
 
   private async drain(): Promise<ApplyResult> {
@@ -155,20 +171,52 @@ export class LayerOverrideApplier {
 
       // 0. Page base — replacement image when present, pristine
       //    otherwise. Scaled to the page dims so a downscaled AI
-      //    result still covers the full page.
+      //    result still covers the full page. The decoded base is
+      //    retained in `pageBases` so read-side consumers (via the
+      //    adapter's getTextureSource) match the live render.
       const pageIndex = this.ctx.pageIndexForTextureId(textureId);
       const pageBlob = pageIndex != null ? overrides.pages?.[pageIndex] : undefined;
       let baseDrawn = false;
+      const prevBase = this.pageBases.get(textureId);
       if (pageBlob) {
-        const img = await decode(pageBlob);
+        const img = await loadBlob(pageBlob);
         if (img) {
-          work2d.drawImage(img, 0, 0, source.width, source.height);
+          // Normalize to page dims: read-side consumers crop by
+          // page-space pixel rects, so the retained base's intrinsic
+          // size must equal the page size even when the override blob
+          // was generated at a different resolution.
+          let baseImage: CanvasImageSource = img;
+          const iw = "width" in img ? Number(img.width) : source.width;
+          const ih = "height" in img ? Number(img.height) : source.height;
+          if (iw !== source.width || ih !== source.height) {
+            const baseCanvas = document.createElement("canvas");
+            baseCanvas.width = source.width;
+            baseCanvas.height = source.height;
+            baseCanvas.getContext("2d")?.drawImage(img, 0, 0, source.width, source.height);
+            baseImage = baseCanvas;
+            if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
+          }
+          work2d.drawImage(baseImage, 0, 0, source.width, source.height);
           baseDrawn = true;
+          this.pageBases.set(textureId, {
+            image: baseImage,
+            width: source.width,
+            height: source.height,
+          });
         } else {
+          failedLayerIds.push(`page:${pageIndex}`);
           console.warn(`[applyOverrides] page override decode failed (page ${pageIndex})`);
         }
       }
-      if (!baseDrawn) work2d.drawImage(source.image, 0, 0);
+      if (!baseDrawn) {
+        work2d.drawImage(source.image, 0, 0);
+        this.pageBases.delete(textureId);
+      }
+      if (prevBase && this.pageBases.get(textureId) !== prevBase) {
+        if (typeof ImageBitmap !== "undefined" && prevBase.image instanceof ImageBitmap) {
+          prevBase.image.close();
+        }
+      }
 
       // 1. Textures first.
       for (const [layerId, blob] of Object.entries(overrides.textures)) {

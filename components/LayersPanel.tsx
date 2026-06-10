@@ -62,6 +62,7 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
   const layerMasks = useEditorStore((s) => s.layerMasks);
   const layerTextureOverrides = useEditorStore((s) => s.layerTextureOverrides);
   const pageTextureOverrides = useEditorStore((s) => s.pageTextureOverrides);
+  const setPageTextureOverride = useEditorStore((s) => s.setPageTextureOverride);
   const studioLayer = studioLayerId ? (layers.find((l) => l.id === studioLayerId) ?? null) : null;
   const generateLayer = generateLayerId
     ? (layers.find((l) => l.id === generateLayerId) ?? null)
@@ -192,6 +193,34 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
       {applyError && (
         <div className="shrink-0 border-b border-red-400/40 bg-red-950/40 px-4 py-1.5 text-[11px] text-red-300">
           {applyError}
+        </div>
+      )}
+
+      {Object.keys(pageTextureOverrides).length > 0 && (
+        <div className="shrink-0 border-b border-[var(--color-border)] px-4 py-2">
+          <div className="mb-1 text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+            Page overrides
+          </div>
+          <ul className="flex flex-col gap-1">
+            {Object.keys(pageTextureOverrides)
+              .map(Number)
+              .sort((a, b) => a - b)
+              .map((idx) => (
+                <li key={idx} className="flex items-center justify-between text-xs">
+                  <span title="이 아틀라스 페이지 전체가 교체본으로 렌더링 중입니다. 레이어별 오버라이드는 그 위에 그대로 합성됩니다.">
+                    atlas page {idx + 1} — 교체됨
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPageTextureOverride(idx, null)}
+                    className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:border-red-400/60 hover:text-red-300"
+                    title="페이지 교체를 제거하고 원본으로 복원 (레이어별 오버라이드는 유지)"
+                  >
+                    revert
+                  </button>
+                </li>
+              ))}
+          </ul>
         </div>
       )}
 

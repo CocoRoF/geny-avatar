@@ -182,7 +182,12 @@ export class SpineAdapter implements AvatarAdapter {
   }
 
   getTextureSource(textureId: TextureId): TextureSourceInfo | null {
-    return this.textureSourcesById.get(textureId) ?? null;
+    // Page override (when applied) is the CURRENT base — thumbnails,
+    // DecomposeStudio sources and the export baker must see what the
+    // live render uses, not the pristine bitmap.
+    return (
+      this.overrideApplier?.getPageBase(textureId) ?? this.textureSourcesById.get(textureId) ?? null
+    );
   }
 
   getLayerTriangles(layerId: LayerId): LayerTriangles | null {

@@ -32,6 +32,7 @@ export const GENY_AVATAR_MARKER_FILE = "avatar.json";
 export const GENY_AVATAR_BUNDLE_DIR = "bundle/";
 export const GENY_AVATAR_MASKS_DIR = "overrides/masks/";
 export const GENY_AVATAR_TEXTURES_DIR = "overrides/textures/";
+export const GENY_AVATAR_PAGES_DIR = "overrides/pages/";
 export const GENY_AVATAR_LICENSE_FILE = "LICENSE.md";
 
 export type GenyAvatarExport = {
@@ -83,4 +84,10 @@ export type ExportedSession = {
   masks: Record<string, string>;
   /** layerExternalId → AI-generated texture PNG path inside the ZIP */
   textures: Record<string, string>;
+  /** pageIndex (as string) → whole-page replacement PNG path inside the
+   *  ZIP (overrides/pages/...). OPTIONAL + additive on purpose: the
+   *  schemaVersion stays 1 so older importers (strict equality check)
+   *  still open the zip — they just ignore this field and lose only
+   *  the page replacement. Since exporter 0.4. */
+  pages?: Record<string, string>;
 };

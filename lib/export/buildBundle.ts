@@ -26,6 +26,7 @@ import {
   GENY_AVATAR_LICENSE_FILE,
   GENY_AVATAR_MARKER_FILE,
   GENY_AVATAR_MASKS_DIR,
+  GENY_AVATAR_PAGES_DIR,
   GENY_AVATAR_SCHEMA_VERSION,
   GENY_AVATAR_TEXTURES_DIR,
   type GenyAvatarExport,
@@ -47,6 +48,9 @@ export type BuildExportInput = {
   layerMasks: Record<string, Blob>;
   /** Current per-layer AI textures from the editor store. */
   layerTextureOverrides: Record<string, Blob>;
+  /** Whole-page replacements keyed by pageIndex. Optional — callers
+   *  predating page overrides simply omit it. */
+  pageTextureOverrides?: Record<number, Blob>;
 };
 
 export type BuildExportResult = {
@@ -99,6 +103,11 @@ export async function buildExportZip(input: BuildExportInput): Promise<BuildExpo
   for (const ext of Object.keys(texturesByExternal)) {
     texturesPaths[ext] = `${GENY_AVATAR_TEXTURES_DIR}${encodeForPath(ext)}.png`;
   }
+  const pageOverrides = input.pageTextureOverrides ?? {};
+  const pagesPaths: Record<string, string> = {};
+  for (const idx of Object.keys(pageOverrides)) {
+    pagesPaths[idx] = `${GENY_AVATAR_PAGES_DIR}${idx}.png`;
+  }
 
   const exportedVariants: ExportedVariant[] = variants.map((v) => ({
     name: v.name,
@@ -115,6 +124,7 @@ export async function buildExportZip(input: BuildExportInput): Promise<BuildExpo
     visibility: visibilityByExternal,
     masks: masksPaths,
     textures: texturesPaths,
+    ...(Object.keys(pagesPaths).length > 0 ? { pages: pagesPaths } : {}),
   };
 
   const exportJson: GenyAvatarExport = {
@@ -155,6 +165,9 @@ export async function buildExportZip(input: BuildExportInput): Promise<BuildExpo
   }
   for (const [ext, blob] of Object.entries(texturesByExternal)) {
     zippable[texturesPaths[ext]] = new Uint8Array(await blob.arrayBuffer());
+  }
+  for (const [idx, blob] of Object.entries(pageOverrides)) {
+    zippable[pagesPaths[idx]] = new Uint8Array(await blob.arrayBuffer());
   }
 
   const zipBytes = zipSync(zippable, { level: 6 });
