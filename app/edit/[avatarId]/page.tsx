@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import type { Application } from "pixi.js";
 import { use, useEffect, useRef, useState } from "react";
@@ -30,6 +31,13 @@ import { selectLayers, useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
 
+// Heavy modal — split out of the first-paint chunk like the other big
+// panels (same rationale as LayersPanel's dynamic imports).
+const RestylePanel = dynamic(
+  () => import("@/components/RestylePanel").then((m) => m.RestylePanel),
+  { ssr: false },
+);
+
 export default function EditPage({ params }: { params: Promise<{ avatarId: string }> }) {
   const { avatarId } = use(params);
   const puppetId = avatarId as PuppetId;
@@ -53,6 +61,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
    *  + workflow + per-panel intro so a first-timer doesn't need to
    *  bounce between tabs to figure out what's where. */
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Whole-character restyle modal (page-override pipeline). */
+  const [restyleOpen, setRestyleOpen] = useState(false);
 
   // Load the puppet from IndexedDB on mount.
   useEffect(() => {
@@ -249,6 +259,15 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           >
             Reset
           </button>
+          <button
+            type="button"
+            onClick={() => setRestyleOpen(true)}
+            disabled={!adapter || !avatar}
+            className="ml-3 rounded border border-[var(--color-accent)]/60 px-2 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="레퍼런스 기반 전신 리스타일 — 아틀라스 페이지를 통째로 AI 변환"
+          >
+            Restyle
+          </button>
           <span className="ml-3">
             <ExportButton puppetId={puppetId} adapter={adapter} />
           </span>
@@ -309,6 +328,14 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       </aside>
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <RestylePanel
+        open={restyleOpen}
+        onClose={() => setRestyleOpen(false)}
+        adapter={adapter}
+        avatar={avatar}
+        app={app}
+        puppetKey={puppetId}
+      />
     </main>
   );
 }
