@@ -112,6 +112,10 @@ export class Live2DAdapter implements AvatarAdapter {
   /** original internalModel.update bound to the model — kept so destroy()
    *  can restore it. */
   private originalInternalUpdate: ((...args: unknown[]) => unknown) | null = null;
+  /** texture URLs we pushed into Pixi Assets at load — unloaded in
+   *  destroy() so repeated puppet open/close doesn't accumulate decoded
+   *  bitmaps + GPU textures in the global Assets cache. */
+  private preloadedTextureUrls: string[] = [];
 
   /** atlas page bitmaps keyed by the textureId we mint at load. Layer
    *  thumbnails crop these via `getTextureSource`. */
@@ -1017,6 +1021,13 @@ export class Live2DAdapter implements AvatarAdapter {
     this.coreModel = null;
     this.layersByPartIndex.clear();
     this.partIndexByLayerId.clear();
+    if (this.preloadedTextureUrls.length > 0) {
+      const urls = this.preloadedTextureUrls;
+      this.preloadedTextureUrls = [];
+      void Assets.unload(urls).catch((e) =>
+        console.warn("[Live2DAdapter] Assets.unload failed", e),
+      );
+    }
   }
 
   // ----- texture / region helpers -----
@@ -1111,6 +1122,7 @@ export class Live2DAdapter implements AvatarAdapter {
         if (typeof ref !== "string") continue;
         try {
           await Assets.load({ src: ref, loadParser: "loadTextures" });
+          this.preloadedTextureUrls.push(ref);
           preloaded++;
         } catch (e) {
           console.warn(`[Live2DAdapter] preload texture failed (${ref.slice(0, 60)}…)`, e);

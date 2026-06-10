@@ -57,6 +57,11 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
   // is easier to reason about with explicit refs.
   const adapterRef = useRef<AvatarAdapter | null>(null);
   const appRef = useRef<Application | null>(null);
+  // Untransformed puppet dimensions captured once at mount. Resize
+  // recompute MUST NOT re-measure the display object: its width/height
+  // include the currently applied scale, so re-measuring feeds the
+  // factor back into itself.
+  const baseSizeRef = useRef<{ w: number; h: number } | null>(null);
   const dragRef = useRef({
     active: false,
     pointerId: -1,
@@ -74,11 +79,12 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
     onMount: (avatar, adapter, app) => {
       adapterRef.current = adapter;
       appRef.current = app;
-      // Compute baseFactor exactly once per puppet load. Same formula
-      // as the original fitDisplayObject helper used to live with —
-      // 90% of the smaller axis covers the puppet without crowding
-      // viewport edges.
-      const baseFactor = computeBaseFactor(adapter, app);
+      // Measure the puppet once (pre-transform), then fit. The size is
+      // kept in a ref so window resizes can recompute the fit factor
+      // without re-measuring a scaled display object.
+      const baseSize = measureBaseSize(adapter);
+      baseSizeRef.current = baseSize;
+      const baseFactor = fitBaseFactor(adapter, app, baseSize);
 
       // Anchor the puppet so position addresses its center, then set
       // the initial position to canvas center. apply() below mutates
@@ -123,8 +129,45 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
       resetViewport();
       adapterRef.current = null;
       appRef.current = null;
+      baseSizeRef.current = null;
     }
   }, [input, setAvatar, resetViewport]);
+
+  // Keep the puppet fitted + centered when the host box changes (window
+  // resize, side panel collapse). `resizeTo: host` already resizes the
+  // renderer; this recomputes the fit factor from the stored base size
+  // and re-centers. User zoom/pan are preserved — only baseFactor moves.
+  useEffect(() => {
+    if (!host) return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      // Wait a frame so Pixi's own resizeTo handler has updated
+      // app.screen before we read it.
+      raf = requestAnimationFrame(() => {
+        const adapter = adapterRef.current;
+        const app = appRef.current;
+        const baseSize = baseSizeRef.current;
+        if (!adapter || !app || !baseSize) return;
+        const v = useViewportStore.getState();
+        if (v.baseFactor == null) return;
+        const next = fitBaseFactor(adapter, app, baseSize);
+        if (Number.isFinite(next) && next > 0 && Math.abs(next - v.baseFactor) > 1e-6) {
+          // Store change re-applies the transform via the subscription.
+          setBaseFactor(next);
+        } else {
+          // Same scale but the center moved (e.g. pure width change on
+          // Spine's fixed factor) — re-apply for the recenter.
+          applyTransform(adapter, app, v);
+        }
+      });
+    });
+    ro.observe(host);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [host, setBaseFactor]);
 
   // Apply transform on every viewport-state change. The store sub-
   // scription pattern means the effect only fires when one of the
@@ -255,24 +298,40 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
 }
 
 /**
- * Compute the fit-to-canvas factor for a puppet+app pair. Lives at
- * module scope so PuppetCanvas + tests can share the same math.
+ * Measure the puppet's untransformed dimensions. Must run before any
+ * scale is applied (i.e. at mount): the display.width fallback reads
+ * the CURRENT rendered extent, which includes scale once applied.
  */
-function computeBaseFactor(adapter: AvatarAdapter, app: Application): number {
+function measureBaseSize(adapter: AvatarAdapter): { w: number; h: number } {
+  if (adapter.runtime !== "live2d") return { w: 1, h: 1 };
   // biome-ignore lint/suspicious/noExplicitAny: display surface varies per runtime
   const display = adapter.getDisplayObject() as any;
+  const native = (adapter as Live2DAdapter).getNativeSize?.();
+  // pixi-live2d-display's display.width/height end up as the
+  // current rendered pixel extent, which is the most reliable
+  // signal across engine versions. native (canvas info / layout)
+  // is preferred when present but the fallback to display.width
+  // matches the historical behavior so existing puppets stay sized
+  // the way users are used to.
+  return {
+    w: pickPositive(native?.width, display?.width, 800),
+    h: pickPositive(native?.height, display?.height, 1200),
+  };
+}
+
+/**
+ * Fit-to-canvas factor for a measured puppet — 90% of the smaller axis
+ * covers the puppet without crowding viewport edges. Recomputed on
+ * window resize from the stored base size.
+ */
+function fitBaseFactor(
+  adapter: AvatarAdapter,
+  app: Application,
+  baseSize: { w: number; h: number },
+): number {
   const screen = app.screen;
   if (adapter.runtime === "live2d") {
-    const native = (adapter as Live2DAdapter).getNativeSize?.();
-    // pixi-live2d-display's display.width/height end up as the
-    // current rendered pixel extent, which is the most reliable
-    // signal across engine versions. native (canvas info / layout)
-    // is preferred when present but the fallback to display.width
-    // matches the historical behavior so existing puppets stay sized
-    // the way users are used to.
-    const baseW = pickPositive(native?.width, display?.width, 800);
-    const baseH = pickPositive(native?.height, display?.height, 1200);
-    return Math.min((screen.width * 0.9) / baseW, (screen.height * 0.9) / baseH);
+    return Math.min((screen.width * 0.9) / baseSize.w, (screen.height * 0.9) / baseSize.h);
   }
   // Spine — anchored at feet, modest fixed scale matches the existing
   // PuppetCanvas behavior.

@@ -58,6 +58,9 @@ export class SpineAdapter implements AvatarAdapter {
    *  override compositor to its rect-clip fallback and let the wipe
    *  erase atlas neighbors packed inside the bbox. */
   private trianglesByExternalId = new Map<string, LayerTriangles>();
+  /** Assets aliases registered at load — unloaded in destroy() so each
+   *  puppet open/close doesn't leak GPU textures in the global cache. */
+  private assetAliases: string[] = [];
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -85,6 +88,7 @@ export class SpineAdapter implements AvatarAdapter {
     Assets.add({ alias: skelAlias, src: input.skeleton });
     Assets.add({ alias: atlasAlias, src: input.atlas });
     await Assets.load([skelAlias, atlasAlias]);
+    this.assetAliases = [skelAlias, atlasAlias];
 
     const spine = Spine.from({ skeleton: skelAlias, atlas: atlasAlias });
     this.spine = spine;
@@ -312,6 +316,13 @@ export class SpineAdapter implements AvatarAdapter {
     this.textureSourcesById.clear();
     this.pixiTextureById.clear();
     this.trianglesByExternalId.clear();
+    if (this.assetAliases.length > 0) {
+      const aliases = this.assetAliases;
+      this.assetAliases = [];
+      void Assets.unload(aliases).catch((e) =>
+        console.warn("[SpineAdapter] Assets.unload failed", e),
+      );
+    }
   }
 
   // ----- helpers -----

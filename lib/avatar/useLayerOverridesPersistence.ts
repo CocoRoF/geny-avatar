@@ -104,6 +104,17 @@ export function useLayerOverridesPersistence(
         }
       } catch (e) {
         console.warn("[overridesPersist] hydrate failed", e);
+        // Still mark this key as hydrated: leaving the ref null would
+        // make the change-subscriber skip EVERY subsequent save for the
+        // whole session, silently losing the user's edits on reload.
+        // Worst case after a failed read is a re-save of state we
+        // couldn't read — strictly better than persisting nothing.
+        if (!cancelled && hydratedKeyRef.current !== puppetKey) {
+          masksRef.current = { ...useEditorStore.getState().layerMasks };
+          texturesRef.current = { ...useEditorStore.getState().layerTextureOverrides };
+          visibilityRef.current = { ...useEditorStore.getState().visibilityOverrides };
+          hydratedKeyRef.current = puppetKey;
+        }
       }
     })();
     return () => {

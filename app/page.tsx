@@ -195,19 +195,32 @@ export default function Home() {
     setUploadError(null);
     setUploadStatus("파일 분석 중…");
     let parsed: ParsedBundle | null = null;
+    let restoreError: string | null = null;
     try {
       // First check whether the dropped file is a geny-avatar export
       // ZIP. If so, restore (writes IDB rows) and navigate — skip the
       // regular puppet-bundle parse path entirely.
       if (files.length === 1 && files[0].name.toLowerCase().endsWith(".zip")) {
         setUploadStatus("geny-avatar zip 확인 중…");
-        const restored = await tryRestoreGenyAvatarZip(files[0]);
-        if (restored) {
-          if (restored.warnings.length > 0) {
-            console.warn("[home/upload] restore warnings", restored.warnings);
+        try {
+          const restored = await tryRestoreGenyAvatarZip(files[0]);
+          if (restored) {
+            if (restored.warnings.length > 0) {
+              console.warn("[home/upload] restore warnings", restored.warnings);
+            }
+            router.push(`/edit/${restored.puppetId}`);
+            return;
           }
-          router.push(`/edit/${restored.puppetId}`);
-          return;
+        } catch (e) {
+          // A foreign zip that merely CONTAINS a file named avatar.json
+          // used to abort the whole upload here. Remember the reason and
+          // fall through to the regular bundle parser; surface this
+          // context only if that also fails.
+          restoreError = e instanceof Error ? e.message : String(e);
+          console.warn(
+            "[home/upload] geny-avatar restore failed — falling back to bundle parse",
+            e,
+          );
         }
       }
 
@@ -216,7 +229,8 @@ export default function Home() {
       setUploadStatus("puppet 번들 파싱 중…");
       parsed = await parseBundle(fileInput);
       if (!parsed.ok) {
-        setUploadError(`인식 실패: ${parsed.reason}`);
+        const restoreNote = restoreError ? ` (geny-avatar 복원도 실패: ${restoreError})` : "";
+        setUploadError(`인식 실패: ${parsed.reason}${restoreNote}`);
         setUploadStatus(null);
         return;
       }
@@ -255,7 +269,10 @@ export default function Home() {
 
   async function onOriginChange(id: PuppetId, source: AssetOriginNote["source"]) {
     try {
-      await updatePuppet(id, { origin: { source } });
+      // Merge over the existing note — replacing the whole object
+      // silently dropped any recorded url/notes alongside the source.
+      const existing = puppets?.find((p) => p.id === id)?.origin;
+      await updatePuppet(id, { origin: { ...existing, source } });
       await refresh();
     } catch (e) {
       setLibraryError(e instanceof Error ? e.message : String(e));

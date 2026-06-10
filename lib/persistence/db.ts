@@ -428,7 +428,16 @@ function db(): GenyAvatarDB {
   if (typeof indexedDB === "undefined") {
     throw new Error("IndexedDB not available — db() called on server");
   }
-  if (!_db) _db = new GenyAvatarDB();
+  if (!_db) {
+    _db = new GenyAvatarDB();
+    // Ask the browser not to evict our origin under storage pressure —
+    // the entire library (puppet bundles + edits) lives in IDB and
+    // Safari in particular silently wipes non-persisted origins.
+    // Fire-and-forget: denial is fine, eviction just stays possible.
+    if (typeof navigator !== "undefined" && navigator.storage?.persist) {
+      void navigator.storage.persist().catch(() => {});
+    }
+  }
   return _db;
 }
 
@@ -443,6 +452,10 @@ function db(): GenyAvatarDB {
 // sync module short-circuits there.
 function _triggerSyncPush(puppetId: string): void {
   if (typeof window === "undefined") return; // SSR safety
+  // Builtin samples never live in the puppets table — the publisher's
+  // loadPuppet("builtin:...") is guaranteed null and every builtin edit
+  // used to schedule a doomed bake. Skip at the source.
+  if (puppetId.startsWith("builtin:")) return;
   void import("../autoPublish/libraryPublisher")
     .then(({ schedulePuppetPublish }) => schedulePuppetPublish(puppetId))
     .catch((err) => {
@@ -522,12 +535,42 @@ export async function loadPuppet(
   return { row, entries };
 }
 
-/** Delete a puppet and all its files. */
+/**
+ * Delete a puppet and EVERYTHING keyed to it — bundle files plus all
+ * satellite rows (AI history result blobs, layer overrides, variants,
+ * session, references, component labels, region masks, animation
+ * config). Without the cascade those blobs stayed orphaned forever:
+ * deleting a heavily-AI-edited puppet used to free almost nothing.
+ */
 export async function deletePuppet(id: PuppetId): Promise<void> {
-  await db().transaction("rw", db().puppets, db().puppetFiles, async () => {
-    await db().puppets.delete(id);
-    await db().puppetFiles.where("puppetId").equals(id).delete();
-  });
+  const d = db();
+  await d.transaction(
+    "rw",
+    [
+      d.puppets,
+      d.puppetFiles,
+      d.aiJobs,
+      d.variants,
+      d.layerOverrides,
+      d.puppetSessions,
+      d.puppetReferences,
+      d.componentLabels,
+      d.regionMasks,
+      d.puppetAnimationConfig,
+    ],
+    async () => {
+      await d.puppets.delete(id);
+      await d.puppetFiles.where("puppetId").equals(id).delete();
+      await d.aiJobs.where("puppetKey").equals(id).delete();
+      await d.variants.where("puppetKey").equals(id).delete();
+      await d.layerOverrides.where("puppetKey").equals(id).delete();
+      await d.puppetSessions.delete(id);
+      await d.puppetReferences.where("puppetKey").equals(id).delete();
+      await d.componentLabels.where("puppetKey").equals(id).delete();
+      await d.regionMasks.where("puppetKey").equals(id).delete();
+      await d.puppetAnimationConfig.delete(id);
+    },
+  );
   _triggerSyncRemove(id);
 }
 
@@ -540,11 +583,32 @@ export async function updatePuppet(
   _triggerSyncPush(id);
 }
 
+/**
+ * Thumbnail-only refresh. Deliberately does NOT bump `updatedAt` and
+ * does NOT schedule a library publish: the thumbnail is editor-local
+ * cosmetics, and routing it through `updatePuppet` meant merely
+ * OPENING a puppet re-baked + re-POSTed a multi-MB zip to Geny and
+ * re-armed the library page's `lastPushedAt < updatedAt` catch-up —
+ * a self-sustaining churn loop with no content change.
+ */
+export async function updatePuppetThumbnail(id: PuppetId, thumbnailBlob: Blob): Promise<void> {
+  await db().puppets.update(id, { thumbnailBlob });
+}
+
 // ----- AI jobs (Sprint 3.4) -----
 
 export type SaveAIJobInput = Omit<AIJobRow, "id" | "createdAt">;
 
-/** Persist a successful AI generation. Returns the new row id. */
+/**
+ * Per-(puppet, layer) AI history cap. Each row carries a full result
+ * PNG, so unbounded growth was the second-biggest quota leak after the
+ * missing delete cascade. 20 generations of history per layer is far
+ * beyond what the panel's history list usefully shows.
+ */
+const AI_JOBS_PER_LAYER_CAP = 20;
+
+/** Persist a successful AI generation. Returns the new row id.
+ *  Oldest rows beyond the per-layer cap are pruned in the same call. */
 export async function saveAIJob(input: SaveAIJobInput): Promise<AIJobRowId> {
   const id = newId(ID_PREFIX.job);
   await db().aiJobs.put({
@@ -560,6 +624,22 @@ export async function saveAIJob(input: SaveAIJobInput): Promise<AIJobRowId> {
     regionSignature: input.regionSignature,
     createdAt: Date.now(),
   });
+  try {
+    const rows = await db()
+      .aiJobs.where("[puppetKey+layerExternalId+createdAt]")
+      .between(
+        [input.puppetKey, input.layerExternalId, Dexie.minKey],
+        [input.puppetKey, input.layerExternalId, Dexie.maxKey],
+      )
+      .reverse()
+      .toArray();
+    if (rows.length > AI_JOBS_PER_LAYER_CAP) {
+      const excess = rows.slice(AI_JOBS_PER_LAYER_CAP).map((r) => r.id);
+      await db().aiJobs.bulkDelete(excess);
+    }
+  } catch (e) {
+    console.warn("[db] aiJobs prune failed", e);
+  }
   return id;
 }
 

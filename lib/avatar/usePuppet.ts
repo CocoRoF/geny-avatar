@@ -60,6 +60,34 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
     const app = new Application();
     let adapter: AvatarAdapter | null = null;
 
+    // Teardown helpers shared by the unmount cleanup and the in-flight
+    // async's cancelled branches. Both paths can fire for the same load
+    // (cleanup runs synchronously on unmount, then the awaited step
+    // resolves and hits its cancelled check) — destroying a Pixi
+    // Application twice throws, so the app teardown is run-once.
+    // Adapter destroy stays callable from both paths on purpose: when
+    // cleanup lands while `adapter.load()` is mid-await, the first
+    // destroy sees a half-built adapter and the second call (from the
+    // cancelled branch, after load resolved) is what actually releases
+    // the late-materialized model. Adapter `destroy()` is idempotent.
+    let appDestroyed = false;
+    const destroyApp = () => {
+      if (appDestroyed) return;
+      appDestroyed = true;
+      try {
+        app.destroy(true, { children: true, texture: false });
+      } catch (e) {
+        console.warn("[usePuppet] app destroy failed", e);
+      }
+    };
+    const destroyAdapter = () => {
+      try {
+        adapter?.destroy();
+      } catch (e) {
+        console.warn("[usePuppet] adapter destroy failed", e);
+      }
+    };
+
     setState({ status: "loading", avatar: null, adapter: null, app: null });
 
     (async () => {
@@ -72,7 +100,7 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
           resolution: window.devicePixelRatio || 1,
         });
         if (cancelled) {
-          app.destroy(true);
+          destroyApp();
           return;
         }
         host.appendChild(app.canvas);
@@ -80,8 +108,8 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
         adapter = createAdapter(input);
         const avatar = await adapter.load(input);
         if (cancelled) {
-          adapter.destroy();
-          app.destroy(true);
+          destroyAdapter();
+          destroyApp();
           return;
         }
 
@@ -91,8 +119,8 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
         await onMountRef.current?.(avatar, adapter, app);
 
         if (cancelled) {
-          adapter.destroy();
-          app.destroy(true, { children: true, texture: false });
+          destroyAdapter();
+          destroyApp();
           return;
         }
 
@@ -114,8 +142,8 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
 
     return () => {
       cancelled = true;
-      adapter?.destroy();
-      app.destroy(true, { children: true, texture: false });
+      destroyAdapter();
+      destroyApp();
     };
   }, [input, host, background]);
 

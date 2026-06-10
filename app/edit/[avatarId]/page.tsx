@@ -20,7 +20,12 @@ import type { Avatar } from "@/lib/avatar/types";
 import { useEditorShortcuts } from "@/lib/avatar/useEditorShortcuts";
 import { useLayerOverridesPersistence } from "@/lib/avatar/useLayerOverridesPersistence";
 import { usePuppetMutations } from "@/lib/avatar/usePuppetMutations";
-import { loadPuppet, type PuppetId, type PuppetRow, updatePuppet } from "@/lib/persistence/db";
+import {
+  loadPuppet,
+  type PuppetId,
+  type PuppetRow,
+  updatePuppetThumbnail,
+} from "@/lib/persistence/db";
 import { selectLayers, useEditorStore } from "@/lib/store/editor";
 import { disposeBundle, parseBundle } from "@/lib/upload/parseBundle";
 import type { ParsedBundle } from "@/lib/upload/types";
@@ -94,7 +99,8 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       try {
         const blob = await captureThumbnail(app);
         if (cancelled || !blob) return;
-        await updatePuppet(puppetId, { thumbnailBlob: blob });
+        // Thumbnail-only write — no updatedAt bump, no publish churn.
+        await updatePuppetThumbnail(puppetId, blob);
       } catch (e) {
         console.warn("[edit] thumbnail capture failed", e);
       }
