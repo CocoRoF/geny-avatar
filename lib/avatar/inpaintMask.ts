@@ -87,6 +87,59 @@ export async function buildInpaintMaskFromAlpha(sourceCanvas: HTMLCanvasElement)
  * always 255 — keeps the multi-image edit pipeline happy regardless
  * of whether the model reads alpha or luma.
  */
+/**
+ * Region variant of `padInpaintMaskRefToOpenAI`: the mask blob is at
+ * full layer dims, but the source being sent is a TIGHT CROP
+ * (`sourceBBox` in layer space) padded into a square at
+ * `paddingOffset`. Crop the matching mask subrect and place it at the
+ * same offset so the hint actually aligns with image[1] — sending the
+ * full-layer mask raw made the prompt's "same dimensions and
+ * alignment" claim false for every multi-region call.
+ */
+export async function padInpaintMaskRegionRefToOpenAI(
+  inpaintMaskBlob: Blob,
+  sourceBBox: { x: number; y: number; w: number; h: number },
+  paddingOffset: { x: number; y: number; w: number; h: number },
+  canvasSize: number,
+): Promise<Blob> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("inpaint mask region ref blob decode failed"));
+    i.src = URL.createObjectURL(inpaintMaskBlob);
+  });
+
+  const out = document.createElement("canvas");
+  out.width = canvasSize;
+  out.height = canvasSize;
+  const ctx = out.getContext("2d");
+  if (!ctx) {
+    URL.revokeObjectURL(img.src);
+    throw new Error("padInpaintMaskRegionRefToOpenAI 2d context unavailable");
+  }
+  ctx.fillStyle = "rgb(0,0,0)";
+  ctx.fillRect(0, 0, canvasSize, canvasSize);
+  ctx.drawImage(
+    img,
+    sourceBBox.x,
+    sourceBBox.y,
+    sourceBBox.w,
+    sourceBBox.h,
+    paddingOffset.x,
+    paddingOffset.y,
+    paddingOffset.w,
+    paddingOffset.h,
+  );
+  URL.revokeObjectURL(img.src);
+
+  return await new Promise<Blob>((resolve, reject) => {
+    out.toBlob((b) => {
+      if (b) resolve(b);
+      else reject(new Error("padded inpaint mask region ref toBlob returned null"));
+    }, "image/png");
+  });
+}
+
 export async function padInpaintMaskRefToOpenAI(
   inpaintMaskBlob: Blob,
   paddingOffset: { x: number; y: number; w: number; h: number },

@@ -25,7 +25,11 @@ import {
   componentThumbnail,
   findAlphaComponents,
 } from "@/lib/avatar/connectedComponents";
-import { buildInpaintMaskFromAlpha, padInpaintMaskRefToOpenAI } from "@/lib/avatar/inpaintMask";
+import {
+  buildInpaintMaskFromAlpha,
+  padInpaintMaskRefToOpenAI,
+  padInpaintMaskRegionRefToOpenAI,
+} from "@/lib/avatar/inpaintMask";
 import { bakeTransparencyToNeutral, padInpaintMaskToFrame } from "@/lib/avatar/inpaintSourcePrep";
 import { extractCurrentLayerCanvas } from "@/lib/avatar/regionExtract";
 import type { Layer } from "@/lib/avatar/types";
@@ -287,6 +291,12 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     refined: string;
     rawAtRefine: string;
     model: string;
+    /** What the refine was grounded on: "layer" for the whole-layer
+     *  submit, "region:<idx>" for focus-mode per-region refines, plus
+     *  the negative prompt + ref count baked in. Two regions with
+     *  IDENTICAL prompt text used to share a cache entry even though
+     *  the vision grounding came from the OTHER region's pixels. */
+    scopeKey: string;
   } | null>(null);
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
@@ -321,23 +331,29 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
   /** Re-blend the displayed RESULT whenever the mode changes after a
    *  generation has succeeded. We never call the provider again — the
    *  AI blob is cached in `phase.aiBlob` and re-composed against the
-   *  current mask + source. */
+   *  current mask + source. Keyed on the aiBlob IDENTITY (not just
+   *  phase.kind): a new result landing while the kind stays
+   *  "succeeded" must restart the blend, and a blend of the old blob
+   *  must never revoke/overwrite the new result's URL. */
+  const succeededAiBlob = phase.kind === "succeeded" ? phase.aiBlob : null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: source canvas is a ref + composition is intentional
   useEffect(() => {
-    if (phase.kind !== "succeeded") return;
+    if (!succeededAiBlob) return;
     const sourceCanvas = aiSourceCanvasRef.current;
     if (!sourceCanvas) return;
     let cancelled = false;
     (async () => {
       const blended = await composeAIResultWithMask({
-        aiResultBlob: phase.aiBlob,
+        aiResultBlob: succeededAiBlob,
         sourceCanvas,
         maskBlob: inpaintMaskBlob,
         mode: blendMode,
       });
       if (cancelled) return;
       setPhase((prev) => {
-        if (prev.kind !== "succeeded") return prev;
+        // Stale guard: only swap when the result we blended is still
+        // the one on display.
+        if (prev.kind !== "succeeded" || prev.aiBlob !== succeededAiBlob) return prev;
         URL.revokeObjectURL(prev.url);
         return {
           kind: "succeeded",
@@ -350,7 +366,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [blendMode, inpaintMaskBlob, phase.kind]);
+  }, [blendMode, inpaintMaskBlob, succeededAiBlob]);
 
   // ----- mount: extract two source canvases -----
   // The display canvas mirrors the live atlas (post-gen + post-mask)
@@ -757,12 +773,37 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
    *  user's deliberate "this is the character" signal), then the
    *  iterative anchor (this run's predecessor) so it nudges rather
    *  than overrides. */
-  const activeRefBlobs: Blob[] = supportsRefs
-    ? [
-        ...references.filter((r) => !disabledRefIds.has(r.id)).map((r) => r.blob),
-        ...(useLastResult && lastResultBlob ? [lastResultBlob] : []),
-      ]
-    : [];
+  const activeRefBlobs: Blob[] = useMemo(
+    () =>
+      supportsRefs
+        ? [
+            ...references.filter((r) => !disabledRefIds.has(r.id)).map((r) => r.blob),
+            ...(useLastResult && lastResultBlob ? [lastResultBlob] : []),
+          ]
+        : [],
+    [supportsRefs, references, disabledRefIds, useLastResult, lastResultBlob],
+  );
+
+  /** Refs as they should reach the provider — user refs + (OpenAI
+   *  only, budget permitting) the canonical-pose snapshot appended as
+   *  spatial context. ONE definition shared by the whole-layer submit
+   *  and focus-mode per-region calls: the two paths used to send
+   *  different payloads, so the same region produced different-quality
+   *  results depending on which button fired. */
+  const buildSubmitRefs = useCallback(async (): Promise<Blob[]> => {
+    // fal flux-2/edit imitates every image_urls entry — only OpenAI's
+    // prompt scaffold can frame the snapshot as "context, not style".
+    const supportsCharacterRef = providerId === "openai";
+    let characterRefBlob: Blob | null = null;
+    if (app && supportsRefs && supportsCharacterRef && activeRefBlobs.length <= 3) {
+      try {
+        characterRefBlob = await renderPuppetReference(app);
+      } catch (e) {
+        console.warn("[generate] character-ref capture failed; skipping", e);
+      }
+    }
+    return characterRefBlob ? [...activeRefBlobs, characterRefBlob] : activeRefBlobs;
+  }, [app, providerId, supportsRefs, activeRefBlobs]);
 
   /** Toggle a row in/out of the comparison set. Capped at 2 — third
    *  click drops the oldest selection. Easier UX than disabling the
@@ -847,6 +888,25 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       const rawPromptForRoute =
         prompt.trim().length > 0 ? prompt : perRegion.length > 0 ? perRegion : "";
       const compSourceBlob = await canvasToPngBlob(comp.padded);
+      // User MASK travels as a soft region hint via image[] (see
+      // openai.ts composePrompt). image[1] here is a TIGHT-CROPPED,
+      // padded island — crop/pad the layer-dims mask into the same
+      // frame so the "same dimensions and alignment" promise the
+      // prompt makes is actually true (raw layer-dims masks were
+      // misaligned for every multi-region call).
+      let regionMaskRef: Blob | undefined;
+      if (inpaintMaskBlob) {
+        try {
+          regionMaskRef = await padInpaintMaskRegionRefToOpenAI(
+            inpaintMaskBlob,
+            comp.sourceBBox,
+            comp.paddingOffset,
+            comp.padded.width,
+          );
+        } catch (e) {
+          console.warn("[generate] region mask ref alignment failed — sending without", e);
+        }
+      }
       const rawResult = await submitGenerate({
         providerId,
         prompt: rawPromptForRoute,
@@ -854,11 +914,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         negativePrompt: negativePrompt.trim() || undefined,
         modelId: modelId || undefined,
         sourceImage: compSourceBlob,
-        // User MASK travels as a soft region hint via image[] (see
-        // openai.ts composePrompt). Each region call gets the same
-        // layer-level mask — the prompt language tells the model to
-        // treat the white pixels as "focus the edit here".
-        maskReferenceImage: inpaintMaskBlob ?? undefined,
+        maskReferenceImage: regionMaskRef,
         referenceImages: refsBlobs.length > 0 ? refsBlobs : undefined,
         signal: generateAbortRef.current?.signal,
       });
@@ -968,9 +1024,13 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // cache misses (one chat call per region). Same region with
       // unchanged prompt re-uses the cached refined text.
       const userPromptForRefine = perRegionText.length > 0 ? perRegionText : baseTrimmed;
+      const regionScopeKey = `region:${idx}|neg:${negativePrompt.trim()}|refs:${activeRefBlobs.length}`;
       let refinedText: string | undefined;
       if (usePromptRefine && userPromptForRefine.length > 0) {
-        if (refinement?.rawAtRefine === userPromptForRefine) {
+        if (
+          refinement?.rawAtRefine === userPromptForRefine &&
+          refinement.scopeKey === regionScopeKey
+        ) {
           refinedText = refinement.refined;
         } else {
           setRefining(true);
@@ -994,6 +1054,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
               refined: result.refinedPrompt,
               rawAtRefine: userPromptForRefine,
               model: result.model,
+              scopeKey: regionScopeKey,
             });
           } catch (e) {
             const reason = e instanceof Error ? e.message : String(e);
@@ -1007,7 +1068,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       }
       const baseText = refinedText ?? userPromptForRefine;
       try {
-        const newBlob = await runRegionGen(idx, prepared, baseText, activeRefBlobs);
+        // Same ref payload as the whole-layer submit (user refs +
+        // canonical snapshot) — the two buttons used to send different
+        // payloads for the same region.
+        const regionSubmitRefs = await buildSubmitRefs();
+        const newBlob = await runRegionGen(idx, prepared, baseText, regionSubmitRefs);
         // G.8: build the composite source-of-truth from the
         // ref-mirror of regionStates rather than capturing the
         // setter's updater closure. The async updater wasn't
@@ -1043,6 +1108,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       prompt,
       runRegionGen,
       activeRefBlobs,
+      buildSubmitRefs,
       recompositeResult,
       componentPrompts,
       usePromptRefine,
@@ -1230,28 +1296,11 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
       // can carry that disambiguation; flux doesn't. Until we have a
       // separate `spatialContextImage` channel that providers opt
       // into, only OpenAI gets the canonical-pose ref.
-      const supportsCharacterRef = providerId === "openai";
-      let characterRefBlob: Blob | null = null;
-      if (app && supportsRefs && supportsCharacterRef && activeRefBlobs.length <= 3) {
-        try {
-          characterRefBlob = await renderPuppetReference(app);
-        } catch (e) {
-          console.warn("[generate] character-ref capture failed; skipping", e);
-        }
-      }
-      const submitRefs: Blob[] = characterRefBlob
-        ? [...activeRefBlobs, characterRefBlob]
-        : activeRefBlobs;
+      const submitRefs: Blob[] = await buildSubmitRefs();
       console.info(
-        `[generate] character-ref: ${
-          characterRefBlob
-            ? `attached (${characterRefBlob.size}B, slot ${submitRefs.length})`
-            : !supportsCharacterRef
-              ? `skipped (provider=${providerId} doesn't disambiguate ref roles)`
-              : app
-                ? `skipped (refs budget=${activeRefBlobs.length}, supportsRefs=${supportsRefs})`
-                : "skipped (no Pixi app)"
-        }`,
+        `[generate] refs: ${submitRefs.length} total (user=${activeRefBlobs.length}${
+          submitRefs.length > activeRefBlobs.length ? " + canonical-pose snapshot" : ""
+        })`,
       );
 
       // ── prompt refinement (optional) ────────────────────────────
@@ -1295,6 +1344,7 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
             refined: result.refinedPrompt,
             rawAtRefine: prompt,
             model: result.model,
+            scopeKey: `layer|neg:${negativePrompt.trim()}|refs:${activeRefBlobs.length}`,
           });
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
@@ -1424,18 +1474,31 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         // wipe the rest.
         const baseText = refinedPromptForSubmit ?? prompt;
         // Mark every region as running before the parallel fan-out
-        // so the tile UI can show a spinner per region.
-        setRegionStates((prev) =>
-          prev.length === prepared.length
-            ? prev.map((s) => ({ ...s, status: "running" as const }))
-            : prepared.map(() => ({
-                resultBlob: new Blob(),
-                status: "running" as const,
-              })),
-        );
+        // so the tile UI can show a spinner per region. When the
+        // state array doesn't match (first run), seed each region's
+        // fallback blob with its ISOLATED SOURCE — a failed region
+        // then composites as "unchanged" instead of feeding a 0-byte
+        // `new Blob()` into the compositor and failing the whole
+        // submit even when other regions succeeded.
+        if (regionStatesRef.current.length !== prepared.length) {
+          const seeds = await Promise.all(
+            prepared.map((p) => canvasToPngBlob(p.componentMaskCanvas)),
+          );
+          const seededStates = prepared.map((_, i) => ({
+            resultBlob: seeds[i],
+            status: "running" as const,
+          }));
+          regionStatesRef.current = seededStates;
+          setRegionStates(seededStates);
+        } else {
+          setRegionStates((prev) => prev.map((s) => ({ ...s, status: "running" as const })));
+        }
 
-        const settled = await Promise.allSettled(
-          prepared.map((_, idx) => runRegionGen(idx, prepared, baseText, submitRefs)),
+        // Concurrency-capped fan-out: an uncapped Promise.allSettled
+        // over N regions uploaded the same refs N× simultaneously and
+        // invited provider rate limits on big layers.
+        const settled = await allSettledWithConcurrency(prepared.length, 3, (idx) =>
+          runRegionGen(idx, prepared, baseText, submitRefs),
         );
 
         // G.8: same fix as regenerateOneRegion — read finalBlobs
@@ -1478,7 +1541,9 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
         }
 
         processed = await compositeProcessedComponents({
-          componentBlobs: finalBlobs,
+          // Defensive: skip zero-byte blobs (legacy seeds) so one bad
+          // entry can't fail the whole composite.
+          componentBlobs: finalBlobs.filter((b) => b.size > 0),
           sourceCanvas,
         });
       } else {
@@ -2801,7 +2866,17 @@ export function GeneratePanel({ adapter, app, layer, puppetKey }: Props) {
                     <button
                       type="button"
                       onClick={() => {
-                        if (isFocusedMulti && focusedRegionIdx !== null) {
+                        // Per-region generation is OpenAI-only (the
+                        // prepared 1024² packages exist only for that
+                        // path). Other providers fall through to the
+                        // whole-layer submit instead of the old silent
+                        // no-op (regenerateOneRegion early-returned
+                        // and the click appeared dead).
+                        if (
+                          isFocusedMulti &&
+                          focusedRegionIdx !== null &&
+                          providerId === "openai"
+                        ) {
                           void regenerateOneRegion(focusedRegionIdx);
                         } else {
                           void onSubmit();
@@ -3070,4 +3145,30 @@ function formatRelative(ts: number): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   return `${day}d ago`;
+}
+
+/**
+ * Promise.allSettled with a concurrency ceiling. Results keep input
+ * order. Used by the multi-region fan-out so N OpenAI calls don't all
+ * fire (and upload the same refs) at once.
+ */
+async function allSettledWithConcurrency<T>(
+  count: number,
+  limit: number,
+  task: (idx: number) => Promise<T>,
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = new Array(count);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, count)) }, async () => {
+    while (next < count) {
+      const idx = next++;
+      try {
+        results[idx] = { status: "fulfilled", value: await task(idx) };
+      } catch (reason) {
+        results[idx] = { status: "rejected", reason };
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
