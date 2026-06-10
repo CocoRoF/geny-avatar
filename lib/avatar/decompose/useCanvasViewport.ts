@@ -213,11 +213,16 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
       if (e.code !== "Space") return;
       setSpaceHeld(false);
     };
+    // Alt-Tab while holding Space never delivers the keyup — release
+    // the override on window blur so the pan mode can't stick on.
+    const onBlur = () => setSpaceHeld(false);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
     };
   }, []);
 

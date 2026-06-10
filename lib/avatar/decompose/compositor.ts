@@ -390,7 +390,7 @@ uniform bool uHasPaint;
 
 // Up to 8 regions per render — more than the studio currently
 // surfaces, but the array size is fixed for shader simplicity.
-const int MAX_REGIONS = 8;
+const int MAX_REGIONS = 12;
 uniform int       uRegionCount;
 uniform sampler2D uRegion0;
 uniform sampler2D uRegion1;
@@ -400,6 +400,10 @@ uniform sampler2D uRegion4;
 uniform sampler2D uRegion5;
 uniform sampler2D uRegion6;
 uniform sampler2D uRegion7;
+uniform sampler2D uRegion8;
+uniform sampler2D uRegion9;
+uniform sampler2D uRegion10;
+uniform sampler2D uRegion11;
 uniform vec3      uRegionColor[MAX_REGIONS];
 uniform float     uRegionAlpha[MAX_REGIONS];
 
@@ -411,7 +415,11 @@ vec4 sampleRegion(int i, vec2 uv) {
   if (i == 4) return texture(uRegion4, uv);
   if (i == 5) return texture(uRegion5, uv);
   if (i == 6) return texture(uRegion6, uv);
-  return texture(uRegion7, uv);
+  if (i == 7) return texture(uRegion7, uv);
+  if (i == 8) return texture(uRegion8, uv);
+  if (i == 9) return texture(uRegion9, uv);
+  if (i == 10) return texture(uRegion10, uv);
+  return texture(uRegion11, uv);
 }
 
 void main() {
@@ -506,7 +514,7 @@ class GLCompositor implements Compositor {
     this.texMask = gl.createTexture();
     this.texPaint = gl.createTexture();
     this.texThresh = gl.createTexture();
-    for (let i = 0; i < 8; i++) this.texRegions.push(gl.createTexture()!);
+    for (let i = 0; i < 12; i++) this.texRegions.push(gl.createTexture()!);
 
     // Lost context: drop everything and rebuild on restore. Simpler
     // than tracking exactly which resources need rebuilding.
@@ -657,10 +665,10 @@ class GLCompositor implements Compositor {
     // per-region dirty bits isn't worth it for a max of 8 regions.
     let regionCount = 0;
     if (studioMode === "split") {
-      const colors = new Float32Array(8 * 3);
-      const alphas = new Float32Array(8);
+      const colors = new Float32Array(12 * 3);
+      const alphas = new Float32Array(12);
       const regionsDirty = this.dirtyTex.regions;
-      for (let i = 0; i < Math.min(regions.length, 8); i++) {
+      for (let i = 0; i < Math.min(regions.length, 12); i++) {
         const r = regions[i];
         if (focusRegionId && r.id !== focusRegionId) continue;
         if (regionsDirty) {
@@ -755,7 +763,7 @@ class GLCompositor implements Compositor {
       "uRegionAlpha",
     ];
     for (const n of names) this.uniforms[n] = gl.getUniformLocation(this.program, n);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       this.regionUniforms.push(gl.getUniformLocation(this.program, `uRegion${i}`));
     }
   }

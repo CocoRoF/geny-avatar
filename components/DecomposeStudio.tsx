@@ -239,6 +239,13 @@ export function DecomposeStudio({
    *  layers, or applies the selection. */
   const [wandSelection, setWandSelection] = useState<HTMLCanvasElement | null>(null);
   const [wandSelectionArea, setWandSelectionArea] = useState(0);
+  // Latest-selection mirror for async compose: two rapid Shift+clicks
+  // could merge click 2 into the pre-click-1 selection captured in
+  // wandAt's closure. The ref always holds the newest canvas.
+  const wandSelectionRef = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    wandSelectionRef.current = wandSelection;
+  }, [wandSelection]);
   /** Foreground colour for paint-mode strokes / fills. Updated by
    *  the OptionsBar colour picker and by the Eyedropper tool. */
   const [foregroundColor, setForegroundColor] = useState("#ffffff");
@@ -308,6 +315,18 @@ export function DecomposeStudio({
   // a brush click in auto mode lands a point.
   const [samPoints, setSamPoints] = useState<SamPoint[]>([]);
   const [samCandidates, setSamCandidates] = useState<SamCandidate[] | null>(null);
+  // Thumbnail URLs for the candidate grid — created once per candidate
+  // set and revoked on change/unmount. Inline `URL.createObjectURL` in
+  // JSX minted a fresh never-revoked URL on every render.
+  const samCandidateUrls = useMemo(
+    () => (samCandidates ?? []).map((c) => URL.createObjectURL(c.maskBlob)),
+    [samCandidates],
+  );
+  useEffect(() => {
+    return () => {
+      for (const url of samCandidateUrls) URL.revokeObjectURL(url);
+    };
+  }, [samCandidateUrls]);
   const [samRunning, setSamRunning] = useState(false);
   const [samError, setSamError] = useState<string | null>(null);
   /** Sprint 6.3: how a SAM candidate (or any compose-time mask op)
@@ -319,6 +338,22 @@ export function DecomposeStudio({
    *  basis; this affordance is for SAM-driven composition where
    *  the user gets a whole-region candidate at once. */
   const [samComposeOp, setSamComposeOp] = useState<"add" | "intersect" | "subtract">("add");
+  /** HD-edge rebuilds every working canvas (it sits in the load
+   *  effect's deps), wiping unsaved strokes + history. Until the
+   *  rebuild can resample in place, make the destruction explicit:
+   *  confirm when there are unsaved changes. */
+  const requestHighDpiMask = useCallback(
+    (v: boolean) => {
+      if ((dirty || splitDirty || paintDirty) && typeof window !== "undefined") {
+        const ok = window.confirm(
+          "HD edge 전환은 작업 캔버스를 다시 만듭니다 — 저장되지 않은 스트로크와 히스토리가 사라집니다.\n계속할까요?",
+        );
+        if (!ok) return;
+      }
+      setHighDpiMask(v);
+    },
+    [dirty, splitDirty, paintDirty],
+  );
   /** Sprint 6.5: fullscreen toggle. The default modal cap of
    *  90vh × min(90vw, 1100px) is fine for small layers but
    *  cramped when the source canvas is 4k+ — split-mode regions
@@ -408,7 +443,9 @@ export function DecomposeStudio({
       if (existingMask) {
         // restore previous mask if any
         const img = new Image();
+        const maskUrl = URL.createObjectURL(existingMask);
         img.onload = () => {
+          URL.revokeObjectURL(maskUrl);
           if (cancelled) return;
           const ctx = mask.getContext("2d");
           if (ctx) {
@@ -441,9 +478,10 @@ export function DecomposeStudio({
           setReady(true);
         };
         img.onerror = () => {
+          URL.revokeObjectURL(maskUrl);
           if (!cancelled) setReady(true);
         };
-        img.src = URL.createObjectURL(existingMask);
+        img.src = maskUrl;
       } else {
         setReady(true);
       }
@@ -458,6 +496,13 @@ export function DecomposeStudio({
   // Runs once `ready` flips and persistedRegions arrives. Each
   // region's PNG blob is decoded into a same-dim canvas stored in
   // regionCanvasMap; the entries metadata mirrors what's on disk.
+  // Mirror of splitDirty for the async guard below — a slow IDB read
+  // can resolve AFTER the auto-seed or the user's first strokes, and
+  // applying it then would clobber that work.
+  const splitDirtyRef = useRef(false);
+  useEffect(() => {
+    splitDirtyRef.current = splitDirty;
+  }, [splitDirty]);
   useEffect(() => {
     if (!ready) return;
     const source = sourceCanvasRef.current;
@@ -487,7 +532,7 @@ export function DecomposeStudio({
         }
         newMap.set(r.id, c);
       }
-      if (cancelled) return;
+      if (cancelled || splitDirtyRef.current) return;
       regionCanvasMap.current = newMap;
       setRegionEntries(persistedRegions.map((r) => ({ id: r.id, name: r.name, color: r.color })));
       // Default-select the first region on initial hydration only;
@@ -945,7 +990,11 @@ export function DecomposeStudio({
         return;
       }
       const incoming = workerMaskToCanvas(result);
-      if (op === "replace" || !wandSelection) {
+      // Read the LATEST selection via the ref — the closure value can
+      // be one click behind when Shift+clicks land faster than React
+      // re-renders.
+      const current = wandSelectionRef.current;
+      if (op === "replace" || !current) {
         setWandSelection(incoming);
         setWandSelectionArea(result.area);
         return;
@@ -956,7 +1005,7 @@ export function DecomposeStudio({
       merged.height = source.height;
       const mctx = merged.getContext("2d");
       if (!mctx) return;
-      mctx.drawImage(wandSelection, 0, 0);
+      mctx.drawImage(current, 0, 0);
       composeSelection(
         merged,
         incoming,
@@ -973,7 +1022,6 @@ export function DecomposeStudio({
       wandOpts.sampleSize,
       wandOpts.contiguous,
       wandOpts.antiAlias,
-      wandSelection,
     ],
   );
 
@@ -1938,6 +1986,10 @@ export function DecomposeStudio({
         // state — match toLowerCase for robustness.
         if (ev.key.toLowerCase() === "z") {
           ev.preventDefault();
+          // Split mode has no history tracking — undo here would
+          // silently mutate the INVISIBLE mask/paint canvases while
+          // the user is looking at regions.
+          if (studioMode === "split") return;
           if (ev.shiftKey) onRedo();
           else onUndo();
           return;
@@ -2137,7 +2189,7 @@ export function DecomposeStudio({
             onPressureSize={setPressureSize}
             onPressureOpacity={setPressureOpacity}
             highDpiMask={highDpiMask}
-            onHighDpiMask={setHighDpiMask}
+            onHighDpiMask={requestHighDpiMask}
             threshold={threshold}
             onThreshold={setThreshold}
             zoom={viewport.zoom}
@@ -2537,7 +2589,7 @@ export function DecomposeStudio({
                             >
                               {/* biome-ignore lint/performance/noImgElement: blob URL preview */}
                               <img
-                                src={URL.createObjectURL(c.maskBlob)}
+                                src={samCandidateUrls[i]}
                                 alt={`candidate ${i + 1}`}
                                 className="block h-auto w-full"
                               />

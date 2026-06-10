@@ -157,7 +157,13 @@ export class StrokeEngine {
       this.stamp(interp);
     }
     this.leftoverDist = dist - travelled;
-    this.stamp(s);
+    // NOTE: deliberately no `this.stamp(s)` here. Stamping every raw
+    // sample on top of the spacing-interpolated dabs defeated spacing
+    // at high pointer rates (120 Hz pen = a dab per sample regardless
+    // of the spacing config) — visible as density spikes when
+    // pressure-opacity is on. The final segment shorter than one
+    // spacing step is carried in `leftoverDist` and stamped by the
+    // next sample (or simply ends the stroke, like Photoshop).
     this.lastSample = s;
   }
 

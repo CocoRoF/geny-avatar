@@ -60,6 +60,21 @@ export interface HistoryEntry {
 }
 
 const MAX_ENTRIES = 30;
+/**
+ * Soft byte budget for all entry snapshots combined (4 bytes/pixel
+ * equivalent). The entry-count cap alone let a 2048² layer with HD
+ * edge masks build a multi-GB stack (full-canvas clone per stroke);
+ * past the budget, oldest entries fold into baseline exactly like
+ * the count overflow. At least one entry is always kept so a single
+ * over-budget canvas still gets one undo step.
+ */
+const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
+
+function entryBytes(snapshots: ReadonlyMap<CanvasKey, HTMLCanvasElement>): number {
+  let total = 0;
+  for (const c of snapshots.values()) total += c.width * c.height * 4;
+  return total;
+}
 
 export interface UseHistoryResult {
   entries: ReadonlyArray<HistoryEntry>;
@@ -148,12 +163,14 @@ export function useHistory(): UseHistoryResult {
         snapshots: new Map(changes),
       };
       const next = [...truncated, newEntry];
-      // Overflow: fold the oldest entry's snapshots into baseline so
-      // we never lose the ability to undo past it; just lose the
-      // user-visible row in the history list.
-      while (next.length > MAX_ENTRIES) {
+      // Overflow (count OR bytes): fold the oldest entry's snapshots
+      // into baseline so we never lose the ability to undo past it;
+      // just lose the user-visible row in the history list.
+      let totalBytes = next.reduce((sum, e) => sum + entryBytes(e.snapshots), 0);
+      while (next.length > MAX_ENTRIES || (next.length > 1 && totalBytes > MAX_SNAPSHOT_BYTES)) {
         const dropped = next.shift();
         if (!dropped) break;
+        totalBytes -= entryBytes(dropped.snapshots);
         for (const [k, v] of dropped.snapshots) baselineRef.current.set(k, v);
       }
       setEntries(next);
