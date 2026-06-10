@@ -21,7 +21,7 @@ import type {
   LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
-import { applyLayerOverrides } from "./applyOverrides";
+import { type ApplyResult, LayerOverrideApplier } from "./applyOverrides";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "slot",
@@ -49,6 +49,8 @@ export class SpineAdapter implements AvatarAdapter {
   /** Live Pixi Texture per page — its `.source.resource` is what we
    *  swap out when masks are applied so the GPU re-uploads. */
   private pixiTextureById = new Map<TextureId, PixiTexture>();
+  /** Serializes + coalesces override applies. Created on first use. */
+  private overrideApplier: LayerOverrideApplier | null = null;
 
   /**
    * Heuristic detection from filenames in a bundle. Real magic-byte parsing
@@ -210,13 +212,14 @@ export class SpineAdapter implements AvatarAdapter {
   async setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
-  }): Promise<void> {
-    await applyLayerOverrides(opts, {
+  }): Promise<ApplyResult> {
+    this.overrideApplier ??= new LayerOverrideApplier({
       findLayer: (id) => this.findLayerById(id) ?? null,
       getTriangles: (id) => this.getLayerTriangles(id),
       textureSources: this.textureSourcesById,
       pixiTextures: this.pixiTextureById,
     });
+    return this.overrideApplier.apply(opts);
   }
 
   getDisplayObject(): Container | null {
@@ -324,6 +327,8 @@ export class SpineAdapter implements AvatarAdapter {
   }
 
   destroy(): void {
+    this.overrideApplier?.dispose();
+    this.overrideApplier = null;
     this.spine?.destroy();
     this.spine = null;
     this.layerByExternalId.clear();

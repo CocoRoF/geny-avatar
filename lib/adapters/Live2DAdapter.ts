@@ -21,7 +21,7 @@ import type {
   LayerTriangles,
   TextureSourceInfo,
 } from "./AvatarAdapter";
-import { applyLayerOverrides } from "./applyOverrides";
+import { type ApplyResult, LayerOverrideApplier } from "./applyOverrides";
 
 const CAPABILITIES: AdapterCapabilities = {
   layerUnit: "part",
@@ -105,6 +105,8 @@ export class Live2DAdapter implements AvatarAdapter {
   /** Live Pixi Texture per page — `setLayerMasks` swaps `.source.resource`
    *  to push masked pixels to the GPU. */
   private pixiTextureById = new Map<TextureId, PixiTexture>();
+  /** Serializes + coalesces override applies. Created on first use. */
+  private overrideApplier: LayerOverrideApplier | null = null;
   /** Reverse of `textureIdByPageIndex` — used by `getLayerTriangles` to
    *  filter drawables to those that live on the layer's dominant page. */
   private pageIndexByTextureId = new Map<TextureId, number>();
@@ -895,13 +897,14 @@ export class Live2DAdapter implements AvatarAdapter {
   async setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
-  }): Promise<void> {
-    await applyLayerOverrides(opts, {
+  }): Promise<ApplyResult> {
+    this.overrideApplier ??= new LayerOverrideApplier({
       findLayer: (id) => this.findLayerByLayerId(id),
       getTriangles: (id) => this.getLayerTriangles(id),
       textureSources: this.textureSourcesById,
       pixiTextures: this.pixiTextureById,
     });
+    return this.overrideApplier.apply(opts);
   }
 
   private findLayerByLayerId(layerId: LayerId): import("../avatar/types").Layer | null {
@@ -932,6 +935,8 @@ export class Live2DAdapter implements AvatarAdapter {
   }
 
   destroy(): void {
+    this.overrideApplier?.dispose();
+    this.overrideApplier = null;
     if (this.originalInternalUpdate) {
       const internal = this.model?.internalModel;
       if (internal) {

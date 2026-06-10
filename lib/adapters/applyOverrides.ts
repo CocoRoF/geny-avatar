@@ -13,10 +13,16 @@ import type { LayerTriangles, TextureSourceInfo } from "./AvatarAdapter";
  * Composition order, per page (from pristine source bitmap):
  *   1. Texture overrides (`source-over`, clipped to the layer's
  *      triangles so the new pixels stay inside the layer's footprint).
- *   2. Masks (`destination-out`, alpha=255 wipes the page pixel).
+ *   2. Masks (`destination-out`, alpha=255 wipes the page pixel,
+ *      clipped to the layer's triangles for the same reason).
  *
- * Pages that don't appear in either map reset to pristine — covers the
- * "user cleared a mask / discarded a generation" path.
+ * Concurrency: callers go through `LayerOverrideApplier`, which
+ *   - serializes applies (a second call while one is in flight queues
+ *     and coalesces — only the latest requested state runs next), and
+ *   - rebuilds only pages whose overrides actually changed since the
+ *     last applied state (Blob identity diff). A page whose last
+ *     override was removed is rebuilt once back to pristine; pages
+ *     never touched are never re-uploaded.
  */
 export type ApplyContext = {
   findLayer: (id: LayerId) => Layer | null;
@@ -32,43 +38,113 @@ export type LayerOverrides = {
   textures: Readonly<Record<LayerId, Blob>>;
 };
 
-export async function applyLayerOverrides(
-  overrides: LayerOverrides,
-  ctx: ApplyContext,
-): Promise<void> {
-  // Collect affected pages from both override types.
-  const pageDirty = new Set<TextureId>();
-  for (const id of Object.keys(overrides.textures)) {
-    const l = ctx.findLayer(id);
-    if (l?.texture) pageDirty.add(l.texture.textureId);
+export type ApplyResult = {
+  /** Layers whose override blob failed to decode — the rest of the
+   *  page was still composited so one corrupt blob can't wedge the
+   *  whole apply. Callers surface these to the user. */
+  failedLayerIds: LayerId[];
+};
+
+/**
+ * Per-adapter apply queue. One instance per adapter lifetime; `dispose`
+ * on adapter destroy.
+ */
+export class LayerOverrideApplier {
+  private ctx: ApplyContext;
+  /** Latest requested-but-not-yet-applied state (coalesced). */
+  private pending: LayerOverrides | null = null;
+  /** Resolves when the queue drains (the latest state is on the GPU). */
+  private draining: Promise<ApplyResult> | null = null;
+  /** State that is actually applied — basis for the page diff. */
+  private lastApplied: LayerOverrides = { masks: {}, textures: {} };
+  private disposed = false;
+
+  constructor(ctx: ApplyContext) {
+    this.ctx = ctx;
   }
-  for (const id of Object.keys(overrides.masks)) {
-    const l = ctx.findLayer(id);
-    if (l?.texture) pageDirty.add(l.texture.textureId);
+
+  apply(overrides: LayerOverrides): Promise<ApplyResult> {
+    this.pending = overrides;
+    if (!this.draining) this.draining = this.drain();
+    return this.draining;
   }
 
-  // Rebuild every tracked page from pristine. Pages without overrides
-  // get re-uploaded with the original pixels — keeps the GPU in sync
-  // when a user discards a generation or clears a mask.
-  for (const [textureId, source] of ctx.textureSources) {
-    const pixi = ctx.pixiTextures.get(textureId);
-    if (!pixi) continue;
+  dispose(): void {
+    this.disposed = true;
+    this.pending = null;
+  }
 
-    const work = document.createElement("canvas");
-    work.width = source.width;
-    work.height = source.height;
-    const work2d = work.getContext("2d");
-    if (!work2d) continue;
-    work2d.drawImage(source.image, 0, 0);
+  private async drain(): Promise<ApplyResult> {
+    let result: ApplyResult = { failedLayerIds: [] };
+    try {
+      while (this.pending && !this.disposed) {
+        const next = this.pending;
+        this.pending = null;
+        result = await this.applyOnce(next);
+        this.lastApplied = next;
+      }
+    } finally {
+      this.draining = null;
+    }
+    return result;
+  }
 
-    if (pageDirty.has(textureId)) {
+  /** Pages whose override set changed between `lastApplied` and `next`. */
+  private diffDirtyPages(next: LayerOverrides): Set<TextureId> {
+    const dirty = new Set<TextureId>();
+    const collect = (
+      prev: Readonly<Record<LayerId, Blob>>,
+      cur: Readonly<Record<LayerId, Blob>>,
+    ) => {
+      const keys = new Set([...Object.keys(prev), ...Object.keys(cur)]);
+      for (const id of keys) {
+        if (prev[id] === cur[id]) continue;
+        const layer = this.ctx.findLayer(id);
+        if (layer?.texture) dirty.add(layer.texture.textureId);
+      }
+    };
+    collect(this.lastApplied.textures, next.textures);
+    collect(this.lastApplied.masks, next.masks);
+    return dirty;
+  }
+
+  private async applyOnce(overrides: LayerOverrides): Promise<ApplyResult> {
+    const failedLayerIds: LayerId[] = [];
+    const dirtyPages = this.diffDirtyPages(overrides);
+    if (dirtyPages.size === 0) return { failedLayerIds };
+
+    // Decode each blob once even when several dirty pages share it.
+    const decoded = new Map<Blob, CanvasImageSource | null>();
+    const decode = async (blob: Blob): Promise<CanvasImageSource | null> => {
+      if (decoded.has(blob)) return decoded.get(blob) ?? null;
+      const img = await loadBlob(blob);
+      decoded.set(blob, img);
+      return img;
+    };
+
+    for (const textureId of dirtyPages) {
+      if (this.disposed) break;
+      const source = this.ctx.textureSources.get(textureId);
+      const pixi = this.ctx.pixiTextures.get(textureId);
+      if (!source || !pixi) continue;
+
+      const work = document.createElement("canvas");
+      work.width = source.width;
+      work.height = source.height;
+      const work2d = work.getContext("2d");
+      if (!work2d) continue;
+      work2d.drawImage(source.image, 0, 0);
+
       // 1. Textures first.
       for (const [layerId, blob] of Object.entries(overrides.textures)) {
-        const layer = ctx.findLayer(layerId);
+        const layer = this.ctx.findLayer(layerId);
         if (!layer?.texture || layer.texture.textureId !== textureId) continue;
-        const img = await loadBlob(blob);
-        if (!img) continue;
-        const path = pagePathForLayer(ctx, layer, source.width, source.height);
+        const img = await decode(blob);
+        if (!img) {
+          failedLayerIds.push(layerId);
+          continue;
+        }
+        const path = pagePathForLayer(this.ctx, layer, source.width, source.height);
         compositeTexture(work2d, img, layer.texture.rect, layer.texture.rotated ?? false, path);
       }
 
@@ -83,15 +159,24 @@ export async function applyLayerOverrides(
       //    overrides compose cleanly because the mask convention is
       //    consistent end-to-end.
       for (const [layerId, blob] of Object.entries(overrides.masks)) {
-        const layer = ctx.findLayer(layerId);
+        const layer = this.ctx.findLayer(layerId);
         if (!layer?.texture || layer.texture.textureId !== textureId) continue;
-        const img = await loadBlob(blob);
-        if (!img) continue;
-        compositeMask(work2d, img, layer.texture.rect, layer.texture.rotated ?? false);
+        const img = await decode(blob);
+        if (!img) {
+          failedLayerIds.push(layerId);
+          continue;
+        }
+        const path = pagePathForLayer(this.ctx, layer, source.width, source.height);
+        compositeMask(work2d, img, layer.texture.rect, layer.texture.rotated ?? false, path);
       }
+
+      if (!this.disposed) replacePixiTextureSource(pixi, work);
     }
 
-    replacePixiTextureSource(pixi, work);
+    for (const img of decoded.values()) {
+      if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
+    }
+    return { failedLayerIds };
   }
 }
 
@@ -99,7 +184,7 @@ export async function applyLayerOverrides(
 
 function compositeTexture(
   ctx: CanvasRenderingContext2D,
-  texture: HTMLImageElement,
+  texture: CanvasImageSource,
   rect: { x: number; y: number; w: number; h: number },
   rotated: boolean,
   trianglePath: Path2D | null,
@@ -110,13 +195,7 @@ function compositeTexture(
   // mesh, Spine MeshAttachment). When the adapter can't produce
   // triangles, fall back to the rectangular rect — without any
   // clip the wipe below would erase the whole atlas page.
-  if (trianglePath) {
-    ctx.clip(trianglePath);
-  } else {
-    const rectPath = new Path2D();
-    rectPath.rect(rect.x, rect.y, rect.w, rect.h);
-    ctx.clip(rectPath);
-  }
+  clipToFootprint(ctx, rect, trianglePath);
   // Wipe pristine atlas pixels inside the clip BEFORE drawing the
   // override blob. Without this, source-over below preserves
   // pristine pixels anywhere the blob has alpha=0 — which is
@@ -132,41 +211,64 @@ function compositeTexture(
   ctx.fillStyle = "rgba(0,0,0,1)";
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.globalCompositeOperation = "source-over";
-  if (rotated) {
-    // The texture blob is upright; the atlas region is packed 90deg
-    // CW. Rotate +90 around the rect center to map upright → sideways.
-    ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.drawImage(texture, -rect.h / 2, -rect.w / 2, rect.h, rect.w);
-  } else {
-    ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h);
-  }
+  drawIntoRect(ctx, texture, rect, rotated);
   ctx.restore();
 }
 
 function compositeMask(
   ctx: CanvasRenderingContext2D,
-  mask: HTMLImageElement,
+  mask: CanvasImageSource,
+  rect: { x: number; y: number; w: number; h: number },
+  rotated: boolean,
+  trianglePath: Path2D | null,
+): void {
+  ctx.save();
+  // Same footprint clip as textures: mask alpha that strays outside
+  // the layer's triangles (possible for blobs not produced by
+  // DecomposeStudio, e.g. restored from an export) must not erase
+  // atlas neighbors packed inside the same bbox.
+  clipToFootprint(ctx, rect, trianglePath);
+  ctx.globalCompositeOperation = "destination-out";
+  drawIntoRect(ctx, mask, rect, rotated);
+  ctx.restore();
+}
+
+function clipToFootprint(
+  ctx: CanvasRenderingContext2D,
+  rect: { x: number; y: number; w: number; h: number },
+  trianglePath: Path2D | null,
+): void {
+  if (trianglePath) {
+    ctx.clip(trianglePath);
+  } else {
+    const rectPath = new Path2D();
+    rectPath.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.clip(rectPath);
+  }
+}
+
+function drawIntoRect(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
   rect: { x: number; y: number; w: number; h: number },
   rotated: boolean,
 ): void {
-  ctx.save();
-  ctx.globalCompositeOperation = "destination-out";
   if (rotated) {
+    // The blob is upright; the atlas region is packed 90deg CW.
+    // Rotate +90 around the rect center to map upright → sideways.
     ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2);
     ctx.rotate(Math.PI / 2);
-    ctx.drawImage(mask, -rect.h / 2, -rect.w / 2, rect.h, rect.w);
+    ctx.drawImage(img, -rect.h / 2, -rect.w / 2, rect.h, rect.w);
   } else {
-    ctx.drawImage(mask, rect.x, rect.y, rect.w, rect.h);
+    ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h);
   }
-  ctx.restore();
 }
 
 /**
  * Build a `Path2D` describing the layer's triangles in atlas-page
  * pixel coords (not the upright canvas-local coords used by
  * `buildLayerClipPath` in `regionExtract.ts`). When the adapter
- * doesn't report triangles, return `null` so the caller draws the
+ * doesn't report triangles, return `null` so the caller clips to the
  * full rect — strictly less precise but never wrong.
  */
 function pagePathForLayer(
@@ -193,7 +295,16 @@ function pagePathForLayer(
   return path;
 }
 
-async function loadBlob(blob: Blob): Promise<HTMLImageElement | null> {
+async function loadBlob(blob: Blob): Promise<CanvasImageSource | null> {
+  // createImageBitmap decodes off the main thread and skips the object-
+  // URL round trip; fall back to HTMLImageElement for odd blobs.
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      // fall through
+    }
+  }
   const url = URL.createObjectURL(blob);
   try {
     return await new Promise<HTMLImageElement | null>((resolve) => {

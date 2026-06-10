@@ -81,12 +81,15 @@ export async function bakeAtlasPages(input: BakeAtlasInput): Promise<BakedAtlasP
       compositeOver(ctx, img, layer.texture.rect, layer.texture.rotated ?? false, path);
     }
 
-    // 2. Masks
+    // 2. Masks — same triangle clip as textures so a mask blob that
+    //    carries alpha outside the layer's footprint (e.g. restored
+    //    from an old export) can't erase neighbors packed in the bbox.
     for (const layer of avatar.layers) {
       if (!layer.texture || layer.texture.textureId !== tex.id) continue;
       const img = maskImages.get(layer.id);
       if (!img) continue;
-      compositeErase(ctx, img, layer.texture.rect, layer.texture.rotated ?? false);
+      const path = trianglesPathForLayer(adapter, layer, src.width, src.height);
+      compositeErase(ctx, img, layer.texture.rect, layer.texture.rotated ?? false, path);
     }
 
     const blob = await canvasToPngBlob(work);
@@ -129,8 +132,16 @@ function compositeErase(
   img: HTMLImageElement,
   rect: Rect,
   rotated: boolean,
+  trianglePath: Path2D | null,
 ): void {
   ctx.save();
+  if (trianglePath) {
+    ctx.clip(trianglePath);
+  } else {
+    const rectPath = new Path2D();
+    rectPath.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.clip(rectPath);
+  }
   ctx.globalCompositeOperation = "destination-out";
   if (rotated) {
     ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2);

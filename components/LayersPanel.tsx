@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { Application } from "pixi.js";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Layer, LayerId } from "@/lib/avatar/types";
 import { useLayerThumbnail } from "@/lib/avatar/useLayerThumbnail";
@@ -68,18 +68,34 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
 
   // Push masks + AI texture overrides into the runtime whenever either
   // changes. Single source of truth: store → this effect → adapter →
-  // GPU. The adapter rebuilds each affected page from pristine, so we
-  // can pass the whole map every time without worrying about diff.
+  // GPU. The adapter serializes + coalesces these calls and diffs
+  // against the previously applied state, so passing the whole map
+  // every time only rebuilds pages that actually changed.
+  const [applyError, setApplyError] = useState<string | null>(null);
   useEffect(() => {
     if (!adapter) return;
     let cancelled = false;
-    adapter.setLayerOverrides({ masks: layerMasks, textures: layerTextureOverrides }).catch((e) => {
-      if (!cancelled) console.warn("[LayersPanel] setLayerOverrides failed", e);
-    });
+    adapter
+      .setLayerOverrides({ masks: layerMasks, textures: layerTextureOverrides })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.failedLayerIds.length > 0) {
+          const names = res.failedLayerIds.map((id) => layers.find((l) => l.id === id)?.name ?? id);
+          console.warn("[LayersPanel] override blobs failed to decode:", names);
+          setApplyError(`오버라이드 ${names.length}건 적용 실패: ${names.join(", ")}`);
+        } else {
+          setApplyError(null);
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.warn("[LayersPanel] setLayerOverrides failed", e);
+        setApplyError("레이어 오버라이드 적용 실패 — 콘솔 참고");
+      });
     return () => {
       cancelled = true;
     };
-  }, [adapter, layerMasks, layerTextureOverrides]);
+  }, [adapter, layerMasks, layerTextureOverrides, layers]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -167,6 +183,12 @@ export function LayersPanel({ adapter, app, puppetKey, onToggleLayer, onBulkSet 
           </button>
         </div>
       </div>
+
+      {applyError && (
+        <div className="shrink-0 border-b border-red-400/40 bg-red-950/40 px-4 py-1.5 text-[11px] text-red-300">
+          {applyError}
+        </div>
+      )}
 
       <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {filtered.map((layer, i) => {

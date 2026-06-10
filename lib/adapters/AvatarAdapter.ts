@@ -21,6 +21,7 @@ import type {
   TextureId,
   VariantApplyData,
 } from "../avatar/types";
+import type { ApplyResult } from "./applyOverrides";
 
 /**
  * Drawable image + dimensions for a texture page. Used by the layer
@@ -149,17 +150,19 @@ export interface AvatarAdapter {
    *     the layer's upright rect) with `source-over`, clipped to the
    *     layer's triangles so edits don't bleed into atlas neighbors,
    *   - composites every entry in `masks` (alpha=255 = "hide here")
-   *     with `destination-out` to wipe pixels.
-   * Pages with no overrides reset to pristine. The result is uploaded
-   * to the GPU so the rendered puppet matches what the user baked in
-   * DecomposeStudio + GeneratePanel.
+   *     with `destination-out` to wipe pixels, same clip.
+   * The result is uploaded to the GPU so the rendered puppet matches
+   * what the user baked in DecomposeStudio + GeneratePanel.
    *
-   * Passing `{ masks: {}, textures: {} }` restores the original atlas.
+   * Calls are serialized and coalesced per adapter; only pages whose
+   * overrides changed since the previous call are rebuilt. Removing a
+   * layer's entry restores that page region to pristine; passing
+   * `{ masks: {}, textures: {} }` restores the original atlas.
    */
   setLayerOverrides(opts: {
     masks: Readonly<Record<LayerId, Blob>>;
     textures: Readonly<Record<LayerId, Blob>>;
-  }): Promise<void>;
+  }): Promise<ApplyResult>;
 
   /**
    * Presets baked into the puppet itself (Spine Skin, Cubism part group).
