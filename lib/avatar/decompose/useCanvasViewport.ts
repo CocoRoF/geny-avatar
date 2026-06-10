@@ -95,75 +95,69 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
     startPanY: number;
   } | null>(null);
 
-  const fit = useCallback(() => {
-    setZoom(1);
-    setPanX(0);
-    setPanY(0);
-  }, []);
-  const actualSize = useCallback(() => {
-    setZoom(1);
+  // Single write path. All mutators read the latest values from this
+  // ref and write through `applyView` — no setters nested inside other
+  // setters (those side effects ran twice under StrictMode, doubling
+  // the pan delta per zoom tick) and no stale-closure pan reads on
+  // rapid wheel events between renders.
+  const viewRef = useRef({ zoom: 1, panX: 0, panY: 0 });
+  const applyView = useCallback((z: number, px: number, py: number) => {
+    viewRef.current = { zoom: z, panX: px, panY: py };
+    setZoom(z);
+    setPanX(px);
+    setPanY(py);
   }, []);
 
-  const zoomAtClient = useCallback(
+  const fit = useCallback(() => {
+    applyView(1, 0, 0);
+  }, [applyView]);
+  const actualSize = useCallback(() => {
+    const v = viewRef.current;
+    applyView(1, v.panX, v.panY);
+  }, [applyView]);
+
+  /**
+   * Canonical cursor-anchored zoom: scale pan by the zoom ratio and
+   * pull the anchor point's centre-relative coord back under the
+   * cursor. (An earlier variant had broken algebra that reduced to
+   * `pan * ratio`, silently dropping the anchor term — zoom-tool
+   * clicks drifted with pan.)
+   */
+  const zoomAroundPoint = useCallback(
     (zoomFactor: number, clientX: number, clientY: number) => {
+      const v = viewRef.current;
+      const newZoom = clamp(v.zoom * zoomFactor);
+      if (newZoom === v.zoom) return;
       const node = containerRef.current;
       if (!node) {
-        setZoom((z) => clamp(z * zoomFactor));
+        applyView(newZoom, v.panX, v.panY);
         return;
       }
       const rect = node.getBoundingClientRect();
       // Position of the cursor inside the wrapper's local coords (centre origin).
       const cx = clientX - (rect.left + rect.width / 2);
       const cy = clientY - (rect.top + rect.height / 2);
-      setZoom((oldZoom) => {
-        const newZoom = clamp(oldZoom * zoomFactor);
-        if (newZoom === oldZoom) return oldZoom;
-        const ratio = newZoom / oldZoom;
-        // Adjust pan so the point under the cursor stays put: the
-        // local centre-relative coord (cx - panX) should remain
-        // anchored after scaling.
-        setPanX((px) => px * ratio + (cx - px) * (1 - ratio) - cx + cx * ratio + px - px * ratio);
-        setPanY((py) => py * ratio + (cy - py) * (1 - ratio) - cy + cy * ratio + py - py * ratio);
-        // The above algebra simplifies to:
-        //   newPan = oldPan + cx * (1 - ratio) - cx * 0 = oldPan + (cx - oldPan) * (1 - ratio)
-        // Using the simpler form for clarity in the actual setters below.
-        return newZoom;
-      });
+      const ratio = newZoom / v.zoom;
+      applyView(newZoom, v.panX * ratio + cx * (1 - ratio), v.panY * ratio + cy * (1 - ratio));
     },
-    [containerRef],
+    [containerRef, applyView],
   );
 
-  // Reduce to the canonical pan formula. (The two-step setZoom +
-  // setPan above had two distinct setters fighting; a single pass
-  // here is simpler.)
-  const zoomAroundPoint = useCallback(
-    (zoomFactor: number, clientX: number, clientY: number) => {
-      const node = containerRef.current;
-      if (!node) {
-        setZoom((z) => clamp(z * zoomFactor));
-        return;
-      }
-      const rect = node.getBoundingClientRect();
-      const cx = clientX - (rect.left + rect.width / 2);
-      const cy = clientY - (rect.top + rect.height / 2);
-      setZoom((oldZoom) => {
-        const newZoom = clamp(oldZoom * zoomFactor);
-        if (newZoom === oldZoom) return oldZoom;
-        const ratio = newZoom / oldZoom;
-        setPanX((px) => px * ratio + cx * (1 - ratio));
-        setPanY((py) => py * ratio + cy * (1 - ratio));
-        return newZoom;
-      });
+  const zoomIn = useCallback(() => {
+    const v = viewRef.current;
+    applyView(clamp(v.zoom * 1.25), v.panX, v.panY);
+  }, [applyView]);
+  const zoomOut = useCallback(() => {
+    const v = viewRef.current;
+    applyView(clamp(v.zoom / 1.25), v.panX, v.panY);
+  }, [applyView]);
+  const panBy = useCallback(
+    (dx: number, dy: number) => {
+      const v = viewRef.current;
+      applyView(v.zoom, v.panX + dx, v.panY + dy);
     },
-    [containerRef],
+    [applyView],
   );
-
-  const zoomIn = useCallback(() => setZoom((z) => clamp(z * 1.25)), []);
-  const zoomOut = useCallback(() => setZoom((z) => clamp(z / 1.25)), []);
-  const panBy = useCallback((dx: number, dy: number) => {
-    setPanX((p) => p + dx);
-    setPanY((p) => p + dy);
-  }, []);
 
   const onWheel = useCallback(
     (e: WheelEvent) => {
@@ -174,26 +168,30 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
     [zoomAroundPoint],
   );
 
-  const onPanPointerDown = useCallback(
-    (e: PointerEvent) => {
-      dragRef.current = {
-        pointerId: e.pointerId,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        startPanX: panX,
-        startPanY: panY,
-      };
-      setIsPanning(true);
-    },
-    [panX, panY],
-  );
-
-  const onPanPointerMove = useCallback((e: PointerEvent) => {
-    const d = dragRef.current;
-    if (!d || e.pointerId !== d.pointerId) return;
-    setPanX(d.startPanX + (e.clientX - d.startClientX));
-    setPanY(d.startPanY + (e.clientY - d.startClientY));
+  const onPanPointerDown = useCallback((e: PointerEvent) => {
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPanX: viewRef.current.panX,
+      startPanY: viewRef.current.panY,
+    };
+    setIsPanning(true);
   }, []);
+
+  const onPanPointerMove = useCallback(
+    (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || e.pointerId !== d.pointerId) return;
+      const v = viewRef.current;
+      applyView(
+        v.zoom,
+        d.startPanX + (e.clientX - d.startClientX),
+        d.startPanY + (e.clientY - d.startClientY),
+      );
+    },
+    [applyView],
+  );
 
   const onPanPointerUp = useCallback((e: PointerEvent) => {
     const d = dragRef.current;
@@ -236,7 +234,9 @@ export function useCanvasViewport(options: UseCanvasViewportOptions): UseCanvasV
     actualSize,
     zoomIn,
     zoomOut,
-    zoomAtClient,
+    // Public name kept for consumers (zoom tool); implementation is the
+    // single corrected cursor-anchored variant.
+    zoomAtClient: zoomAroundPoint,
     panBy,
     isPanning,
     onWheel,

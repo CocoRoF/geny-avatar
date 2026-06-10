@@ -95,6 +95,15 @@ function getWorker(): Worker {
       entry.reject(e);
       _pending.delete(id);
     }
+    // Drop the broken worker so the next bucket/wand click lazily
+    // spawns a fresh one. Keeping the dead instance meant every
+    // subsequent request posted into the void and hung forever.
+    try {
+      _worker?.terminate();
+    } catch {
+      // already dead
+    }
+    _worker = null;
   };
   return _worker;
 }

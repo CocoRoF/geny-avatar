@@ -116,6 +116,20 @@ export function toolForShortcut(key: string): ToolId | null {
   return found?.id ?? null;
 }
 
+/**
+ * Whether a tool may be active in the given mode. Single source of
+ * truth shared by the Toolbox filter, the keyboard-shortcut handler,
+ * and the mode-switch reset — previously only the Toolbox filtered,
+ * so shortcuts could activate an invisible tool in the wrong mode.
+ */
+export function isToolAvailable(tool: ToolId, mode: StudioMode): boolean {
+  const def = TOOLS.find((t) => t.id === tool);
+  if (!def) return false;
+  if (def.splitOnly && mode !== "split") return false;
+  if (def.paintOnly && mode !== "paint") return false;
+  return true;
+}
+
 /** Operation a brush-like tool performs on a mask canvas. */
 export type BrushOp = "add" | "remove";
 

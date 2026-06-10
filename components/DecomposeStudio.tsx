@@ -24,6 +24,7 @@ import { StrokeEngine } from "@/lib/avatar/decompose/strokeEngine";
 import {
   type BrushOp,
   defaultWandOptions,
+  isToolAvailable,
   type SelectionOp,
   type StudioMode,
   type ToolId,
@@ -271,6 +272,12 @@ export function DecomposeStudio({
   useEffect(() => {
     if (embedded && studioMode !== "mask") setStudioMode("mask");
   }, [embedded, studioMode]);
+  // Mode switches drop a now-unavailable tool back to brush —
+  // otherwise e.g. leaving paint mode with the eyedropper active left
+  // an invisible active tool with no toolbox highlight.
+  useEffect(() => {
+    if (!isToolAvailable(selectedTool, studioMode)) setSelectedTool("brush");
+  }, [selectedTool, studioMode]);
   const {
     regions: persistedRegions,
     save: saveRegions,
@@ -907,13 +914,20 @@ export function DecomposeStudio({
       if (!source) return;
       const target = activeTargetCanvas();
       if (!target) return;
+      // Flood tools must see what the user sees: in paint mode the BFS
+      // runs against the working paint canvas (source + this session's
+      // strokes) — seeding against the immutable source extraction made
+      // fills walk pixels the user had already painted over. Mask/split
+      // keep the source (their working canvases are masks, not pixels).
+      const floodSource =
+        studioMode === "paint" && paintCanvasRef.current ? paintCanvasRef.current : source;
       const { x, y } = clientToSrc(clientX, clientY);
       const result = await runFlood({
-        source,
+        source: floodSource,
         seedX: x,
         seedY: y,
         tolerance: bucketTolerance,
-        sampleMode: "alpha",
+        sampleMode: studioMode === "paint" ? "rgb" : "alpha",
         sampleSize: 1,
         contiguous: true,
         antiAlias: false,
@@ -964,9 +978,13 @@ export function DecomposeStudio({
     async (clientX: number, clientY: number, op: SelectionOp) => {
       const source = sourceCanvasRef.current;
       if (!source) return;
+      // Same paint-mode rule as bucketAt: select over what the user
+      // sees, not the pre-edit extraction.
+      const floodSource =
+        studioMode === "paint" && paintCanvasRef.current ? paintCanvasRef.current : source;
       const { x, y } = clientToSrc(clientX, clientY);
       const result = await runFlood({
-        source,
+        source: floodSource,
         seedX: x,
         seedY: y,
         tolerance: wandOpts.tolerance,
@@ -1005,6 +1023,7 @@ export function DecomposeStudio({
     },
     [
       clientToSrc,
+      studioMode,
       wandOpts.tolerance,
       wandOpts.sampleMode,
       wandOpts.sampleSize,
@@ -1188,7 +1207,12 @@ export function DecomposeStudio({
         }
         case "bucket":
           e.preventDefault();
-          bucketAt(e.clientX, e.clientY);
+          // .catch: a worker transport error rejects the promise; a
+          // fire-and-forget without a handler became an unhandled
+          // rejection (and looked like a dead tool to the user).
+          bucketAt(e.clientX, e.clientY).catch((err) =>
+            console.warn("[DecomposeStudio] bucket fill failed", err),
+          );
           return;
         case "wand": {
           e.preventDefault();
@@ -1200,7 +1224,9 @@ export function DecomposeStudio({
                 : e.altKey
                   ? "subtract"
                   : "replace";
-          wandAt(e.clientX, e.clientY, op);
+          wandAt(e.clientX, e.clientY, op).catch((err) =>
+            console.warn("[DecomposeStudio] wand selection failed", err),
+          );
           return;
         }
         case "sam":
@@ -1415,6 +1441,7 @@ export function DecomposeStudio({
     //     luma-aware inpainter and the model would skip the edit
     //     entirely.
     const inpaintConvention = !!onMaskCommit;
+    let hasAnyMask = false;
     for (let i = 0; i < srcData.data.length; i += 4) {
       const sa = srcData.data[i + 3];
       const ma = maskData.data[i + 3];
@@ -1424,6 +1451,7 @@ export function DecomposeStudio({
       // and `setLayerMasks` would erase atlas neighbors.
       const thresholded = sa > 0 && sa < threshold ? 255 : 0;
       const effective = Math.max(thresholded, ma);
+      if (effective > 0) hasAnyMask = true;
       if (inpaintConvention) {
         const v = effective >= 128 ? 255 : 0;
         out.data[i] = v;
@@ -1438,9 +1466,12 @@ export function DecomposeStudio({
       }
     }
     ctx.putImageData(out, 0, 0);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      baked.toBlob((b) => resolve(b), "image/png"),
-    );
+    // All-empty mask saves as null: removes the persisted override row
+    // (this is also how "clear mask" reaches the store — the clear
+    // button itself only touches the local canvas).
+    const blob = hasAnyMask
+      ? await new Promise<Blob | null>((resolve) => baked.toBlob((b) => resolve(b), "image/png"))
+      : null;
     if (onMaskCommit) {
       // Embedded mode (GeneratePanel MASK tab) — route to caller's
       // inpaint-mask channel instead of the store. The two destinations
@@ -1448,7 +1479,7 @@ export function DecomposeStudio({
       // state. The blob above was already encoded in the inpaint
       // convention via `inpaintConvention` branch.
       onMaskCommit(blob);
-    } else if (blob) {
+    } else {
       setMask(layer.id, blob);
     }
     if (onClose) onClose();
@@ -1779,20 +1810,16 @@ export function DecomposeStudio({
     const ctx = mask.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, mask.width, mask.height);
-    if (onMaskCommit) onMaskCommit(null);
-    else setMask(layer.id, null);
+    // LOCAL clear only — no store write here. Writing `setMask(null)`
+    // immediately changed the `existingMask` selector, which re-ran the
+    // whole load effect: canvases rebuilt, history (including this
+    // very "Clear mask" entry) wiped, unsaved paint work silently
+    // discarded, un-undoable. The store catches up at save time, where
+    // an all-empty mask persists as null (override row removed).
     setDirty(true);
     invalidatePreview();
     commitHistoryAction("Clear mask");
-  }, [
-    commitHistoryAction,
-    layer.id,
-    setMask,
-    invalidatePreview,
-    studioMode,
-    selectedRegionId,
-    onMaskCommit,
-  ]);
+  }, [commitHistoryAction, invalidatePreview, studioMode, selectedRegionId]);
 
   /** Dismiss with a confirm prompt when there are unsaved changes.
    *  Used by every dismiss path: header "close" button, the
@@ -1802,14 +1829,22 @@ export function DecomposeStudio({
    *  intent explicit. Save & close is still one click away in the
    *  header for the non-discard path. */
   const requestClose = useCallback(() => {
+    // Embedded mode (GeneratePanel MASK tab) must dismiss through the
+    // caller's onClose — going to the store's close(null) mutated
+    // `studioLayer` instead of returning to the GEN tab, so Esc
+    // appeared dead to the user.
+    const dismiss = () => {
+      if (onClose) onClose();
+      else close(null);
+    };
     const isDirty =
       studioMode === "mask" ? dirty : studioMode === "split" ? splitDirty : paintDirty;
     if (!isDirty) {
-      close(null);
+      dismiss();
       return;
     }
     if (typeof window === "undefined") {
-      close(null);
+      dismiss();
       return;
     }
     const ok = window.confirm(
@@ -1817,8 +1852,8 @@ export function DecomposeStudio({
         "확인 = 변경사항 버리고 닫기\n" +
         "취소 = 계속 편집 ('save & close' 로 저장 후 닫기)",
     );
-    if (ok) close(null);
-  }, [studioMode, dirty, splitDirty, paintDirty, close]);
+    if (ok) dismiss();
+  }, [studioMode, dirty, splitDirty, paintDirty, close, onClose]);
 
   // ── Keyboard shortcuts (Photoshop-style) ──────────────────────────
   // Esc dismisses through requestClose. All other shortcuts go
@@ -1890,8 +1925,9 @@ export function DecomposeStudio({
       if (!ev.metaKey && !ev.ctrlKey && !ev.altKey) {
         const tool = toolForShortcut(ev.key);
         if (tool) {
-          // SAM is split-only.
-          if (tool === "sam" && studioMode !== "split") return;
+          // Mode-gated tools (SAM split-only, eyedropper paint-only)
+          // must not become an invisible active tool via shortcut.
+          if (!isToolAvailable(tool, studioMode)) return;
           ev.preventDefault();
           setSelectedTool(tool);
           return;

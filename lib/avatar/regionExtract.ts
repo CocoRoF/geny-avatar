@@ -175,10 +175,16 @@ export async function extractCurrentLayerCanvas(
     const img = await blobToImageSafe(overrides.texture);
     if (img) {
       ctx.save();
-      // Source-over by default. We *don't* re-apply the triangle clip
-      // here — the texture blob has already been alpha-enforced
-      // against the base footprint at apply time, so its alpha
-      // already matches the silhouette.
+      // Mirror the live atlas path (`compositeTexture` in
+      // applyOverrides.ts): clip to the footprint, wipe, then draw —
+      // the override blob's pixels are authoritative INCLUDING its
+      // transparent ones. Plain source-over let the original texture
+      // show through any pixels the user ERASED in paint mode, so
+      // re-opening the studio (or generating from this extraction)
+      // resurrected erased content, and saving again baked the ghost
+      // back in.
+      if (base.clip) ctx.clip(base.clip);
+      ctx.clearRect(0, 0, base.canvas.width, base.canvas.height);
       ctx.drawImage(img, 0, 0, base.canvas.width, base.canvas.height);
       ctx.restore();
     }
