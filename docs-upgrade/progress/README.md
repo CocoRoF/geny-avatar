@@ -1,70 +1,70 @@
 # progress/
 
-geny-avatar 업그레이드 작업의 진행 로그가 누적되는 폴더.
+Folder where the progress log of geny-avatar upgrade work accumulates.
 
-- 분석 본문: 옆 폴더 `..` (docs-upgrade)의 14개 문서.
-- 실행 계획: 옆 폴더 [`../plan/`](../plan/)의 5개 문서.
-- 이 폴더(`progress/`): **실제로 한 작업의 흔적**을 작업 단위로 남긴다.
+- Analysis body: the 14 documents in the sibling folder `..` (docs-upgrade).
+- Execution plan: the 5 documents in the sibling folder [`../plan/`](../plan/).
+- This folder (`progress/`): leaves **a trace of the work actually done**, one unit at a time.
 
-## 파일 명명 규칙
+## File naming convention
 
 ```
 progress/
-  README.md                 ← 이 파일 (가이드 + 인덱스)
-  YYYY-MM-DD-<slug>.md      ← 작업 단위 entry
+  README.md                 ← this file (guide + index)
+  YYYY-MM-DD-<slug>.md      ← per-work-unit entry
 ```
 
-- 한 entry = 한 작업 (커밋 1~수 개, PR 1개 정도).
-- 날짜는 작업 시작일 기준 (KST).
-- `<slug>`는 짧은 영문 / 숫자 / 하이픈. 예: `phase1-1-mask-erosion`.
-- 같은 날 여러 entry면 suffix로 구분: `2026-05-12-phase1-1-mask-erosion.md`,
+- One entry = one piece of work (1 to a few commits, roughly 1 PR).
+- The date is the start date of the work (KST).
+- `<slug>` is a short ASCII / digits / hyphens. e.g. `phase1-1-mask-erosion`.
+- Multiple entries on the same day are distinguished by suffix: `2026-05-12-phase1-1-mask-erosion.md`,
   `2026-05-12-phase1-2-canonical-pose.md`.
 
-## entry 양식
+## Entry format
 
-각 파일 안에 다음 항목을 채운다. 길게 쓰지 말고 3–8줄 요약.
+Fill in the following items in each file. Keep it to a 3–8 line summary, not long prose.
 
 ```markdown
-# <YYYY-MM-DD> Phase<N>.<task#> — <짧은 제목>
+# <YYYY-MM-DD> Phase<N>.<task#> — <short title>
 
-**Phase / 작업**: Phase N 작업 #
-**상태**: in-progress | done | blocked
-**관련 계획**: [plan/0X-PhaseN.md](../plan/0X-PhaseN.md) 작업 #
+**Phase / task**: Phase N task #
+**Status**: in-progress | done | blocked
+**Related plan**: [plan/0X-PhaseN.md](../plan/0X-PhaseN.md) task #
 
-## 변경
-- 손댄 파일 / 주요 변경 사항 (한두 줄씩).
+## Changes
+- Files touched / key changes (a line or two each).
 
-## 검증
-- 무엇으로 확인했는지. 측정값이 있으면 숫자.
+## Verification
+- How it was checked. Numbers if there are measurements.
 
-## 결정
-- 도중에 결정한 사항. 계획 문서와 어긋났으면 명시.
+## Decisions
+- Anything decided along the way. Note it if it diverged from the plan.
 
-## 영향
-- 이후 작업 / 다른 Phase에 끼치는 영향.
+## Impact
+- Effect on later work / other phases.
 
-## 참조
-- 커밋 hash / PR 링크 / 외부 자료 등.
+## References
+- Commit hash / PR link / external material, etc.
 ```
 
-## 운영 규칙
+## Operating rules
 
-- **작업 시작 직후** entry 파일을 만든다. 상태 `in-progress`.
-- **작업 종료 시** 같은 파일을 갱신. 상태 `done` 또는 `blocked`.
-- entry 안에 분석 / 회고를 길게 쓰지 않는다. 회고 / 의사결정 본문은
-  필요 시 [`../`](..) 의 분석 문서를 업데이트한다.
-- 진행 로그는 **append-only**. 잘못 적어도 다음 entry로 정정한다.
-  이전 entry를 사후에 다시 쓰지 않는다.
-- blocked 된 작업은 막힌 이유를 entry에 명시하고, 해제 후 새 entry로
-  follow-up.
+- Create the entry file **right after work starts**. Status `in-progress`.
+- Update the same file **when work ends**. Status `done` or `blocked`.
+- Don't write long analysis / retrospectives inside an entry. Update the
+  analysis docs under [`../`](..) for retrospective / decision bodies when needed.
+- The progress log is **append-only**. Correct mistakes in a later entry;
+  never rewrite an earlier entry after the fact.
+- For blocked work, state the reason it's blocked in the entry, and once
+  unblocked follow up with a new entry.
 
-## 인덱스 (최신이 위)
+## Index (newest on top)
 
-작업이 추가되면 여기 한 줄씩 추가.
+Add a line here whenever work is added.
 
-| 날짜 | 파일 | Phase | PR | 상태 |
+| Date | File | Phase | PR | Status |
 |---|---|---|---|---|
-| 2026-05-13 | [2026-05-13-mask-soft-blend.md](2026-05-13-mask-soft-blend.md) | 1.x mask-soft (feather) | (이 PR) | done |
+| 2026-05-13 | [2026-05-13-mask-soft-blend.md](2026-05-13-mask-soft-blend.md) | 1.x mask-soft (feather) | (this PR) | done |
 | 2026-05-13 | [2026-05-13-blend-mode-selectable.md](2026-05-13-blend-mode-selectable.md) | 1.x blend mode UI | [#32](https://github.com/CocoRoF/geny-avatar/pull/32) | done |
 | 2026-05-13 | [2026-05-13-postprocess-mask-blend.md](2026-05-13-postprocess-mask-blend.md) | 1.x hard mask blend | [#31](https://github.com/CocoRoF/geny-avatar/pull/31) | done |
 | 2026-05-13 | [2026-05-13-openai-timeout-and-mask-ref-alignment.md](2026-05-13-openai-timeout-and-mask-ref-alignment.md) | 1.x timeout + dim align | [#30](https://github.com/CocoRoF/geny-avatar/pull/30) | done |
@@ -83,7 +83,7 @@ progress/
 | 2026-05-13 | [2026-05-13-generate-mask-tab.md](2026-05-13-generate-mask-tab.md) | 1.x MASK tab UI | [#17](https://github.com/CocoRoF/geny-avatar/pull/17) | done |
 | 2026-05-13 | [2026-05-13-inpaint-mask-from-source-alpha.md](2026-05-13-inpaint-mask-from-source-alpha.md) | 1.x ControlNet f/u | [#16](https://github.com/CocoRoF/geny-avatar/pull/16) | done |
 | 2026-05-13 | [2026-05-13-falai-inpainting-model.md](2026-05-13-falai-inpainting-model.md) | 1.x ControlNet | [#15](https://github.com/CocoRoF/geny-avatar/pull/15) | done |
-| 2026-05-13 | [2026-05-13-phase1-3-verification-result.md](2026-05-13-phase1-3-verification-result.md) | 1.3 검증 결과 | [#14](https://github.com/CocoRoF/geny-avatar/pull/14) | done |
+| 2026-05-13 | [2026-05-13-phase1-3-verification-result.md](2026-05-13-phase1-3-verification-result.md) | 1.3 verification result | [#14](https://github.com/CocoRoF/geny-avatar/pull/14) | done |
 | 2026-05-13 | [2026-05-13-falai-no-character-features.md](2026-05-13-falai-no-character-features.md) | 1.4 hotfix (3rd) | [#13](https://github.com/CocoRoF/geny-avatar/pull/13) | done |
 | 2026-05-13 | [2026-05-13-falai-skip-canonical-ref.md](2026-05-13-falai-skip-canonical-ref.md) | 1.2/1.4 hotfix | [#12](https://github.com/CocoRoF/geny-avatar/pull/12) | done |
 | 2026-05-13 | [2026-05-13-falai-prompt-scaffold.md](2026-05-13-falai-prompt-scaffold.md) | 1.4 follow-up | [#11](https://github.com/CocoRoF/geny-avatar/pull/11) | done |
@@ -95,4 +95,4 @@ progress/
 | 2026-05-12 | [2026-05-12-phase1-6-cubism-prompt.md](2026-05-12-phase1-6-cubism-prompt.md) | 1.6 | [#4](https://github.com/CocoRoF/geny-avatar/pull/4) | done |
 | 2026-05-12 | [2026-05-12-phase1-2-canonical-pose.md](2026-05-12-phase1-2-canonical-pose.md) | 1.2 | [#3](https://github.com/CocoRoF/geny-avatar/pull/3) | done |
 | 2026-05-12 | [2026-05-12-phase1-1-mask-erosion.md](2026-05-12-phase1-1-mask-erosion.md) | 1.1 | [#2](https://github.com/CocoRoF/geny-avatar/pull/2) | done |
-| 2026-05-12 | [2026-05-12-bootstrap.md](2026-05-12-bootstrap.md) | 0 (셋업) | [#1](https://github.com/CocoRoF/geny-avatar/pull/1) | done |
+| 2026-05-12 | [2026-05-12-bootstrap.md](2026-05-12-bootstrap.md) | 0 (setup) | [#1](https://github.com/CocoRoF/geny-avatar/pull/1) | done |

@@ -1,48 +1,48 @@
 # geny-avatar — Documentation Root
 
-이 디렉터리는 `geny-avatar` 프로젝트의 **사전 조사 / 설계 / 진행 기록**을 담는다. 코드보다 먼저 작성하며, 모든 의사결정은 여기에서 합의된 다음 구현으로 내려간다.
+This directory holds the `geny-avatar` project's **research / design / progress records.** It is written before the code: every decision is agreed here first, then flows down into implementation.
 
-## 프로젝트 한 줄 정의
+## The project in one line
 
-> **2D Live Avatar 편집기 — 무료 뼈대 샘플을 가져와 레이어를 정리하고, 생성형 AI로 텍스처를 만들어 입혀, 라이브 미리보기 옆에서 바로 다듬는 웹 애플리케이션 (Next.js).**
+> **A 2D Live Avatar editor — a web app (Next.js) that takes a free skeleton sample, tidies its layers, generates and applies textures with generative AI, and lets you refine it right beside a live preview.**
 
-UI 톤은 [nikke-db.pages.dev/visualiser](https://nikke-db.pages.dev/visualiser)의 좌측 캐릭터 리스트 / 중앙 프리뷰 / 우측 도구·레이어 패널 구성을 레퍼런스로 한다. 단, NIKKE의 visualiser는 **Spine 2D 4.0/4.1**을 그대로 보여주는 뷰어인 반면, 우리는 **편집기 + 생성기**가 목표다.
+The UI tone references [nikke-db.pages.dev/visualiser](https://nikke-db.pages.dev/visualiser) — its left character list / center preview / right tool-and-layer panel layout. Note, though, that NIKKE's visualiser is a *viewer* that simply displays **Spine 2D 4.0/4.1**, whereas our goal is an **editor + generator**.
 
 ## Operating Context — Solo Hobby
 
-이 프로젝트는 **혼자 재미로 만드는 1인 개발 작업**이다. 사업자도 아니고 상업 배포 계획도 없다. 이게 모든 라이선스 관련 의사결정에 영향을 준다:
+This project is **a one-person effort built solo, for fun.** I'm not a business and have no plans for commercial distribution. That shapes every licensing decision:
 
-- Live2D Sample EULA의 "General Users" — 우리는 여기에 들어간다. 상업 이용도 허용.
-- Spine 런타임 평가/개인 사용 — 통과.
-- shiralive2d 등 서드파티 무료 모델의 "비상업 OK" 조항 — 우리는 비상업.
-- NIKKE 등 게임 추출 자산의 저작권 — 외부 배포는 안 하고 개인 실험에서만 다루면 자기 책임 영역.
+- Live2D Sample EULA "General Users" — that's us. Commercial use is even permitted.
+- Spine runtime evaluation / personal use — passes.
+- Third-party free models (e.g. shiralive2d) with "non-commercial OK" clauses — we're non-commercial.
+- Copyright on game-extracted assets (e.g. NIKKE) — as long as we don't distribute them externally and only handle them in private experiments, that's our own responsibility.
 
-→ 결론: **라이선스가 프로젝트를 차단하지 않는다.** 자산 출처를 메타로 기록하긴 하지만 LicenseGuard 모달 같은 강제 흐름은 만들지 않는다. 만약 미래에 공유 갤러리·상업화 등으로 스코프가 커지면 그때 다시 본다.
+→ Conclusion: **licensing does not block the project.** We do record asset provenance as metadata, but we don't build any forced flow like a LicenseGuard modal. If the scope ever grows — a shared gallery, commercialization, etc. — we'll revisit it then.
 
 ## Two Locked-in Philosophies
 
-이 두 항목은 모든 후속 의사결정에 우선한다.
+These two items take precedence over every later decision.
 
-### P1 — Cubism과 Spine 모두 1차 시민
+### P1 — Cubism and Spine are both first-class citizens
 
-"Spine을 먼저 만들고 나중에 Live2D 추가" 같은 단계적 도입을 하지 않는다. **두 어댑터를 처음부터 같이 구현한다.** Phase 0 PoC 단계에서 양쪽 모두를 띄워보고, Phase 1 종료 시점에 두 포맷의 puppet이 같은 UI에서 동일하게 작동해야 한다.
+We won't do a staged rollout like "build Spine first, add Live2D later." **Both adapters are implemented together from the start.** We bring both up in the Phase 0 PoC, and by the end of Phase 1 puppets in both formats must work identically in the same UI.
 
-**Why**: 인터넷에 풀려 있는 무료/유료 puppet은 두 포맷이 거의 반반이다. 한쪽만 지원하면 사용자(=우리)가 발견한 자산의 절반을 못 쓴다. 또 어댑터 인터페이스 모양은 두 포맷을 동시에 받아내야만 진짜로 검증된다 — 한 포맷만 보고 만든 추상화는 반드시 두 번째 포맷에서 깨진다.
+**Why**: the free/paid puppets floating around the internet are split almost evenly between the two formats. Supporting only one means the user (= us) can't use half the assets they find. And the shape of the adapter interface is only truly validated by handling both formats at once — an abstraction built against a single format will inevitably break on the second.
 
-### P2 — 인터넷에서 받은 파일을 바로 올려서 쓰는 것이 V1 핵심 흐름
+### P2 — Uploading a file straight off the internet is the core V1 flow
 
-사용자 자산 업로드가 Phase 1 day-1 기능이다. "내장 샘플로 먼저 만들고 업로드는 Phase 2"가 아니다. **드래그-드롭 → 포맷 자동 감지 → 즉시 미리보기**가 V1 시연의 1번 시나리오.
+User-asset upload is a Phase 1 day-1 feature. Not "build with built-in samples first, upload in Phase 2." **Drag-and-drop → automatic format detection → instant preview** is scenario #1 of the V1 demo.
 
-**Why**: 우리 도구의 가치는 "이미 가진 puppet에 새 텍스처를 입히는 것"이다. 자기 puppet을 못 올리면 도구의 핵심이 사라진다. 또 hobby 컨텍스트라 사용자 = 우리 자신 = 인터넷에서 puppet을 받아 노는 사람이라 업로드는 가장 자주 쓸 진입점.
+**Why**: our tool's value is "putting new textures on a puppet you already have." If you can't upload your own puppet, the heart of the tool is gone. And in a hobby context the user = us = someone who grabs puppets off the internet to play with, so upload is the entry point we'll use most.
 
-**스코프**: Spine 3.8/4.0/4.1/4.2 + Cubism 2/3/4/5 모두 받는다. 패킹은 ZIP 또는 개별 파일 폴더 둘 다. 포맷이 깨졌거나 버전이 호환 안 되면 명확한 오류 메시지 + 어떻게 고치는지 안내.
+**Scope**: we accept Spine 3.8/4.0/4.1/4.2 + Cubism 2/3/4/5. Packing can be either a ZIP or a folder of individual files. If a format is broken or a version is incompatible, we show a clear error message plus guidance on how to fix it.
 
-## 디렉터리 구조
+## Directory structure
 
 ```
 docs/
-├─ README.md                      # 이 파일. 진입점.
-├─ analysis/                      # 사실 수집. 의견·결정은 여기서 하지 않는다.
+├─ README.md                      # This file. The entry point.
+├─ analysis/                      # Fact-gathering. No opinions or decisions here.
 │  ├─ INDEX.md
 │  ├─ 01_problem_statement.md
 │  ├─ 02_format_landscape.md
@@ -53,7 +53,7 @@ docs/
 │  ├─ 07_sample_sources.md
 │  ├─ 08_competitive_reference.md
 │  └─ 09_open_questions.md
-├─ plan/                          # 설계와 결정. analysis를 근거로 한다.
+├─ plan/                          # Design and decisions, grounded in analysis.
 │  ├─ INDEX.md
 │  ├─ 01_north_star.md
 │  ├─ 02_architecture.md
@@ -63,35 +63,35 @@ docs/
 │  ├─ 06_ui_ux.md
 │  ├─ 07_phased_roadmap.md
 │  └─ 08_risks_and_mitigations.md
-└─ progress/                      # 시간순 작업 기록. 한 단위(스프린트/PR)당 1파일.
+└─ progress/                      # Chronological work log. One file per unit (sprint/PR).
    ├─ INDEX.md
    └─ 2026-05-06_01_kickoff.md
 ```
 
-## 읽는 순서
+## Reading order
 
-처음 들어왔다면:
-1. [analysis/01_problem_statement](analysis/01_problem_statement.md) — 무엇을 풀려고 하는가
-2. [plan/01_north_star](plan/01_north_star.md) — 무엇을 만들면 끝인가
-3. [analysis/INDEX](analysis/INDEX.md) → 관심 주제로 점프
-4. [plan/07_phased_roadmap](plan/07_phased_roadmap.md) — 어떻게 단계적으로 만들 것인가
-5. [progress/INDEX](progress/INDEX.md) — 지금 어디까지 왔는가
+If this is your first time here:
+1. [analysis/01_problem_statement](analysis/01_problem_statement.md) — what we're trying to solve
+2. [plan/01_north_star](plan/01_north_star.md) — what "done" looks like
+3. [analysis/INDEX](analysis/INDEX.md) → jump to a topic of interest
+4. [plan/07_phased_roadmap](plan/07_phased_roadmap.md) — how we'll build it in phases
+5. [progress/INDEX](progress/INDEX.md) — where we are right now
 
-## 컨벤션
+## Conventions
 
-- 사실(fact)과 의견(opinion)을 분리한다. analysis에는 출처 있는 사실만, plan에는 결정과 근거.
-- 결정에는 **Why** 한 줄을 붙인다. 미래의 자기 자신이 읽을 때 추론을 따라갈 수 있도록.
-- 불확실한 항목은 `[VERIFY]`, 미결 질문은 `[OPEN]` 마커를 붙이고 [analysis/09_open_questions](analysis/09_open_questions.md)에 모은다.
-- 외부 라이브러리 / 라이선스 / 모델 출처는 항상 URL과 함께 기록한다. 1년 뒤에도 추적 가능해야 한다.
-- 진행 기록(progress)은 사후가 아니라 작업 시작 시점에 만들고 PR 머지 시 마무리한다.
+- Separate fact from opinion. analysis holds only sourced facts; plan holds decisions and rationale.
+- Attach a one-line **Why** to every decision, so future-me can follow the reasoning.
+- Mark uncertain items with `[VERIFY]` and open questions with `[OPEN]`, and collect them in [analysis/09_open_questions](analysis/09_open_questions.md).
+- Always record external libraries / licenses / model sources together with a URL. It must still be traceable a year from now.
+- Create the progress record when work *starts*, not after the fact, and finalize it when the PR merges.
 
-## 현재 상태 (2026-05-06)
+## Current status (2026-05-06)
 
-- [x] 디렉터리 스캐폴드
-- [x] 사전 조사 1차 라운드 (포맷, 런타임, 샘플, AI 파이프라인 표면)
-- [x] 초기 plan 8문서
-- [x] 운영 컨텍스트(solo hobby) 확정 → 라이선스 차단 없음
-- [x] P1 Cubism+Spine 모두 1차 / P2 업로드 day-1 확정
-- [ ] AI 백엔드 결정 (Replicate 시작 → 자체 ComfyUI 후행)
-- [ ] Phase 0 — 두 런타임 PoC + 어댑터 인터페이스 lock
-- [ ] Phase 1 — 양 런타임 + 업로드 + 레이어 토글 작동
+- [x] Directory scaffold
+- [x] First research round (formats, runtimes, samples, AI pipeline surface)
+- [x] Initial 8 plan documents
+- [x] Operating context (solo hobby) settled → no licensing blockers
+- [x] P1 (Cubism + Spine both first-class) / P2 (upload day-1) settled
+- [ ] Decide the AI backend (start with Replicate → self-hosted ComfyUI later)
+- [ ] Phase 0 — both-runtime PoC + lock the adapter interface
+- [ ] Phase 1 — both runtimes + upload + layer toggle working
