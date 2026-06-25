@@ -4,6 +4,42 @@ Web-based 2D Live Avatar editor with AI-driven texture generation. **A solo hobb
 
 > Drag-and-drop a puppet you grabbed off the internet (Cubism or Spine), tidy up its layers, repaint its textures with generative AI, and check the result instantly in a live preview.
 
+<!-- 📸 IMAGE NEEDED: hero shot — the editor with a puppet in the live preview, layer panel on one side, AI texture panel on the other -->
+> 📸 **Image needed** — _hero shot: the editor with a puppet in the live preview, the layer panel on one side and the AI texture panel on the other._
+
+---
+
+## 🌐 The Geny ecosystem
+
+geny-avatar works great standalone — but it's also **where [Geny](https://github.com/CocoRoF/Geny)'s avatars are made**. Bake a puppet here, send it straight into Geny's VTuber library. Geny, the product, ultimately uses every project below.
+
+<!-- 📸 IMAGE NEEDED: a polished ecosystem diagram to replace the ASCII map below -->
+
+```
+                  Geny — the product (uses everything below)
+                    │
+      ┌─────────────┼──────────────┐
+ agent engine    avatars      sandbox + deploy
+      │             │              │
+      ▼             ▼              ▼
+ geny-executor  geny-avatar      GAPT
+  (the engine)  (avatar editor)  (AI DevOps platform)
+                    ▲
+              you are here
+```
+
+| Project | What it is | Role in the stack |
+|---|---|---|
+| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — consumes every project below |
+| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
+| [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) | Visual studio for the pipeline — React Flow + live WebSocket events | 🔬 See, inspect & run the engine |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
+
+> **➡️ You are here: `geny-avatar`** — where Geny's avatars are created.
+
+---
+
 ## Two philosophies (locked in)
 
 - **P1 — Cubism + Spine are both first-class** — neither is "secondary." Both adapters are built together from the start.
@@ -25,6 +61,9 @@ pnpm dev          # http://localhost:3000
 - **Animation tab** — preview a Cubism puppet's motions / expressions, live kScale·shift sliders, 8 GoEmotions × expression mapping, hit area → tap-motion mapping. Persisted in IndexedDB and bundled automatically on Geny export.
 - **Export / Import** — `*.geny-avatar.zip` round-trip (avatar.json + bundle + overrides + LICENSE.md). A baked model zip carries its animation config in an `avatar-editor.json` sidecar (schemaVersion 2).
 - **Help / Onboarding** — `?`-key shortcut modal + first-visit banner
+
+<!-- 📸 IMAGE NEEDED: feature montage — (1) Decompose Studio with SAM masks, (2) AI texture before/after, (3) Animation tab with expression sliders, (4) layer/variant panel -->
+> 📸 **Image needed** — _feature montage: Decompose Studio (SAM masks) · AI texture before/after · Animation tab (expression sliders) · layer/variant panel._
 
 ## Stack
 
