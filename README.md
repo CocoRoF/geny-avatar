@@ -4,16 +4,19 @@ Web-based 2D Live Avatar editor with AI-driven texture generation. **A solo hobb
 
 > Drag-and-drop a puppet you grabbed off the internet (Cubism or Spine), tidy up its layers, repaint its textures with generative AI, and check the result instantly in a live preview.
 
-<!-- 📸 IMAGE NEEDED: hero shot — the editor with a puppet in the live preview, layer panel on one side, AI texture panel on the other -->
-> 📸 **Image needed** — _hero shot: the editor with a puppet in the live preview, the layer panel on one side and the AI texture panel on the other._
+## 🌐 The Geny ecosystem — related projects
 
----
+These projects are built to work together. **Geny** is the product at the top of the stack; everything below is a building block you can also use on its own. **➡️ marks where you are.**
 
-## 🌐 The Geny ecosystem
+| Project | What it is | Role in the stack |
+|---|---|---|
+| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — uses every project below |
+| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
+| ➡️ [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
 
-geny-avatar works great standalone — but it's also **where [Geny](https://github.com/CocoRoF/Geny)'s avatars are made**. Bake a puppet here, send it straight into Geny's VTuber library. Geny, the product, ultimately uses every project below.
-
-<!-- 📸 IMAGE NEEDED: a polished ecosystem diagram to replace the ASCII map below -->
+<details>
+<summary>📐 How they fit together</summary>
 
 ```
                   Geny — the product (uses everything below)
@@ -24,18 +27,14 @@ geny-avatar works great standalone — but it's also **where [Geny](https://gith
       ▼             ▼              ▼
  geny-executor  geny-avatar      GAPT
   (the engine)  (avatar editor)  (AI DevOps platform)
-                    ▲
-              you are here
 ```
 
-| Project | What it is | Role in the stack |
-|---|---|---|
-| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — consumes every project below |
-| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
-| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
-| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
+</details>
 
-> **➡️ You are here: `geny-avatar`** — where Geny's avatars are created.
+---
+
+<!-- 📸 IMAGE NEEDED: hero shot — the editor with a puppet in the live preview, layer panel on one side, AI texture panel on the other -->
+> 📸 **Image needed** — _hero shot: the editor with a puppet in the live preview, the layer panel on one side and the AI texture panel on the other._
 
 ---
 
