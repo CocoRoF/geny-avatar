@@ -11,7 +11,7 @@ These projects are built to work together. **Geny** is the product at the top of
 | Project | What it is | Role in the stack |
 |---|---|---|
 | [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | The product — uses every project below |
-| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | The engine everything runs on |
+| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · Apache-2.0 | The engine everything runs on |
 | [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | Where agents safely touch real repos |
 | ➡️ [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | Where Geny's faces are made |
 
@@ -130,7 +130,7 @@ For the full integration architecture, data flow, and sprint breakdown, see [Gen
 
 ## License
 
-Own code: a private solo hobby project — no license granted (private).
+Own code in this repository is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 CocoRoF — see [NOTICE](NOTICE).
 
 ### Third-party assets
 

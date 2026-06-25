@@ -1,0 +1,12 @@
+geny-avatar
+Copyright 2026 CocoRoF
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+The Apache License covers ONLY the original source code in this repository.
+
+It also bundles or depends on third-party components that are licensed
+separately under their own terms and are NOT covered by the Apache License:
+  - Live2D Cubism Core   (Live2D Inc.        - Live2D Proprietary Software License / EULA)
+  - Spine Runtimes       (Esoteric Software  - Spine Runtimes License)
+  - OpenAI gpt-image-2   (OpenAI             - API Terms of Use)
+See the "Third-party assets" section of README.md for details.
