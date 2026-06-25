@@ -32,7 +32,6 @@ geny-avatar works great standalone — but it's also **where [Geny](https://gith
 |---|---|---|
 | [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — consumes every project below |
 | [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
-| [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) | Visual studio for the pipeline — React Flow + live WebSocket events | 🔬 See, inspect & run the engine |
 | [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
 | [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
 
