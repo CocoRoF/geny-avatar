@@ -207,6 +207,36 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
       idleMotionGroupName: animationConfig.idleMotionGroupName,
       emotionMap: animationConfig.emotionMap,
       tapMotions: animationConfig.tapMotions,
+      // MMD-only optional fields — undefined for 2D runtimes and
+      // stripped by JSON.stringify, so 2D sidecars are byte-identical
+      // to what they were before the MMD runtime landed.
+      mmdCamera: animationConfig.mmdCamera,
+      lipSyncMorph: animationConfig.lipSyncMorph,
+    };
+  }
+
+  // MMD block — which entry is the model, which materials the user hid
+  // (PMX files can't be patched the way pose3.json / skeleton.json can,
+  // so hide ships as sidecar data and Geny's renderer applies it), and
+  // the morph catalog so Geny can build emotion fallbacks without
+  // re-parsing the PMX.
+  if (row.runtime === "mmd") {
+    const modelEntry = entries
+      .filter((e) => /\.(pmx|pmd)$/i.test(e.path))
+      .sort((a, b) => b.size - a.size)[0];
+    const hiddenMaterials: string[] = [];
+    const hiddenMaterialIndices: number[] = [];
+    for (const layer of input.avatar.layers) {
+      if (input.visibility[layer.id] !== false) continue;
+      const idx = Number(layer.id.startsWith("mat:") ? layer.id.slice(4) : Number.NaN);
+      if (Number.isInteger(idx)) hiddenMaterialIndices.push(idx);
+      hiddenMaterials.push(layer.externalId);
+    }
+    sidecar.mmd = {
+      pmxPath: modelEntry?.path ?? null,
+      hiddenMaterials,
+      hiddenMaterialIndices,
+      morphs: input.adapter.getMorphCatalog?.() ?? [],
     };
   }
   zippable[AVATAR_EDITOR_SIDECAR_FILE] = new TextEncoder().encode(

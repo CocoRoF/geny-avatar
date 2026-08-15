@@ -77,7 +77,21 @@ export async function buildPassthroughZip(
       idleMotionGroupName: animationConfig.idleMotionGroupName,
       emotionMap: animationConfig.emotionMap,
       tapMotions: animationConfig.tapMotions,
+      // MMD-only optional fields (undefined → stripped for 2D runtimes)
+      mmdCamera: animationConfig.mmdCamera,
+      lipSyncMorph: animationConfig.lipSyncMorph,
     };
+  }
+
+  // MMD passthrough — record which entry is the model so Geny's install
+  // doesn't have to guess among multiple .pmx costume variants. Hidden
+  // materials / morph catalog need the live adapter and ship only from
+  // the active baker (same "unbaked edits absent" rule as 2D).
+  if (row.runtime === "mmd") {
+    const modelEntry = entries
+      .filter((e) => /\.(pmx|pmd)$/i.test(e.path))
+      .sort((a, b) => b.size - a.size)[0];
+    sidecar.mmd = { pmxPath: modelEntry?.path ?? null };
   }
   zippable[AVATAR_EDITOR_SIDECAR_FILE] = new TextEncoder().encode(
     `${JSON.stringify(sidecar, null, 2)}\n`,

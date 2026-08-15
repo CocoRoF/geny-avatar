@@ -15,6 +15,7 @@
 | 07 | [phased_roadmap](07_phased_roadmap.md) | Phase 0 ~ V1까지의 단계별 계획 |
 | 08 | [risks_and_mitigations](08_risks_and_mitigations.md) | 무엇이 실패할 수 있고 어떻게 막을 것인가 |
 | 09 | [editor_animation_tab](09_editor_animation_tab.md) | Phase 8 — 에디터 애니메이션 탭 (motion/expression/emotion 매핑 + Geny export schema v2) |
+| 10 | [mmd_3d_runtime](10_mmd_3d_runtime.md) | MMD(PMX/PMD) 3D 런타임 — babylon-mmd 어댑터, selfHostedView, 3D 비목표의 공식 부분 번복 |
 
 ## 작성 규칙
 

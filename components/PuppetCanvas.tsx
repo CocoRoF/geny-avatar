@@ -17,9 +17,10 @@ type Props = {
   /**
    * Notify the page when a puppet is fully mounted. The page can use the
    * adapter for subsequent mutations (it's not in the store) and the app
-   * for e.g. thumbnail capture.
+   * for e.g. thumbnail capture. `app` is null for self-hosted-view
+   * adapters (3D runtimes render their own canvas — no Pixi Application).
    */
-  onReady?: (avatar: Avatar, adapter: AvatarAdapter, app: Application) => void;
+  onReady?: (avatar: Avatar, adapter: AvatarAdapter, app: Application | null) => void;
   /** Notify of load errors. */
   onError?: (error: string) => void;
   /** Background color override for the Pixi Application. */
@@ -41,6 +42,9 @@ const DRAG_CLICK_THRESHOLD_PX = 4;
  */
 export function PuppetCanvas({ input, empty, onReady, onError, background }: Props) {
   const [host, setHost] = useState<HTMLDivElement | null>(null);
+  // True once a self-hosted-view (3D) adapter mounted — gates the Pixi
+  // pan/zoom listeners off so the adapter's own camera controls win.
+  const [selfHosted, setSelfHosted] = useState(false);
   const setAvatar = useEditorStore((s) => s.setAvatar);
   const setPlaying = useEditorStore((s) => s.setPlayingAnimation);
 
@@ -79,31 +83,39 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
     onMount: (avatar, adapter, app) => {
       adapterRef.current = adapter;
       appRef.current = app;
-      // Measure the puppet once (pre-transform), then fit. The size is
-      // kept in a ref so window resizes can recompute the fit factor
-      // without re-measuring a scaled display object.
-      const baseSize = measureBaseSize(adapter);
-      baseSizeRef.current = baseSize;
-      const baseFactor = fitBaseFactor(adapter, app, baseSize);
+      setSelfHosted(app === null);
 
-      // Anchor the puppet so position addresses its center, then set
-      // the initial position to canvas center. apply() below mutates
-      // scale + position thereafter.
-      const display = adapter.getDisplayObject();
-      // biome-ignore lint/suspicious/noExplicitAny: pixi display surface
-      const d = display as any;
-      if (d?.anchor?.set) d.anchor.set(0.5, 0.5);
-      else if (d?.pivot?.set) {
-        const native = (adapter as Live2DAdapter).getNativeSize?.();
-        const w = native?.width ?? d?.width ?? 800;
-        const h = native?.height ?? d?.height ?? 1200;
-        d.pivot.set(w / 2, h / 2);
+      if (app !== null) {
+        // Measure the puppet once (pre-transform), then fit. The size is
+        // kept in a ref so window resizes can recompute the fit factor
+        // without re-measuring a scaled display object.
+        const baseSize = measureBaseSize(adapter);
+        baseSizeRef.current = baseSize;
+        const baseFactor = fitBaseFactor(adapter, app, baseSize);
+
+        // Anchor the puppet so position addresses its center, then set
+        // the initial position to canvas center. apply() below mutates
+        // scale + position thereafter.
+        const display = adapter.getDisplayObject();
+        // biome-ignore lint/suspicious/noExplicitAny: pixi display surface
+        const d = display as any;
+        if (d?.anchor?.set) d.anchor.set(0.5, 0.5);
+        else if (d?.pivot?.set) {
+          const native = (adapter as Live2DAdapter).getNativeSize?.();
+          const w = native?.width ?? d?.width ?? 800;
+          const h = native?.height ?? d?.height ?? 1200;
+          d.pivot.set(w / 2, h / 2);
+        }
+
+        // Reset viewport state for the new puppet (no carry-over of
+        // pan/zoom from a previous edit), then prime the base factor.
+        resetViewport();
+        setBaseFactor(baseFactor);
+      } else {
+        // Self-hosted view (3D): the adapter's own camera owns pan /
+        // zoom — the viewport store stays reset and untouched.
+        resetViewport();
       }
-
-      // Reset viewport state for the new puppet (no carry-over of
-      // pan/zoom from a previous edit), then prime the base factor.
-      resetViewport();
-      setBaseFactor(baseFactor);
 
       setAvatar(avatar);
       const candidates = ["Idle", "portal"];
@@ -130,6 +142,7 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
       adapterRef.current = null;
       appRef.current = null;
       baseSizeRef.current = null;
+      setSelfHosted(false);
     }
   }, [input, setAvatar, resetViewport]);
 
@@ -184,9 +197,11 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
   }, []);
 
   // Pan/zoom event handlers. Bind to host so we don't catch wheel
-  // events outside the canvas region.
+  // events outside the canvas region. Self-hosted (3D) adapters bring
+  // their own camera controls — our handlers would fight them for the
+  // pointer, so they don't install at all.
   useEffect(() => {
-    if (!host) return;
+    if (!host || selfHosted) return;
 
     const toScreenCoords = (clientX: number, clientY: number) => {
       const app = appRef.current;
@@ -288,7 +303,7 @@ export function PuppetCanvas({ input, empty, onReady, onError, background }: Pro
       host.removeEventListener("pointerup", onPointerEnd);
       host.removeEventListener("pointercancel", onPointerEnd);
     };
-  }, [host, setUserView, setUserPan]);
+  }, [host, selfHosted, setUserView, setUserPan]);
 
   if (input == null && empty) {
     return <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center">{empty}</div>;

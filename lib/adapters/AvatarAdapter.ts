@@ -54,13 +54,22 @@ export type LayerTriangles = {
 export type Tinting = "rgba" | "multiply-rgb" | "opacity-only";
 
 export type AdapterCapabilities = {
-  layerUnit: "slot" | "drawable" | "part";
+  layerUnit: "slot" | "drawable" | "part" | "material";
   canChangeMesh: boolean;
   canSwapTexture: boolean;
   tinting: Tinting;
   hasAnimationTimeline: boolean;
   hasParameterGraph: boolean;
   hasPhysics: boolean;
+  /**
+   * The adapter renders into its own canvas (e.g. a 3D runtime with a
+   * WebGL context Pixi doesn't own). When true the host must NOT build
+   * a Pixi Application: it calls `mountView(host)` instead of
+   * `getDisplayObject()`, and pan/zoom is the adapter's own camera.
+   * Absent (undefined) means false — the classic Pixi path. Additive
+   * flag so the two 2D adapters stay untouched.
+   */
+  selfHostedView?: boolean;
 };
 
 // ----- detection / loading -----
@@ -88,6 +97,19 @@ export type AdapterLoadInput =
   | {
       kind: "live2d";
       model3: string; // url to *.model3.json
+    }
+  | {
+      kind: "mmd";
+      /** bundle-relative path of the .pmx / .pmd file inside `entries` */
+      pmxPath: string;
+      /**
+       * Every file of the bundle with its relative path preserved. MMD
+       * texture references are directory-relative (often with
+       * backslashes), so the loader needs paths — blob URLs alone lose
+       * that information. Blobs come straight from the upload parser /
+       * IndexedDB replay.
+       */
+      entries: { path: string; blob: Blob }[];
     };
 
 // ----- the interface -----
@@ -222,4 +244,31 @@ export interface AvatarAdapter {
 
   /** tear down the runtime object so callers can recycle the Pixi Application */
   destroy(): void;
+
+  // ----- optional surface for self-hosted-view adapters (3D runtimes) -----
+  // All optional so the two 2D adapters don't change. Hosts feature-test
+  // via `capabilities.selfHostedView` before calling.
+
+  /** Attach the adapter's own canvas into the host element. Only for
+   *  `capabilities.selfHostedView` adapters; call after `load()`. */
+  mountView?(host: HTMLElement): void;
+
+  /** Restore the default camera framing (3D runtimes). */
+  resetCamera?(): void;
+
+  /** Snapshot the current frame — thumbnail pipeline for adapters where
+   *  the host has no Pixi Application to extract from. */
+  captureFrame?(sizePx?: number): Promise<Blob | null>;
+
+  /** Morph catalog with MMD panel grouping (eye / mouth / brow / other).
+   *  Empty for runtimes without morphs. Drives the Animation tab's
+   *  morph sliders + the export sidecar. */
+  getMorphCatalog?(): MorphCatalogEntry[];
 }
+
+/** One entry of an MMD morph catalog — name is the runtime-native morph
+ *  name (usually Japanese), panel is the PMX author-assigned UI group. */
+export type MorphCatalogEntry = {
+  name: string;
+  panel: "brow" | "eye" | "mouth" | "other";
+};

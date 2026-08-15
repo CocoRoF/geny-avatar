@@ -126,6 +126,7 @@
 | 2026-05-10 | [110 phase8_post_viewport](2026-05-10_110_phase8_post_viewport.md) | post-8 fix | 완료 — 두 가지 사용자 보고 동시 처리. (1) Animation 탭 진입 시 puppet 너무 큼 — DisplaySection 의 직접 display mutation + baseFactor 중복 계산 제거. (2) Edit/Animation 양쪽 탭에 zoom (wheel, 커서 기준) + pan (drag) 추가. 신규 `lib/store/viewport.ts` (Zustand) 가 baseFactor / userZoom·userPan / intrinsic kScale·shift 합성. PuppetCanvas 가 subscribe 후 단일 `applyTransform`. DisplaySection 은 setIntrinsic 만 호출. fit / reset 두 버튼 분리 |
 | 2026-05-10 | A.9 hotfix (no doc) | A.9 hotfix | 완료 — A.1 의 `USER nextjs` (UID 1001) 가 docker named volume `geny-baked-exports` 의 root:root 디폴트 소유와 충돌 → /exports 에 EACCES 로 send-to-Geny 가 HTTP 500. runner stage 의 non-root user 드롭 제거 (단일 사용자 hobby + 컨테이너 내 노출 shell 없음 → 보안 trade-off 수용). 이유 코멘트 Dockerfile 에 명시. v0.2.4 |
 | 2026-05-10 | [111 expression_blob_url_fix](2026-05-10_111_expression_blob_url_fix.md) | post-8 fix | 완료 — 업로드 puppet 에서 Animation 탭 expression ▶ preview 가 silent no-op 였던 버그. `rewriteLive2DManifest` 가 Motions 까지만 blob URL 화하고 `FileReferences.Expressions[i].File` 만 누락 → blob: manifest 의 상대경로가 fetch 불가. Motions 와 동일 패턴으로 Expressions 분기 추가. 내장 puppet (HTTP) 은 원래 정상이라 영향 X. v0.3.2 |
+| 2026-08-15 | [112 mmd_runtime](2026-08-15_112_mmd_runtime.md) | MMD 3D | 완료 — MMD(PMX/PMD) 3D 런타임 랜딩: MmdAdapter + babylon-mmd MmdStage(dynamic import), selfHostedView capability, Animation 탭 MMD 섹션(모프/감정/카메라/VMD), sidecar `mmd` 블록. headless E2E(Chisa 45 materials·116 morphs) PASS. v0.4.0 |
 
 ## 운영 규칙
 

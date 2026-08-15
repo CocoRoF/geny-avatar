@@ -11,6 +11,7 @@
 
 import type { AdapterLoadInput, AvatarAdapter, FormatDetectionResult } from "./AvatarAdapter";
 import { Live2DAdapter } from "./Live2DAdapter";
+import { MmdAdapter } from "./MmdAdapter";
 import { SpineAdapter } from "./SpineAdapter";
 
 export type AdapterCtor = {
@@ -18,7 +19,7 @@ export type AdapterCtor = {
   detect(filenames: ReadonlyArray<string>): FormatDetectionResult | null;
 };
 
-const ADAPTERS: AdapterCtor[] = [SpineAdapter, Live2DAdapter];
+const ADAPTERS: AdapterCtor[] = [SpineAdapter, Live2DAdapter, MmdAdapter];
 
 export function createAdapter(input: AdapterLoadInput): AvatarAdapter {
   switch (input.kind) {
@@ -26,6 +27,8 @@ export function createAdapter(input: AdapterLoadInput): AvatarAdapter {
       return new SpineAdapter();
     case "live2d":
       return new Live2DAdapter();
+    case "mmd":
+      return new MmdAdapter();
   }
 }
 

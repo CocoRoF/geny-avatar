@@ -3,6 +3,7 @@
 import type { Application } from "pixi.js";
 import type { AvatarAdapter } from "@/lib/adapters/AvatarAdapter";
 import type { Live2DAdapter } from "@/lib/adapters/Live2DAdapter";
+import type { MmdAdapter } from "@/lib/adapters/MmdAdapter";
 import { useCubismMeta } from "@/lib/avatar/cubismMeta";
 import { usePuppetAnimationConfig } from "@/lib/avatar/usePuppetAnimationConfig";
 import type { DisplayConfig } from "./DisplaySection";
@@ -11,6 +12,7 @@ import type { EmotionMap } from "./ExpressionsSection";
 import { ExpressionsSection } from "./ExpressionsSection";
 import type { TapMotions } from "./HitAreasSection";
 import { HitAreasSection } from "./HitAreasSection";
+import { MmdSectionsPanel } from "./MmdSections";
 import { MotionsSection } from "./MotionsSection";
 
 type Props = {
@@ -69,6 +71,30 @@ export function AnimationPanel({ puppetKey, adapter, app }: Props) {
   const onTapMotionsChange = (next: TapMotions) => {
     update({ tapMotions: next });
   };
+
+  // MMD — its own section set: VMD motions, morph sliders, GoEmotion →
+  // morph map, camera pose. No cubism meta / Pixi app involved, and the
+  // sections mount as soon as the IDB config resolves.
+  if (adapter && adapter.runtime === "mmd") {
+    return (
+      <div className="flex h-full flex-col gap-4 overflow-y-auto p-4 text-xs text-[var(--color-fg-dim)]">
+        <h2 className="text-[10px] uppercase tracking-widest">animation · MMD</h2>
+        {configLoading ? (
+          <p className="text-[10px] opacity-50">config 불러오는 중…</p>
+        ) : (
+          <div key={puppetKey ?? "no-key"}>
+            <MmdSectionsPanel
+              adapter={adapter as MmdAdapter}
+              config={config}
+              onEmotionMapChange={(next) => update({ emotionMap: next as EmotionMap })}
+              onLipSyncMorphChange={(morph) => update({ lipSyncMorph: morph })}
+              onCameraChange={(pose) => update({ mmdCamera: pose })}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Spine puppets out of scope for the V1 animation tab — Spine's
   // animation tracks + skins are a different model than Cubism's

@@ -33,9 +33,15 @@ export type UsePuppetOptions = {
   /**
    * Called when the puppet is mounted on stage. Useful for positioning
    * (anchor / scale / x / y) which differs between Spine slot pivots and
-   * Cubism model space.
+   * Cubism model space. `app` is null for self-hosted-view adapters
+   * (capabilities.selfHostedView) — they render their own canvas and no
+   * Pixi Application exists.
    */
-  onMount?: (avatar: Avatar, adapter: AvatarAdapter, app: Application) => void | Promise<void>;
+  onMount?: (
+    avatar: Avatar,
+    adapter: AvatarAdapter,
+    app: Application | null,
+  ) => void | Promise<void>;
 };
 
 /**
@@ -58,6 +64,7 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
 
     let cancelled = false;
     const app = new Application();
+    let appInited = false;
     let adapter: AvatarAdapter | null = null;
 
     // Teardown helpers shared by the unmount cleanup and the in-flight
@@ -74,6 +81,9 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
     const destroyApp = () => {
       if (appDestroyed) return;
       appDestroyed = true;
+      // Self-hosted adapters never init the Application — destroying an
+      // un-inited Pixi app throws on missing renderer internals.
+      if (!appInited) return;
       try {
         app.destroy(true, { children: true, texture: false });
       } catch (e) {
@@ -92,20 +102,29 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
 
     (async () => {
       try {
-        await app.init({
-          background,
-          resizeTo: host,
-          antialias: true,
-          autoDensity: true,
-          resolution: window.devicePixelRatio || 1,
-        });
-        if (cancelled) {
-          destroyApp();
-          return;
-        }
-        host.appendChild(app.canvas);
-
         adapter = createAdapter(input);
+        // Self-hosted-view adapters (3D runtimes) own their canvas +
+        // render loop — building a Pixi Application for them would just
+        // burn a second WebGL context. Feature-branch before any Pixi
+        // work so the 2D path stays byte-identical.
+        const selfHosted = adapter.capabilities.selfHostedView === true;
+
+        if (!selfHosted) {
+          await app.init({
+            background,
+            resizeTo: host,
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1,
+          });
+          appInited = true;
+          if (cancelled) {
+            destroyApp();
+            return;
+          }
+          host.appendChild(app.canvas);
+        }
+
         const avatar = await adapter.load(input);
         if (cancelled) {
           destroyAdapter();
@@ -113,10 +132,14 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
           return;
         }
 
-        const display = adapter.getDisplayObject();
-        if (display) app.stage.addChild(display);
+        if (selfHosted) {
+          adapter.mountView?.(host);
+        } else {
+          const display = adapter.getDisplayObject();
+          if (display) app.stage.addChild(display);
+        }
 
-        await onMountRef.current?.(avatar, adapter, app);
+        await onMountRef.current?.(avatar, adapter, selfHosted ? null : app);
 
         if (cancelled) {
           destroyAdapter();
@@ -124,7 +147,7 @@ export function usePuppet(options: UsePuppetOptions): PuppetState {
           return;
         }
 
-        setState({ status: "ready", avatar, adapter, app });
+        setState({ status: "ready", avatar, adapter, app: selfHosted ? null : app });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!cancelled) {

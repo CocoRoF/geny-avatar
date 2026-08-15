@@ -101,13 +101,14 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
 
   // Refresh the row's thumbnail every time someone opens the editor —
   // cheap (~10KB webp) and keeps the library card in sync with the
-  // current visibility/animation state at last open.
+  // current visibility/animation state at last open. Self-hosted-view
+  // adapters (MMD) have no Pixi app — they snapshot their own canvas.
   useEffect(() => {
-    if (!app) return;
+    if (!app && !adapter?.captureFrame) return;
     let cancelled = false;
     const t = window.setTimeout(async () => {
       try {
-        const blob = await captureThumbnail(app);
+        const blob = app ? await captureThumbnail(app) : await adapter?.captureFrame?.();
         if (cancelled || !blob) return;
         // Thumbnail-only write — no updatedAt bump, no publish churn.
         await updatePuppetThumbnail(puppetId, blob);
@@ -119,7 +120,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [app, puppetId]);
+  }, [app, adapter, puppetId]);
 
   const input: AdapterLoadInput | null = bundle?.ok ? bundle.loadInput : null;
 
@@ -262,7 +263,7 @@ export default function EditPage({ params }: { params: Promise<{ avatarId: strin
           <button
             type="button"
             onClick={() => setRestyleOpen(true)}
-            disabled={!adapter || !avatar}
+            disabled={!adapter || !avatar || adapter.capabilities.canSwapTexture === false}
             className="ml-3 rounded border border-[var(--color-accent)]/60 px-2 py-0.5 text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
             title="레퍼런스 기반 전신 리스타일 — 아틀라스 페이지를 통째로 AI 변환"
           >

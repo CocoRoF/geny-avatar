@@ -1,5 +1,5 @@
 import { unzipSync } from "fflate";
-import type { AdapterLoadInput } from "../adapters/AvatarAdapter";
+import type { AdapterLoadInput, FormatDetectionResult } from "../adapters/AvatarAdapter";
 import { detectFromFilenames } from "../adapters/AvatarRegistry";
 import { rewriteLive2DManifest, rewriteSpineAtlas } from "./rewrite";
 import type { BundleEntry, ParsedBundle } from "./types";
@@ -87,6 +87,9 @@ export async function parseBundle(input: File | File[] | BundleEntry[]): Promise
   if (detected.result.runtime === "live2d") {
     return await buildLive2DLoadInput(entries, map, urls, warnings, detected.result.confidence);
   }
+  if (detected.result.runtime === "mmd") {
+    return buildMmdLoadInput(entries, map, warnings, detected.result);
+  }
 
   return {
     ok: false,
@@ -170,9 +173,15 @@ function mimeForPath(path: string): string {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  // MMD sphere maps (.spa/.sph) are plain images with odd extensions;
+  // babylon's texture loader sniffs bytes but a sane MIME helps <img>
+  // debugging. .tga has a real registered type.
+  if (lower.endsWith(".spa") || lower.endsWith(".sph")) return "image/png";
+  if (lower.endsWith(".tga")) return "image/x-tga";
   if (lower.endsWith(".json")) return "application/json";
   if (lower.endsWith(".atlas")) return "text/plain";
-  // .moc3, .skel, .bin etc. — opaque binary
+  // .moc3, .skel, .pmx, .pmd, .vmd, .bin etc. — opaque binary
   return "application/octet-stream";
 }
 
@@ -293,6 +302,60 @@ async function buildSpineLoadInput(
     loadInput,
     entries: map,
     urls,
+    warnings,
+  };
+}
+
+// ----- MMD (PMX / PMD) -----
+
+/**
+ * MMD needs no manifest rewrite: babylon-mmd resolves texture paths
+ * against in-memory Files (webkitRelativePath matching), so the load
+ * input is simply "which entry is the model" + the raw entries. No blob
+ * URLs are created — `urls` stays empty and disposeBundle is a no-op
+ * for MMD bundles.
+ *
+ * When a bundle ships multiple .pmx files (some distributions include
+ * costume variants), pick the largest — it's virtually always the full
+ * model — and surface the choice as a warning so the user understands
+ * which one loaded.
+ */
+function buildMmdLoadInput(
+  entries: BundleEntry[],
+  map: Map<string, BundleEntry>,
+  warnings: string[],
+  detection: FormatDetectionResult,
+): ParsedBundle {
+  const models = entries
+    .filter((e) => /\.pmx$/i.test(e.path) || /\.pmd$/i.test(e.path))
+    .sort((a, b) => b.size - a.size);
+  const model = models[0];
+  if (!model) {
+    return {
+      ok: false,
+      reason: "MMD bundle has no .pmx / .pmd model file",
+      entries: map,
+      detection,
+    };
+  }
+  if (models.length > 1) {
+    warnings.push(
+      `bundle has ${models.length} model files — loading the largest (${model.path}); the rest are ignored`,
+    );
+  }
+
+  const loadInput: AdapterLoadInput = {
+    kind: "mmd",
+    pmxPath: model.path,
+    entries: entries.map((e) => ({ path: e.path, blob: e.blob })),
+  };
+
+  return {
+    ok: true,
+    detection,
+    loadInput,
+    entries: map,
+    urls: [],
     warnings,
   };
 }

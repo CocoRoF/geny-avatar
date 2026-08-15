@@ -337,7 +337,7 @@ export default function Home() {
           <UploadDropzone
             onFiles={handleUpload}
             className="h-44 w-full"
-            hint="Spine: .skel/.json + .atlas + .png  ·  Cubism: .model3.json + .moc3 + textures  ·  또는 이전에 export 한 *.geny-avatar.zip (variants/overrides 복원)."
+            hint="Spine: .skel/.json + .atlas + .png  ·  Cubism: .model3.json + .moc3 + textures  ·  MMD: .pmx/.pmd + textures (3D)  ·  또는 이전에 export 한 *.geny-avatar.zip (variants/overrides 복원)."
           />
           {(uploadStatus || uploadBusy) && (
             <p className="mt-2 text-xs text-[var(--color-fg-dim)]">{uploadStatus ?? "처리 중…"}</p>
@@ -695,9 +695,18 @@ function formatRelative(ts: number): string {
 function inferBundleName(
   files: File[],
   entries: { name: string; path: string }[],
-  runtime: "spine" | "live2d",
+  runtime: "spine" | "live2d" | "mmd",
 ): string {
-  if (runtime === "live2d") {
+  if (runtime === "mmd") {
+    // Largest model file wins — mirrors parseBundle's pick when a
+    // distribution ships costume-variant .pmx files side by side.
+    const model = entries
+      .filter((e) => /\.(pmx|pmd)$/i.test(e.name))
+      .sort(
+        (a, b) => ((b as { size?: number }).size ?? 0) - ((a as { size?: number }).size ?? 0),
+      )[0];
+    if (model) return model.name.replace(/\.(pmx|pmd)$/i, "");
+  } else if (runtime === "live2d") {
     const manifest = entries.find((e) => e.name.toLowerCase().endsWith(".model3.json"));
     if (manifest) return manifest.name.replace(/\.model3\.json$/i, "");
   } else {
@@ -716,5 +725,7 @@ function inferBundleName(
     const prefix = entries[0].path.substring(0, firstSlash);
     if (entries.every((e) => e.path.startsWith(`${prefix}/`))) return prefix;
   }
-  return runtime === "live2d" ? "Cubism puppet" : "Spine puppet";
+  if (runtime === "live2d") return "Cubism puppet";
+  if (runtime === "mmd") return "MMD model";
+  return "Spine puppet";
 }

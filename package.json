@@ -1,9 +1,9 @@
 {
   "name": "geny-avatar",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Web-based 2D Live Avatar editor with AI-driven texture generation. Solo hobby project.",
+  "description": "Web-based Live Avatar editor — 2D (Cubism/Spine) with AI-driven texture generation + 3D MMD (PMX) viewer. Solo hobby project.",
   "scripts": {
     "predev": "node scripts/sync-vendor.mjs",
     "dev": "next dev --turbo",
@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@babylonjs/core": "9.21.2",
     "@esotericsoftware/spine-pixi-v8": "^4.2.114",
+    "babylon-mmd": "1.3.0",
     "dexie": "^4.4.2",
     "fflate": "^0.8.2",
     "immer": "^11.1.6",

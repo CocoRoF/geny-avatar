@@ -26,7 +26,7 @@ export type UVIsland = { points: { u: number; v: number }[] };
 
 // ----- Source / runtime metadata -----
 
-export type AvatarSourceRuntime = "spine" | "live2d";
+export type AvatarSourceRuntime = "spine" | "live2d" | "mmd";
 
 export type AssetRef =
   | { kind: "url"; url: string }
@@ -52,6 +52,16 @@ export type AvatarSource =
       pose?: AssetRef;
       userData?: AssetRef;
       motions?: { group: string; files: AssetRef[] }[];
+    }
+  | {
+      runtime: "mmd";
+      version?: string;
+      /** bundle-relative path of the .pmx / .pmd model file */
+      pmxPath: string;
+      /** bundle-relative paths of texture images the model references */
+      texturePaths: string[];
+      /** bundle-relative paths of optional .vmd motion files */
+      vmdPaths: string[];
     };
 
 export type AssetOriginNote = {
@@ -200,7 +210,7 @@ export type AnimationRef = {
   name: string;
   duration?: number;
   loop: boolean;
-  source: "spine-track" | "live2d-motion";
+  source: "spine-track" | "live2d-motion" | "mmd-vmd";
   /** for Live2D: motion group name (e.g. "Idle", "TapBody") */
   group?: string;
 };
@@ -211,7 +221,7 @@ export type Parameter = {
   min: number;
   max: number;
   default: number;
-  source: "live2d-param" | "spine-virtual";
+  source: "live2d-param" | "spine-virtual" | "mmd-morph";
 };
 
 // ----- Avatar root -----

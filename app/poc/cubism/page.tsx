@@ -65,7 +65,8 @@ export default function CubismPoCPage() {
     host,
     onMount: (avatar, adapter, app) => {
       const display = adapter.getDisplayObject();
-      if (display) fitLive2DModel(display, adapter as Live2DAdapter, app.screen);
+      // app nullability only applies to self-hosted (3D) adapters
+      if (display && app) fitLive2DModel(display, adapter as Live2DAdapter, app.screen);
       setLayerVisible(avatar.layers.map((l) => ({ id: l.id, visible: l.defaults.visible })));
       const idle = avatar.animations.find((a) => a.name === "Idle") ?? avatar.animations[0];
       if (idle) adapter.playAnimation(idle.name);

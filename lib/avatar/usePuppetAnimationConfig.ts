@@ -93,6 +93,10 @@ export function usePuppetAnimationConfig(puppetKey: string | null): UsePuppetAni
             idleMotionGroupName: row.idleMotionGroupName,
             emotionMap: row.emotionMap,
             tapMotions: row.tapMotions,
+            // MMD-only optional fields — must be carried through here or
+            // a load would silently drop what update() just saved.
+            mmdCamera: row.mmdCamera,
+            lipSyncMorph: row.lipSyncMorph,
           });
         } else {
           setConfig(DEFAULTS);

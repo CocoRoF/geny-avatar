@@ -8,9 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@babylonjs/core':
+        specifier: 9.21.2
+        version: 9.21.2
       '@esotericsoftware/spine-pixi-v8':
         specifier: ^4.2.114
         version: 4.2.114(pixi.js@8.18.1)
+      babylon-mmd:
+        specifier: 1.3.0
+        version: 1.3.0(@babylonjs/core@9.21.2)
       dexie:
         specifier: ^4.4.2
         version: 4.4.2
@@ -69,6 +75,9 @@ packages:
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
     engines: {node: '>=10'}
+
+  '@babylonjs/core@9.21.2':
+    resolution: {integrity: sha512-y4brONcZ4X5rfoiLqTdd9jSZzyIeJ+zHhvN6qgDCpgVIyM2sJlCouLBSvNn+Kl7jIxmzJhIvbBvUIS/sx8jFUw==}
 
   '@biomejs/biome@2.4.14':
     resolution: {integrity: sha512-TmAvxOEgrpLypzVGJ8FulIZnlyA9TxrO1hyqYrCz9r+bwma9xXxuLA5IuYnj55XQneFx460KjRbx6SWGLkg3bQ==}
@@ -489,6 +498,11 @@ packages:
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
     engines: {node: '>=10.0.0'}
 
+  babylon-mmd@1.3.0:
+    resolution: {integrity: sha512-+ms/0h43a77DM/txFGEFY3YnOnJSVlEYDYlRZTDg9m1mterByX+bpRM6R8xg+0iMVZZ86TXUks8NEfMJizuBRQ==}
+    peerDependencies:
+      '@babylonjs/core': ^9.15.0
+
   caniuse-lite@1.0.30001791:
     resolution: {integrity: sha512-yk0l/YSrOnFZk3UROpDLQD9+kC1l4meK/wed583AXrzoarMGJcbRi2Q4RaUYbKxYAsZ8sWmaSa/DsLmdBeI1vQ==}
 
@@ -744,6 +758,8 @@ packages:
 snapshots:
 
   '@alloc/quick-lru@5.2.0': {}
+
+  '@babylonjs/core@9.21.2': {}
 
   '@biomejs/biome@2.4.14':
     optionalDependencies:
@@ -1034,6 +1050,10 @@ snapshots:
   '@webgpu/types@0.1.69': {}
 
   '@xmldom/xmldom@0.8.13': {}
+
+  babylon-mmd@1.3.0(@babylonjs/core@9.21.2):
+    dependencies:
+      '@babylonjs/core': 9.21.2
 
   caniuse-lite@1.0.30001791: {}
 

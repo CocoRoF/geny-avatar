@@ -26,7 +26,9 @@ export default function SpinePoCPage() {
     host,
     onMount: (avatar, adapter, app) => {
       const display = adapter.getDisplayObject();
-      if (display) {
+      // app is only null for self-hosted-view (3D) adapters — this PoC
+      // always loads Spine, but the shared hook types it nullable.
+      if (display && app) {
         display.x = app.screen.width / 2;
         display.y = app.screen.height * 0.85;
         display.scale.set(0.5);

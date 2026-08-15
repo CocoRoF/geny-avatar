@@ -2,7 +2,7 @@
 
 Web-based 2D Live Avatar editor with AI-driven texture generation. **A solo hobby project.**
 
-> Drag-and-drop a puppet you grabbed off the internet (Cubism or Spine), tidy up its layers, repaint its textures with generative AI, and check the result instantly in a live preview.
+> Drag-and-drop a puppet you grabbed off the internet (Cubism or Spine — or a 3D MMD `.pmx` model), tidy up its layers, repaint its textures with generative AI, and check the result instantly in a live preview.
 
 ## The Geny ecosystem
 
@@ -40,7 +40,7 @@ These projects are built to work together. **Geny** is the product at the top of
 
 ## Two philosophies (locked in)
 
-- **P1 — Cubism + Spine are both first-class** — neither is "secondary." Both adapters are built together from the start.
+- **P1 — Cubism + Spine are both first-class** — neither is "secondary." Both adapters are built together from the start. (Since v0.4.0 a third adapter renders **MMD PMX/PMD in 3D** — viewer + morph/emotion authoring; 3D *editing* stays out of scope, see `docs/plan/10_mmd_3d_runtime.md`.)
 - **P2 — Upload Day-1** — uploading a file straight off the internet and using it is scenario #1 of the V1 demo. We accept Spine 3.8/4.0/4.1/4.2 + Cubism 4/5 (best-effort 2/3).
 
 ## Getting started (development)
@@ -52,11 +52,11 @@ pnpm dev          # http://localhost:3000
 
 ## Key features
 
-- **Dual runtime upload** — drop Spine 3.8/4.x `.skel` + atlas, or a Cubism 4/5 `.model3.json` + moc3 zip → stored in IndexedDB → live preview
+- **Triple runtime upload** — drop Spine 3.8/4.x `.skel` + atlas, a Cubism 4/5 `.model3.json` + moc3 zip, or an MMD `.pmx/.pmd` folder/zip → stored in IndexedDB → live preview (MMD renders in real 3D: toon shading, WASM physics, orbit camera)
 - **Layer / Variant panel** — toggle visibility per slot/part, save and switch variants (skins)
 - **Decompose Studio** — automatic alpha-component detection + brush masking + SAM auto-segmentation (define regions by hand in split mode)
 - **AI texture generation** — gpt-image-2 multi-image edits API (per-region prompts in focus mode, attach reference images, per-region revert / history)
-- **Animation tab** — preview a Cubism puppet's motions / expressions, live kScale·shift sliders, 8 GoEmotions × expression mapping, hit area → tap-motion mapping. Persisted in IndexedDB and bundled automatically on Geny export.
+- **Animation tab** — preview a Cubism puppet's motions / expressions, live kScale·shift sliders, 8 GoEmotions × expression mapping, hit area → tap-motion mapping. Persisted in IndexedDB and bundled automatically on Geny export. MMD models get their own section set: VMD motion playback, morph sliders grouped by PMX panel, GoEmotions × morph mapping, lip-sync morph pick, and a saved 3D camera pose.
 - **Export / Import** — `*.geny-avatar.zip` round-trip (avatar.json + bundle + overrides + LICENSE.md). A baked model zip carries its animation config in an `avatar-editor.json` sidecar (schemaVersion 2).
 - **Help / Onboarding** — `?`-key shortcut modal + first-visit banner
 
@@ -69,6 +69,7 @@ pnpm dev          # http://localhost:3000
 - Pixi.js v8 (render engine)
 - Spine runtime: `@esotericsoftware/spine-pixi-v8`
 - Live2D runtime: `untitled-pixi-live2d-engine` + Cubism Core
+- MMD runtime: `babylon-mmd` + `@babylonjs/core` (lazy-loaded — 2D flows never download the 3D stack)
 - AI: OpenAI gpt-image-2 (`/v1/images/edits`), SAM (Replicate) for segmentation
 - Persistence: Dexie (IndexedDB v9)
 - Tailwind CSS v4 / Biome / pnpm 10
@@ -141,6 +142,8 @@ This tool uses the external SDKs / models below. For commercial distribution you
 | [Spine Runtime v4](https://esotericsoftware.com/spine-runtimes-license) | Esoteric Software | Spine Runtimes License (requires a separate Spine SDK license) |
 | [Live2D Cubism Core](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html) | Live2D Inc. | Live2D Proprietary Software License (EULA) — isolated under `vendor/` |
 | [Pixi.js v8](https://github.com/pixijs/pixijs/blob/main/LICENSE) | PixiJS contributors | MIT |
+| [babylon-mmd](https://github.com/noname0310/babylon-mmd/blob/main/LICENSE) | noname0310 | MIT |
+| [Babylon.js](https://github.com/BabylonJS/Babylon.js/blob/master/license.md) | Microsoft | Apache-2.0 |
 | [OpenAI gpt-image-2](https://openai.com/policies/terms-of-use) | OpenAI | OpenAI API Terms of Use — requires your own API key |
 
 The built-in sample puppets (Hiyori, spineboy) are each SDK's official samples, bundled for learning/development. For commercial use, follow the original distributor's license terms.

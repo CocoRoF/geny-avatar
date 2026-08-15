@@ -263,6 +263,24 @@ export type PuppetAnimationConfigRow = {
   idleMotionGroupName: string;
   emotionMap: Record<string, string>;
   tapMotions: Record<string, { group: string; index: number }>;
+  /**
+   * MMD runtime only — the ArcRotate camera pose saved as the default
+   * framing (Animation tab → Camera → "현재 구도를 기본 뷰로 저장").
+   * Rides the exported sidecar so Geny's live renderer opens on the
+   * same view. Absent for 2D runtimes; Dexie stores rows schemalessly
+   * so no version bump is needed for these additive fields.
+   */
+  mmdCamera?: {
+    alpha: number;
+    beta: number;
+    radius: number;
+    targetX: number;
+    targetY: number;
+    targetZ: number;
+  };
+  /** MMD runtime only — mouth morph the lip-sync amplitude drives.
+   *  Absent = auto-detect (「あ」 family) on the Geny side. */
+  lipSyncMorph?: string;
   updatedAt: number;
 };
 
