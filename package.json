@@ -1,6 +1,6 @@
 {
   "name": "geny-avatar",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "license": "Apache-2.0",
   "description": "Web-based Live Avatar editor — 2D (Cubism/Spine) with AI-driven texture generation + 3D MMD (PMX) viewer. Solo hobby project.",

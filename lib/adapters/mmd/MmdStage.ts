@@ -144,6 +144,7 @@ export class MmdStage {
   private animationHandles = new Map<string, unknown>();
   private playingAnimation: string | null = null;
   private motionPaused = false;
+  private loopHoldUntil = 0;
   private idleObserver: Observer<Scene> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private defaultCamera: MmdCameraPose | null = null;
@@ -232,6 +233,13 @@ export class MmdStage {
         },
       },
     });
+    // The host may have unmounted while the (multi-second) load ran —
+    // dispose() is one-shot, so continuing would register runtimes on a
+    // dead scene and start an unstoppable zombie render loop.
+    if (this.disposed) {
+      container.dispose();
+      throw new Error("MmdStage disposed during load");
+    }
     container.addAllToScene();
 
     const rootMesh = container.meshes[0] as MmdMesh;
@@ -278,6 +286,7 @@ export class MmdStage {
         import("babylon-mmd/esm/Runtime/Optimized/Physics/mmdBulletPhysics"),
       ]);
       const wasmInstance = await GetMmdWasmInstance(new MmdWasmInstanceTypeSPR());
+      if (this.disposed) throw new Error("MmdStage disposed during load");
       const physicsRuntime = new MultiPhysicsRuntime(wasmInstance);
       physicsRuntime.setGravity(new Vector3(0, -98, 0));
       physicsRuntime.register(this.scene);
@@ -288,6 +297,15 @@ export class MmdStage {
       console.warn("[MmdStage] physics unavailable — continuing without", e);
     }
 
+    if (this.disposed) {
+      // physics may have just been created — release it before bailing
+      try {
+        this.physicsRuntime?.dispose();
+      } catch {
+        /* best-effort */
+      }
+      throw new Error("MmdStage disposed during load");
+    }
     const mmdRuntime = new MmdRuntime(this.scene, physics);
     mmdRuntime.register(this.scene);
     this.mmdRuntime = mmdRuntime;
@@ -300,7 +318,9 @@ export class MmdStage {
     for (const f of files) {
       if (!/\.vmd$/i.test(f.path)) continue;
       const stem = (f.path.split("/").pop() ?? f.path).replace(/\.vmd$/i, "");
-      if (!this.vmdFiles.has(stem)) this.vmdFiles.set(stem, f.file);
+      // later entries win: appended uploads (motions/…) replace a
+      // same-stem bundle VMD, matching addVmdFile's live semantics
+      this.vmdFiles.set(stem, f.file);
     }
 
     // Default camera: frame the model from its bounds — portrait-ish,
@@ -349,6 +369,7 @@ export class MmdStage {
       rt &&
       this.playingAnimation &&
       !this.motionPaused &&
+      performance.now() >= this.loopHoldUntil &&
       rt.animationFrameTimeDuration > 0 &&
       rt.currentFrameTime >= rt.animationFrameTimeDuration - 0.001
     ) {
@@ -460,17 +481,25 @@ export class MmdStage {
     const rt = this.mmdRuntime;
     const file = this.vmdFiles.get(name);
     if (!model || !rt || !file) return;
-    let handle = this.animationHandles.get(name);
-    if (handle === undefined) {
-      const loader = new VmdLoader(this.scene);
-      loader.loggingEnabled = false;
-      const animation = await loader.loadAsync(name, file);
-      handle = model.createRuntimeAnimation(animation);
-      this.animationHandles.set(name, handle);
-    }
-    model.setRuntimeAnimation(handle as never);
+    // mark intent BEFORE the async parse so a slower earlier click can
+    // detect it lost the race and not clobber the newer selection
     this.playingAnimation = name;
     this.motionPaused = false;
+    let pending = this.animationHandles.get(name);
+    if (pending === undefined) {
+      // cache the in-flight promise itself — a double-click on an
+      // uncached VMD must not parse twice / orphan a handle
+      pending = (async () => {
+        const loader = new VmdLoader(this.scene);
+        loader.loggingEnabled = false;
+        const animation = await loader.loadAsync(name, file);
+        return model.createRuntimeAnimation(animation);
+      })();
+      this.animationHandles.set(name, pending);
+    }
+    const handle = await (pending as Promise<unknown>);
+    if (this.disposed || this.playingAnimation !== name) return; // retargeted
+    model.setRuntimeAnimation(handle as never);
     await rt.seekAnimation(0, true);
     await rt.playAnimation();
   }
@@ -487,12 +516,15 @@ export class MmdStage {
     // animated pose (a bounce stopped mid-dip stays crouched forever —
     // the procedural idle only re-drives arms/torso/head). Return the
     // whole skeleton to rest; the idle driver rebuilds its stance on
-    // the next frame.
+    // the next frame. Morphs freeze the same way (a VMD with facial
+    // tracks leaves the face stuck) — zero the catalog too; the caller
+    // (adapter) re-applies any UI-held morph weights on top.
     try {
       this.skeleton?.returnToRest?.();
     } catch {
       /* best-effort — worst case the old behavior */
     }
+    for (const m of this.morphCatalog) this.setMorphWeight(m.name, 0);
   }
 
   pauseAnimation(): void {
@@ -510,6 +542,9 @@ export class MmdStage {
   /** Jump to an MMD frame (30fps units). */
   seekAnimation(frame: number): void {
     if (!this.playingAnimation) return;
+    // hold the auto-loop briefly so dragging the slider to the end
+    // doesn't instantly snap playback back to frame 0 mid-gesture
+    this.loopHoldUntil = performance.now() + 400;
     void this.mmdRuntime?.seekAnimation(Math.max(0, frame), true);
   }
 

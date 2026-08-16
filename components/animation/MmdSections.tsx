@@ -133,6 +133,13 @@ function MmdMotionsSection({
 
   const canPersist = !!puppetKey && !puppetKey.startsWith("builtin:");
 
+  // A designated idle motion that no longer exists (renamed upload,
+  // preview-only name from an older session) must not linger in the
+  // config — it would export a reference to a VMD absent from the zip.
+  useEffect(() => {
+    if (idleMotion && !motions.includes(idleMotion)) onIdleMotionChange("");
+  }, [idleMotion, motions, onIdleMotionChange]);
+
   /** Preview: register on the live stage under the preset id and play.
    *  NOT persisted — gone on reload unless the user clicks 추가. */
   async function previewPreset(preset: MotionPreset) {
@@ -160,7 +167,7 @@ function MmdMotionsSection({
         ]);
       }
       adapter.addMotionFile(preset.id, file);
-      setMotions(adapter.getMotionNames());
+      setMotions((prev) => (prev.includes(preset.id) ? prev : [...prev, preset.id]));
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -191,10 +198,14 @@ function MmdMotionsSection({
           })),
         );
       }
-      for (const f of vmds) {
-        adapter.addMotionFile(f.name.replace(/\.vmd$/i, ""), f);
+      const stems = vmds.map((f) => f.name.replace(/\.vmd$/i, ""));
+      for (let i = 0; i < vmds.length; i++) {
+        adapter.addMotionFile(stems[i], vmds[i]);
       }
-      setMotions(adapter.getMotionNames());
+      // track persisted names explicitly — adapter.getMotionNames()
+      // also contains preview-only registrations that must NOT show as
+      // "추가됨" / become idle-designatable (they die on reload)
+      setMotions((prev) => [...prev, ...stems.filter((n) => !prev.includes(n))]);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -214,14 +225,16 @@ function MmdMotionsSection({
         >
           Motions (VMD)
         </h3>
-        <button
-          type="button"
-          disabled={uploading}
-          onClick={() => fileInputRef.current?.click()}
-          className="rounded border border-[var(--color-accent)]/60 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)] disabled:opacity-40"
-        >
-          {uploading ? "저장 중…" : "+ VMD 업로드"}
-        </button>
+        {canPersist && (
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded border border-[var(--color-accent)]/60 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)] disabled:opacity-40"
+          >
+            {uploading ? "저장 중…" : "+ VMD 업로드"}
+          </button>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -341,6 +354,12 @@ function MmdMotionsSection({
                   scrubbingRef.current = true;
                 }}
                 onPointerUp={() => {
+                  scrubbingRef.current = false;
+                }}
+                onPointerCancel={() => {
+                  scrubbingRef.current = false;
+                }}
+                onLostPointerCapture={() => {
                   scrubbingRef.current = false;
                 }}
                 onChange={(e) => {

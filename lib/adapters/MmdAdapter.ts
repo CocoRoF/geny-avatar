@@ -86,7 +86,7 @@ export class MmdAdapter implements AvatarAdapter {
       name: result.modelNameJp || input.pmxPath.split("/").pop() || "MMD model",
       source: {
         runtime: "mmd",
-        version: "PMX",
+        version: /\.pmd$/i.test(input.pmxPath) ? "PMD" : "PMX",
         pmxPath: input.pmxPath,
         texturePaths: input.entries
           .filter((e) => /\.(png|jpe?g|webp|bmp|tga|spa|sph|dds)$/i.test(e.path))
@@ -167,6 +167,11 @@ export class MmdAdapter implements AvatarAdapter {
 
   stopAnimation(): void {
     this.stage?.stopAnimation();
+    // the stage zeroed every morph — restore what the UI holds
+    // (morph sliders / emotion preview) so those controls stay truthful
+    for (const [name, weight] of this.morphWeights) {
+      if (weight !== 0) this.stage?.setMorphWeight(name, weight);
+    }
   }
 
   pauseMotion(): void {
