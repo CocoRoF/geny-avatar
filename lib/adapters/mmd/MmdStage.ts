@@ -105,6 +105,23 @@ const BLINK_MORPHS = ["まばたき", "瞬き", "まばたき両目", "blink"];
  *  names are standardized across MMD models but not guaranteed. */
 const BREATH_BONE = "上半身";
 const HEAD_BONE = "頭";
+const EYES_BONE = "両目";
+const ARM_R_BONE = "右腕";
+const ARM_L_BONE = "左腕";
+
+/**
+ * T-pose → natural stance: MMD models bind with arms horizontal, which
+ * reads as "frozen mannequin" the moment one is used as a live avatar.
+ * Rotating the upper-arm bones ~34° about Z drops the arms to the
+ * body's sides (validated visually on a real PMX — +Z lowers the right
+ * arm, −Z the left, in babylon-mmd's left-handed space). A playing VMD
+ * takes over these bones completely; the rest pose only drives them
+ * while no motion is active.
+ */
+const ARM_DOWN_RAD = 0.6;
+
+/** Backbuffer long-edge cap — see {@link MmdStage.updateScaling}. */
+const MAX_RENDER_EDGE_PX = 2200;
 
 export class MmdStage {
   readonly canvas: HTMLCanvasElement;
@@ -141,6 +158,7 @@ export class MmdStage {
       premultipliedAlpha: false,
       preserveDrawingBuffer: true, // captureFrame reads the canvas back
       stencil: true,
+      powerPreference: "high-performance",
     });
     SdefInjector.OverrideEngineCreateEffect(this.engine);
 
@@ -336,11 +354,26 @@ export class MmdStage {
     host.appendChild(this.canvas);
     this.camera.attachControl(this.canvas, false);
     // Track host size — Babylon doesn't observe the canvas box.
-    const dpr = window.devicePixelRatio || 1;
-    this.engine.setHardwareScalingLevel(1 / dpr);
-    this.engine.resize();
-    this.resizeObserver = new ResizeObserver(() => this.engine.resize());
+    this.updateScaling();
+    this.resizeObserver = new ResizeObserver(() => this.updateScaling());
     this.resizeObserver.observe(host);
+  }
+
+  /**
+   * Render at native dpr sharpness but cap the backbuffer's long edge.
+   * An ultrawide editor canvas (3400+ CSS px) at dpr ≥ 1 otherwise
+   * allocates a 4K+ MSAA framebuffer, and with the SDEF skinning + MMD
+   * outline second pass that's enough sustained GPU load to wedge
+   * weaker GPUs mid camera-drag (reported live as "브라우저 고장").
+   * Preview quality at ≤{@link MAX_RENDER_EDGE_PX} is indistinguishable
+   * at editor viewing distances.
+   */
+  private updateScaling(): void {
+    const dpr = window.devicePixelRatio || 1;
+    const longEdgeCss = Math.max(this.canvas.clientWidth, this.canvas.clientHeight, 1);
+    const level = Math.max(1 / dpr, longEdgeCss / MAX_RENDER_EDGE_PX);
+    this.engine.setHardwareScalingLevel(level);
+    this.engine.resize();
   }
 
   // ----- camera -----
@@ -444,43 +477,88 @@ export class MmdStage {
   // ----- procedural idle (blink + breath) -----
 
   /**
-   * Subtle life for motion-less models: eased blinks every 2.5–6s and a
-   * slow breathing sway on the upper-body/head bones. Runs only while no
-   * VMD is playing. Bone writes happen in onBeforeRender — babylon-mmd
-   * computes its world matrices from the linked skeleton bones' local
-   * transforms, so setting rotationQuaternion here composes with
-   * physics/IK the same way a VMD keyframe would.
+   * Life for motion-less models: a natural rest pose (arms down instead
+   * of the bind T-pose) plus layered idle — breathing, a slow body sway,
+   * counter-swaying head, wandering gaze, eased blinks. Runs only while
+   * no VMD is playing; a motion owns every one of these bones/morphs.
+   *
+   * Bone writes happen in onBeforeRender — babylon-mmd computes its
+   * world matrices from the linked skeleton bones' local transforms, so
+   * writing here composes with physics/IK the same way a VMD keyframe
+   * would. Babylon's Bone.rotationQuaternion GETTER returns a copy —
+   * mutating it does nothing; always assign through the setter.
    */
   private startIdleDriver(): void {
     let nextBlinkAt = performance.now() + 1800;
     let blinkPhase = -1; // -1 = idle, otherwise 0..1 progress
     const BLINK_MS = 180;
 
-    // Babylon's Bone.rotationQuaternion GETTER returns a copy — mutating
-    // it does nothing. Always go through the setter with a scratch quat.
-    const breathBone = this.skeletonBones.find((b) => b.name === BREATH_BONE) ?? null;
-    const headBone = this.skeletonBones.find((b) => b.name === HEAD_BONE) ?? null;
-    const breathRest = breathBone ? breathBone.rotationQuaternion.clone() : null;
-    const headRest = headBone ? headBone.rotationQuaternion.clone() : null;
+    const bone = (name: string) => this.skeletonBones.find((b) => b.name === name) ?? null;
+    const breathBone = bone(BREATH_BONE);
+    const headBone = bone(HEAD_BONE);
+    const eyesBone = bone(EYES_BONE);
+    const armR = bone(ARM_R_BONE);
+    const armL = bone(ARM_L_BONE);
+    const rest = (b: BoneLike | null) => (b ? b.rotationQuaternion.clone() : null);
+    const breathRest = rest(breathBone);
+    const headRest = rest(headBone);
+    const eyesRest = rest(eyesBone);
+    const armRRest = rest(armR);
+    const armLRest = rest(armL);
     const tmp = new Quaternion();
+    const tmp2 = new Quaternion();
     const outQ = new Quaternion();
+
+    // gaze wander state — small saccades every 2–5s, eased over ~120ms
+    let gazeYaw = 0;
+    let gazeTargetYaw = 0;
+    let nextSaccadeAt = performance.now() + 2200;
 
     this.idleObserver = this.scene.onBeforeRenderObservable.add(() => {
       if (this.playingAnimation) return;
       const now = performance.now();
+      const dt = this.engine.getDeltaTime();
 
-      // breath — 4s period, ±0.02 rad pitch on 上半身, ±0.01 on 頭
-      const t = (now % 4000) / 4000;
-      const s = Math.sin(t * Math.PI * 2);
+      // layered periodic signals
+      const breath = Math.sin(((now % 4000) / 4000) * Math.PI * 2); // 4s
+      const sway = Math.sin(((now % 7300) / 7300) * Math.PI * 2); // 7.3s
+
+      // arms — rest-down pose + a whisper of breath-synced drift
+      const armDrift = breath * 0.012;
+      if (armR && armRRest) {
+        Quaternion.RotationYawPitchRollToRef(0, 0, ARM_DOWN_RAD + armDrift, tmp);
+        armRRest.multiplyToRef(tmp, outQ);
+        armR.rotationQuaternion = outQ;
+      }
+      if (armL && armLRest) {
+        Quaternion.RotationYawPitchRollToRef(0, 0, -(ARM_DOWN_RAD + armDrift), tmp);
+        armLRest.multiplyToRef(tmp, outQ);
+        armL.rotationQuaternion = outQ;
+      }
+
+      // torso — breath pitch + slow yaw sway
       if (breathBone && breathRest) {
-        Quaternion.RotationYawPitchRollToRef(0, s * 0.02, 0, tmp);
+        Quaternion.RotationYawPitchRollToRef(sway * 0.012, breath * 0.025, 0, tmp);
         breathRest.multiplyToRef(tmp, outQ);
         breathBone.rotationQuaternion = outQ;
       }
+      // head — counter-phase so the face stays roughly centered
       if (headBone && headRest) {
-        Quaternion.RotationYawPitchRollToRef(0, -s * 0.01, 0, tmp);
+        Quaternion.RotationYawPitchRollToRef(-sway * 0.008, -breath * 0.012, 0, tmp);
         headRest.multiplyToRef(tmp, outQ);
         headBone.rotationQuaternion = outQ;
+      }
+
+      // gaze — eased micro-saccades on 両目
+      if (eyesBone && eyesRest) {
+        if (now >= nextSaccadeAt) {
+          gazeTargetYaw = (Math.random() - 0.5) * 0.09;
+          nextSaccadeAt = now + 2000 + Math.random() * 3000;
+        }
+        gazeYaw += (gazeTargetYaw - gazeYaw) * Math.min(1, dt / 120);
+        Quaternion.RotationYawPitchRollToRef(gazeYaw, 0, 0, tmp2);
+        eyesRest.multiplyToRef(tmp2, outQ);
+        eyesBone.rotationQuaternion = outQ;
       }
 
       // blink — triangular ease in/out over BLINK_MS
@@ -489,7 +567,7 @@ export class MmdStage {
         if (now >= nextBlinkAt) blinkPhase = 0;
         else return;
       }
-      blinkPhase = Math.min(1, blinkPhase + this.engine.getDeltaTime() / BLINK_MS);
+      blinkPhase = Math.min(1, blinkPhase + dt / BLINK_MS);
       const w = blinkPhase < 0.5 ? blinkPhase * 2 : (1 - blinkPhase) * 2;
       this.setMorphWeight(this.blinkMorph, w);
       if (blinkPhase >= 1) {
