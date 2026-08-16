@@ -540,6 +540,45 @@ export async function savePuppet(input: SavePuppetInput): Promise<PuppetId> {
   return id;
 }
 
+/**
+ * Append (or replace, keyed by path) files on an existing puppet — the
+ * Animation tab's VMD-motion upload uses this so a motion added after
+ * the original bundle upload persists, replays on reload, and rides
+ * every export/publish zip exactly like a file that shipped in the
+ * original drop. Row totals refresh from the actual table so repeated
+ * replaces don't drift the counters.
+ */
+export async function addPuppetFiles(id: PuppetId, entries: BundleEntry[]): Promise<void> {
+  if (entries.length === 0) return;
+  await db().transaction("rw", db().puppets, db().puppetFiles, async () => {
+    const row = await db().puppets.get(id);
+    if (!row) throw new Error(`puppet ${id} not found`);
+    for (const entry of entries) {
+      const existing = await db()
+        .puppetFiles.where("[puppetId+path]")
+        .equals([id, entry.path])
+        .first();
+      if (existing?.id != null) {
+        await db().puppetFiles.update(existing.id, { size: entry.size, blob: entry.blob });
+      } else {
+        await db().puppetFiles.add({
+          puppetId: id,
+          path: entry.path,
+          size: entry.size,
+          blob: entry.blob,
+        });
+      }
+    }
+    const all = await db().puppetFiles.where("puppetId").equals(id).toArray();
+    await db().puppets.update(id, {
+      fileCount: all.length,
+      totalSize: all.reduce((sum, f) => sum + f.size, 0),
+      updatedAt: Date.now(),
+    });
+  });
+  _triggerSyncPush(id);
+}
+
 /** Read every puppet's metadata, newest first. Used by the library page. */
 export async function listPuppets(): Promise<PuppetRow[]> {
   return await db().puppets.orderBy("updatedAt").reverse().toArray();

@@ -237,6 +237,15 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
       hiddenMaterials,
       hiddenMaterialIndices,
       morphs: input.adapter.getMorphCatalog?.() ?? [],
+      // VMD motions in the bundle (originals + Animation-tab uploads).
+      // Geny resolves each path relative to the model URL's directory
+      // and loops the one named by animationConfig.idleMotionGroupName.
+      vmds: entries
+        .filter((e) => /\.vmd$/i.test(e.path))
+        .map((e) => ({
+          name: (e.path.split("/").pop() ?? e.path).replace(/\.vmd$/i, ""),
+          path: e.path,
+        })),
     };
   }
   zippable[AVATAR_EDITOR_SIDECAR_FILE] = new TextEncoder().encode(

@@ -91,7 +91,15 @@ export async function buildPassthroughZip(
     const modelEntry = entries
       .filter((e) => /\.(pmx|pmd)$/i.test(e.path))
       .sort((a, b) => b.size - a.size)[0];
-    sidecar.mmd = { pmxPath: modelEntry?.path ?? null };
+    sidecar.mmd = {
+      pmxPath: modelEntry?.path ?? null,
+      vmds: entries
+        .filter((e) => /\.vmd$/i.test(e.path))
+        .map((e) => ({
+          name: (e.path.split("/").pop() ?? e.path).replace(/\.vmd$/i, ""),
+          path: e.path,
+        })),
+    };
   }
   zippable[AVATAR_EDITOR_SIDECAR_FILE] = new TextEncoder().encode(
     `${JSON.stringify(sidecar, null, 2)}\n`,

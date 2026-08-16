@@ -169,6 +169,32 @@ export class MmdAdapter implements AvatarAdapter {
     this.stage?.stopAnimation();
   }
 
+  pauseMotion(): void {
+    this.stage?.pauseAnimation();
+  }
+
+  resumeMotion(): void {
+    this.stage?.resumeAnimation();
+  }
+
+  /** Jump the playing motion to an MMD frame (30fps units). */
+  seekMotion(frame: number): void {
+    this.stage?.seekAnimation(frame);
+  }
+
+  /** Register an extra VMD uploaded after load (Animation tab). */
+  addMotionFile(name: string, file: File): void {
+    this.stage?.addVmdFile(name, file);
+  }
+
+  getMotionNames(): string[] {
+    return this.stage?.getMotionNames() ?? [];
+  }
+
+  getMotionState(): { name: string | null; paused: boolean; frame: number; duration: number } {
+    return this.stage?.getMotionState() ?? { name: null, paused: false, frame: 0, duration: 0 };
+  }
+
   setParameter(paramId: string, value: number): void {
     if (!paramId.startsWith(MORPH_PREFIX)) return;
     const name = paramId.slice(MORPH_PREFIX.length);

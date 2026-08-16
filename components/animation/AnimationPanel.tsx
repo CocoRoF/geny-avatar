@@ -85,10 +85,12 @@ export function AnimationPanel({ puppetKey, adapter, app }: Props) {
           <div key={puppetKey ?? "no-key"}>
             <MmdSectionsPanel
               adapter={adapter as MmdAdapter}
+              puppetKey={puppetKey}
               config={config}
               onEmotionMapChange={(next) => update({ emotionMap: next as EmotionMap })}
               onLipSyncMorphChange={(morph) => update({ lipSyncMorph: morph })}
               onCameraChange={(pose) => update({ mmdCamera: pose })}
+              onIdleMotionChange={(name) => update({ idleMotionGroupName: name })}
             />
           </div>
         )}

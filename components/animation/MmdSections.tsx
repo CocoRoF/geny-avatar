@@ -1,18 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MorphCatalogEntry } from "@/lib/adapters/AvatarAdapter";
 import type { MmdAdapter } from "@/lib/adapters/MmdAdapter";
 import type { AnimationConfigValue } from "@/lib/avatar/usePuppetAnimationConfig";
-import { selectAnimations, useEditorStore } from "@/lib/store/editor";
+import { addPuppetFiles, type PuppetId } from "@/lib/persistence/db";
 import { EMOTION_KEYS, type EmotionKey } from "./ExpressionsSection";
 
 /**
  * Animation-tab sections for the MMD runtime. The Cubism sections don't
  * apply (no motion groups / expressions / hit areas / kScale) — MMD's
- * equivalents are morphs, bundled VMD motions, and a 3D camera pose:
+ * equivalents are morphs, VMD motions, and a 3D camera pose:
  *
- *   - Motions   — bundled .vmd files, ▶ play / ⏹ stop
+ *   - Motions   — .vmd upload + transport (play/pause/stop/seek) +
+ *                 idle-motion designation (loops in Geny's live view;
+ *                 reuses the existing idleMotionGroupName config field
+ *                 with a VMD stem name as the value)
  *   - Morphs    — weight sliders grouped by the PMX panel byte
  *   - Emotions  — GoEmotion key → morph NAME map (same emotionMap field
  *                 the Cubism section writes; Geny interprets it per
@@ -23,10 +26,14 @@ import { EMOTION_KEYS, type EmotionKey } from "./ExpressionsSection";
 
 type PanelProps = {
   adapter: MmdAdapter;
+  /** IDB puppet id — uploaded VMDs persist under it. Null for transient
+   *  contexts (PoC pages): upload is hidden, playback still works. */
+  puppetKey: string | null;
   config: AnimationConfigValue;
   onEmotionMapChange: (map: Partial<Record<EmotionKey, string>>) => void;
   onLipSyncMorphChange: (morph: string | undefined) => void;
   onCameraChange: (pose: AnimationConfigValue["mmdCamera"]) => void;
+  onIdleMotionChange: (name: string) => void;
 };
 
 const PANEL_LABEL: Record<MorphCatalogEntry["panel"], string> = {
@@ -39,15 +46,22 @@ const PANEL_ORDER: MorphCatalogEntry["panel"][] = ["mouth", "eye", "brow", "othe
 
 export function MmdSectionsPanel({
   adapter,
+  puppetKey,
   config,
   onEmotionMapChange,
   onLipSyncMorphChange,
   onCameraChange,
+  onIdleMotionChange,
 }: PanelProps) {
   const morphs = useMemo(() => adapter.getMorphCatalog(), [adapter]);
   return (
     <div className="flex flex-col gap-4">
-      <MmdMotionsSection adapter={adapter} />
+      <MmdMotionsSection
+        adapter={adapter}
+        puppetKey={puppetKey}
+        idleMotion={config.idleMotionGroupName}
+        onIdleMotionChange={onIdleMotionChange}
+      />
       <MmdEmotionSection
         adapter={adapter}
         morphs={morphs}
@@ -64,42 +78,204 @@ export function MmdSectionsPanel({
 
 // ----- motions -----
 
-function MmdMotionsSection({ adapter }: { adapter: MmdAdapter }) {
-  const animations = useEditorStore(selectAnimations);
-  const [playing, setPlaying] = useState<string | null>(null);
-  if (animations.length === 0) return null;
+type MotionsSectionProps = {
+  adapter: MmdAdapter;
+  puppetKey: string | null;
+  idleMotion: string;
+  onIdleMotionChange: (name: string) => void;
+};
+
+function frameToClock(frame: number): string {
+  const totalS = frame / 30; // VMD is fixed 30fps
+  const m = Math.floor(totalS / 60);
+  const s = Math.floor(totalS % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function MmdMotionsSection({
+  adapter,
+  puppetKey,
+  idleMotion,
+  onIdleMotionChange,
+}: MotionsSectionProps) {
+  const [motions, setMotions] = useState<string[]>(() => adapter.getMotionNames());
+  const [transport, setTransport] = useState(() => adapter.getMotionState());
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // While the user holds the seek slider we stop mirroring the runtime's
+  // frame into it — otherwise the 250ms poll fights the drag.
+  const scrubbingRef = useRef(false);
+
+  // Transport poll — cheap (a few property reads); only while mounted.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (!scrubbingRef.current) setTransport(adapter.getMotionState());
+    }, 250);
+    return () => window.clearInterval(t);
+  }, [adapter]);
+
+  const canPersist = !!puppetKey && !puppetKey.startsWith("builtin:");
+
+  async function handleUpload(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const vmds = Array.from(files).filter((f) => /\.vmd$/i.test(f.name));
+      if (vmds.length === 0) {
+        setUploadError(".vmd 파일이 아닙니다");
+        return;
+      }
+      // Persist first (IDB → auto-publish → export zips), then register
+      // on the live stage for immediate playback without a reload.
+      if (canPersist && puppetKey) {
+        await addPuppetFiles(
+          puppetKey as PuppetId,
+          vmds.map((f) => ({
+            name: f.name,
+            path: `motions/${f.name}`,
+            size: f.size,
+            blob: f,
+          })),
+        );
+      }
+      for (const f of vmds) {
+        adapter.addMotionFile(f.name.replace(/\.vmd$/i, ""), f);
+      }
+      setMotions(adapter.getMotionNames());
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  const playing = transport.name;
+
   return (
     <section>
-      <h3 className="mb-2 text-[10px] uppercase tracking-widest">Motions (VMD)</h3>
-      <div className="flex flex-wrap gap-1">
-        {animations.map((a) => (
-          <button
-            key={a.name}
-            type="button"
-            onClick={() => {
-              adapter.playAnimation(a.name);
-              setPlaying(a.name);
-            }}
-            className={`rounded border px-2 py-1 text-xs ${
-              playing === a.name
-                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
-            }`}
-          >
-            ▶ {a.name}
-          </button>
-        ))}
+      <div className="mb-2 flex items-center justify-between">
+        <h3
+          className="text-[10px] uppercase tracking-widest"
+          title="MMD 모션은 모델(.pmx)에 내장되지 않고 별도 .vmd 파일로 배포됩니다. 여기서 업로드한 VMD 는 라이브러리에 저장되어 export/Geny 동기화에 함께 실립니다."
+        >
+          Motions (VMD)
+        </h3>
         <button
           type="button"
-          onClick={() => {
-            adapter.stopAnimation();
-            setPlaying(null);
-          }}
-          className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+          className="rounded border border-[var(--color-accent)]/60 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)] disabled:opacity-40"
         >
-          ⏹ 정지 (idle 복귀)
+          {uploading ? "저장 중…" : "+ VMD 업로드"}
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".vmd"
+          multiple
+          className="hidden"
+          onChange={(e) => void handleUpload(e.target.files)}
+        />
       </div>
+      {uploadError && (
+        <p className="mb-1 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] text-red-400">
+          {uploadError}
+        </p>
+      )}
+      {motions.length === 0 ? (
+        <p className="text-[10px] opacity-60">
+          이 모델 번들에는 모션(.vmd)이 없습니다 — PMX 포맷은 애니메이션을 내장하지 않습니다. VMD 를
+          업로드하면 재생·아이들 지정이 가능하고, 없으면 절차적 아이들(호흡·깜빡임)로 동작합니다.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1">
+            {motions.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => adapter.playAnimation(name)}
+                className={`rounded border px-2 py-1 text-xs ${
+                  playing === name
+                    ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                    : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+                }`}
+              >
+                ▶ {name}
+              </button>
+            ))}
+          </div>
+
+          {/* transport — visible while a motion is loaded */}
+          {playing && (
+            <div className="mt-2 flex items-center gap-2 rounded border border-[var(--color-border)] px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => (transport.paused ? adapter.resumeMotion() : adapter.pauseMotion())}
+                className="w-7 shrink-0 rounded border border-[var(--color-border)] py-0.5 text-xs hover:text-[var(--color-accent)]"
+                title={transport.paused ? "재생" : "일시정지"}
+              >
+                {transport.paused ? "▶" : "⏸"}
+              </button>
+              <button
+                type="button"
+                onClick={() => adapter.stopAnimation()}
+                className="w-7 shrink-0 rounded border border-[var(--color-border)] py-0.5 text-xs hover:text-[var(--color-accent)]"
+                title="정지 — 절차적 아이들로 복귀"
+              >
+                ⏹
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(1, Math.ceil(transport.duration))}
+                step={1}
+                value={Math.min(transport.frame, transport.duration)}
+                onPointerDown={() => {
+                  scrubbingRef.current = true;
+                }}
+                onPointerUp={() => {
+                  scrubbingRef.current = false;
+                }}
+                onChange={(e) => {
+                  const frame = Number(e.target.value);
+                  adapter.seekMotion(frame);
+                  setTransport((t) => ({ ...t, frame }));
+                }}
+                className="min-w-0 flex-1"
+              />
+              <span className="w-16 shrink-0 text-right font-mono text-[10px] opacity-70">
+                {frameToClock(transport.frame)} / {frameToClock(transport.duration)}
+              </span>
+            </div>
+          )}
+
+          {/* idle designation — what Geny's live view loops */}
+          <label className="mt-2 flex items-center gap-2 text-xs">
+            <span
+              className="w-24 shrink-0 text-[10px] text-[var(--color-fg-dim)]"
+              title="Geny 라이브 아바타가 반복 재생할 기본 모션. (없음) = 호흡·깜빡임 절차적 아이들."
+            >
+              아이들 모션
+            </span>
+            <select
+              value={motions.includes(idleMotion) ? idleMotion : ""}
+              onChange={(e) => onIdleMotionChange(e.target.value)}
+              className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-xs"
+            >
+              <option value="">(없음 — 절차적 아이들)</option>
+              {motions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      )}
     </section>
   );
 }

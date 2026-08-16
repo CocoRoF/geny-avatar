@@ -138,6 +138,7 @@ export class MmdStage {
   private vmdFiles = new Map<string, File>();
   private animationHandles = new Map<string, unknown>();
   private playingAnimation: string | null = null;
+  private motionPaused = false;
   private idleObserver: Observer<Scene> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private defaultCamera: MmdCameraPose | null = null;
@@ -340,6 +341,7 @@ export class MmdStage {
     if (
       rt &&
       this.playingAnimation &&
+      !this.motionPaused &&
       rt.animationFrameTimeDuration > 0 &&
       rt.currentFrameTime >= rt.animationFrameTimeDuration - 0.001
     ) {
@@ -442,10 +444,10 @@ export class MmdStage {
     if (mat) mat.alpha = Math.max(0, Math.min(1, alpha));
   }
 
-  // ----- animations -----
+  // ----- animations (VMD motions) -----
 
-  /** Play a bundled VMD by stem name. Procedural idle pauses while a
-   *  motion drives the model (double-driving morphs looks broken). */
+  /** Play a VMD by stem name. Procedural idle pauses while a motion
+   *  drives the model (double-driving bones/morphs looks broken). */
   async playAnimation(name: string): Promise<void> {
     const model = this.mmdModel;
     const rt = this.mmdRuntime;
@@ -461,6 +463,7 @@ export class MmdStage {
     }
     model.setRuntimeAnimation(handle as never);
     this.playingAnimation = name;
+    this.motionPaused = false;
     await rt.seekAnimation(0, true);
     await rt.playAnimation();
   }
@@ -472,6 +475,60 @@ export class MmdStage {
     rt.pauseAnimation();
     model.setRuntimeAnimation(null);
     this.playingAnimation = null;
+    this.motionPaused = false;
+  }
+
+  pauseAnimation(): void {
+    if (!this.playingAnimation) return;
+    this.mmdRuntime?.pauseAnimation();
+    this.motionPaused = true;
+  }
+
+  resumeAnimation(): void {
+    if (!this.playingAnimation) return;
+    void this.mmdRuntime?.playAnimation();
+    this.motionPaused = false;
+  }
+
+  /** Jump to an MMD frame (30fps units). */
+  seekAnimation(frame: number): void {
+    if (!this.playingAnimation) return;
+    void this.mmdRuntime?.seekAnimation(Math.max(0, frame), true);
+  }
+
+  /**
+   * Register an additional VMD at runtime (Animation tab upload). A
+   * same-name replace drops the cached runtime animation so the next
+   * play re-parses the new bytes.
+   */
+  addVmdFile(name: string, file: File): void {
+    const stale = this.animationHandles.get(name);
+    if (stale !== undefined) {
+      if (this.playingAnimation === name) this.stopAnimation();
+      try {
+        this.mmdModel?.destroyRuntimeAnimation(stale as never);
+      } catch {
+        /* handle already destroyed with a prior model */
+      }
+      this.animationHandles.delete(name);
+    }
+    this.vmdFiles.set(name, file);
+  }
+
+  getMotionNames(): string[] {
+    return [...this.vmdFiles.keys()];
+  }
+
+  /** Transport state for the Animation tab's seek bar. Frames are MMD
+   *  30fps units; duration 0 means "nothing loaded/playing". */
+  getMotionState(): { name: string | null; paused: boolean; frame: number; duration: number } {
+    const rt = this.mmdRuntime;
+    return {
+      name: this.playingAnimation,
+      paused: this.motionPaused,
+      frame: rt?.currentFrameTime ?? 0,
+      duration: this.playingAnimation ? (rt?.animationFrameTimeDuration ?? 0) : 0,
+    };
   }
 
   // ----- procedural idle (blink + breath) -----
