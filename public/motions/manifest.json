@@ -3,63 +3,63 @@
     "id": "idle-breeze",
     "file": "idle-breeze.vmd",
     "label": "잔잔한 아이들",
-    "description": "호흡과 느린 체중 이동 — 기본 대기 모션",
+    "description": "호흡·체중 이동·어깨 결 — 기본 대기 모션",
     "seconds": 8
   },
   {
     "id": "idle-groove",
     "file": "idle-groove.vmd",
     "label": "리듬 아이들",
-    "description": "가볍게 리듬 타는 대기 모션",
+    "description": "무릎으로 리듬 타는 대기 모션 (다리는 IK 로 자연 굽힘)",
     "seconds": 4
   },
   {
     "id": "greeting-wave",
     "file": "greeting-wave.vmd",
     "label": "손 인사",
-    "description": "오른손을 들어 흔드는 인사",
+    "description": "어깨-팔-팔꿈치가 함께 움직이는 손 인사",
     "seconds": 5
   },
   {
     "id": "bow",
     "file": "bow.vmd",
     "label": "정중한 인사",
-    "description": "허리 숙여 인사 (절)",
+    "description": "목-허리-엉덩이가 순서대로 접히는 절",
     "seconds": 5
   },
   {
     "id": "nod",
     "file": "nod.vmd",
     "label": "끄덕끄덕",
-    "description": "고개를 두 번 끄덕임 (긍정)",
+    "description": "목과 머리가 함께 끄덕임 (긍정)",
     "seconds": 2.5
   },
   {
     "id": "head-shake",
     "file": "head-shake.vmd",
     "label": "도리도리",
-    "description": "고개를 좌우로 흔듦 (부정)",
+    "description": "목-머리-시선이 함께 도는 부정 표현",
     "seconds": 2.5
   },
   {
     "id": "happy-bounce",
     "file": "happy-bounce.vmd",
-    "label": "신나는 점프",
-    "description": "기쁨 표현 — 통통 뛰기",
+    "label": "신나는 바운스",
+    "description": "무릎으로 통통 튀는 기쁨 표현 (지면 바운스)",
     "seconds": 4
   },
   {
     "id": "look-around",
     "file": "look-around.vmd",
     "label": "두리번",
-    "description": "좌우를 둘러보는 시선 이동",
+    "description": "몸통-목-머리-눈이 순서대로 도는 시선 이동",
     "seconds": 6
   },
   {
     "id": "sway-dance",
     "file": "sway-dance.vmd",
     "label": "리듬 스윙",
-    "description": "좌우로 스텝 밟는 가벼운 춤",
+    "description": "체중 이동에 발뒤꿈치가 따라오는 좌우 스윙",
     "seconds": 8
   }
 ]

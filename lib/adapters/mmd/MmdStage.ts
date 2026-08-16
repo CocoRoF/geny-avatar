@@ -78,6 +78,11 @@ type BoneLike = {
   rotationQuaternion: Quaternion;
 };
 
+type SkeletonLike = {
+  bones: BoneLike[];
+  returnToRest?: () => void;
+};
+
 export type MmdLoadResult = {
   modelNameJp: string;
   materials: { index: number; name: string }[];
@@ -144,6 +149,7 @@ export class MmdStage {
   private defaultCamera: MmdCameraPose | null = null;
   private blinkMorph: string | null = null;
   private skeletonBones: BoneLike[] = [];
+  private skeleton: SkeletonLike | null = null;
   private disposed = false;
 
   constructor() {
@@ -235,8 +241,9 @@ export class MmdStage {
     this.materials = [...(metadata.materials as Material[])];
     // Capture the skeleton reference before createMmdModel — metadata is
     // trimmed afterwards and the root mesh itself doesn't carry it.
-    this.skeletonBones =
-      (metadata as unknown as { skeleton?: { bones: BoneLike[] } }).skeleton?.bones ?? [];
+    const skeleton = (metadata as unknown as { skeleton?: SkeletonLike }).skeleton ?? null;
+    this.skeleton = skeleton;
+    this.skeletonBones = skeleton?.bones ?? [];
 
     // Morph catalog — name + PMX panel byte. `morphs` metadata carries
     // the parser's PmxObject.Morph entries (name / category / …).
@@ -476,6 +483,16 @@ export class MmdStage {
     model.setRuntimeAnimation(null);
     this.playingAnimation = null;
     this.motionPaused = false;
+    // Detaching an animation leaves every bone frozen at its last
+    // animated pose (a bounce stopped mid-dip stays crouched forever —
+    // the procedural idle only re-drives arms/torso/head). Return the
+    // whole skeleton to rest; the idle driver rebuilds its stance on
+    // the next frame.
+    try {
+      this.skeleton?.returnToRest?.();
+    } catch {
+      /* best-effort — worst case the old behavior */
+    }
   }
 
   pauseAnimation(): void {
