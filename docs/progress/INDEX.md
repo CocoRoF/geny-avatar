@@ -129,6 +129,7 @@
 | 2026-08-15 | [112 mmd_runtime](2026-08-15_112_mmd_runtime.md) | MMD 3D | 완료 — MMD(PMX/PMD) 3D 런타임 랜딩: MmdAdapter + babylon-mmd MmdStage(dynamic import), selfHostedView capability, Animation 탭 MMD 섹션(모프/감정/카메라/VMD), sidecar `mmd` 블록. headless E2E(Chisa 45 materials·116 morphs) PASS. v0.4.0 |
 | 2026-08-16 | [113 mmd_pose_idle_gpu](2026-08-16_113_mmd_pose_idle_gpu.md) | MMD 개선 | 완료 — T-포즈 탈출(腕 Z±0.6rad 차렷 포즈)+층위 아이들(diff 0.7%→3.5%)+GPU 방어(백버퍼 캡·high-performance). 카메라 프리즈는 실GPU 과부하 판정 |
 | 2026-08-16 | [114 mmd_motion_transport](2026-08-16_114_mmd_motion_transport.md) | MMD 모션 | 완료 — VMD 업로드(IDB 영속·export 동승)+트랜스포트(⏸/⏹/시크)+아이들 모션 지정(idleMotionGroupName 재사용)+Geny 라이브 루프 재생. PMX 는 애니메이션 비내장 확인. v0.5.0 |
+| 2026-08-16 | [115 mmd_motion_presets](2026-08-16_115_mmd_motion_presets.md) | MMD 모션 | 완료 — 수학적 저작 VMD 프리셋 9종(생성기 커밋·결정론) + Animation 탭 내장 프리셋 블록(미리보기/추가). pitch 부호·팔꿈치 fold 평면 실증 기록. v0.6.0 |
 
 ## 운영 규칙
 

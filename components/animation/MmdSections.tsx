@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MorphCatalogEntry } from "@/lib/adapters/AvatarAdapter";
 import type { MmdAdapter } from "@/lib/adapters/MmdAdapter";
 import type { AnimationConfigValue } from "@/lib/avatar/usePuppetAnimationConfig";
+import { fetchMotionPresets, fetchPresetFile, type MotionPreset } from "@/lib/mmd/motionPresets";
 import { addPuppetFiles, type PuppetId } from "@/lib/persistence/db";
 import { EMOTION_KEYS, type EmotionKey } from "./ExpressionsSection";
 
@@ -102,6 +103,8 @@ function MmdMotionsSection({
   const [transport, setTransport] = useState(() => adapter.getMotionState());
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [presets, setPresets] = useState<MotionPreset[]>([]);
+  const [presetBusy, setPresetBusy] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // While the user holds the seek slider we stop mirroring the runtime's
   // frame into it — otherwise the 250ms poll fights the drag.
@@ -115,7 +118,55 @@ function MmdMotionsSection({
     return () => window.clearInterval(t);
   }, [adapter]);
 
+  // Built-in preset manifest — tiny, fetched once per session.
+  useEffect(() => {
+    let cancelled = false;
+    fetchMotionPresets()
+      .then((list) => {
+        if (!cancelled) setPresets(list);
+      })
+      .catch((e) => console.warn("[MmdMotions] preset manifest load failed", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const canPersist = !!puppetKey && !puppetKey.startsWith("builtin:");
+
+  /** Preview: register on the live stage under the preset id and play.
+   *  NOT persisted — gone on reload unless the user clicks 추가. */
+  async function previewPreset(preset: MotionPreset) {
+    setPresetBusy(preset.id);
+    try {
+      const file = await fetchPresetFile(preset);
+      adapter.addMotionFile(preset.id, file);
+      adapter.playAnimation(preset.id);
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetBusy(null);
+    }
+  }
+
+  /** Add to the puppet: persist into IDB so it rides exports + Geny
+   *  sync and appears in the regular motion list / idle dropdown. */
+  async function addPreset(preset: MotionPreset) {
+    setPresetBusy(preset.id);
+    try {
+      const file = await fetchPresetFile(preset);
+      if (canPersist && puppetKey) {
+        await addPuppetFiles(puppetKey as PuppetId, [
+          { name: file.name, path: `motions/${file.name}`, size: file.size, blob: file },
+        ]);
+      }
+      adapter.addMotionFile(preset.id, file);
+      setMotions(adapter.getMotionNames());
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetBusy(null);
+    }
+  }
 
   async function handleUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -185,10 +236,62 @@ function MmdMotionsSection({
           {uploadError}
         </p>
       )}
+
+      {/* built-in presets — our own authored motions, every model can
+          use them out of the box (see scripts/generate-motion-presets) */}
+      {presets.length > 0 && (
+        <div className="mb-2 rounded border border-[var(--color-border)] px-2 py-1.5">
+          <p className="mb-1 text-[10px] uppercase tracking-widest text-[var(--color-fg-dim)]">
+            내장 프리셋
+          </p>
+          <ul className="flex flex-col gap-0.5">
+            {presets.map((p) => {
+              const added = motions.includes(p.id);
+              const busy = presetBusy === p.id;
+              return (
+                <li key={p.id} className="flex items-center gap-1 text-xs">
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title={`${p.description} (${p.seconds}s)`}
+                  >
+                    {p.label}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void previewPreset(p)}
+                    className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)] disabled:opacity-40"
+                    title="미리보기 재생 (라이브러리에는 저장되지 않음)"
+                  >
+                    ▶
+                  </button>
+                  {added ? (
+                    <span className="shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)]">
+                      추가됨
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy || !canPersist}
+                      onClick={() => void addPreset(p)}
+                      className="shrink-0 rounded border border-[var(--color-accent)]/60 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)] disabled:opacity-40"
+                      title="이 모델의 모션으로 저장 — export/Geny 동기화에 포함되고 아이들 지정 가능"
+                    >
+                      {busy ? "…" : "+ 추가"}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {motions.length === 0 ? (
         <p className="text-[10px] opacity-60">
-          이 모델 번들에는 모션(.vmd)이 없습니다 — PMX 포맷은 애니메이션을 내장하지 않습니다. VMD 를
-          업로드하면 재생·아이들 지정이 가능하고, 없으면 절차적 아이들(호흡·깜빡임)로 동작합니다.
+          이 모델 번들에는 모션(.vmd)이 없습니다 — PMX 포맷은 애니메이션을 내장하지 않습니다. 위
+          내장 프리셋을 추가하거나 VMD 를 업로드하면 재생·아이들 지정이 가능하고, 없으면 절차적
+          아이들(호흡·깜빡임)로 동작합니다.
         </p>
       ) : (
         <>

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "idle-breeze",
+    "file": "idle-breeze.vmd",
+    "label": "잔잔한 아이들",
+    "description": "호흡과 느린 체중 이동 — 기본 대기 모션",
+    "seconds": 8
+  },
+  {
+    "id": "idle-groove",
+    "file": "idle-groove.vmd",
+    "label": "리듬 아이들",
+    "description": "가볍게 리듬 타는 대기 모션",
+    "seconds": 4
+  },
+  {
+    "id": "greeting-wave",
+    "file": "greeting-wave.vmd",
+    "label": "손 인사",
+    "description": "오른손을 들어 흔드는 인사",
+    "seconds": 5
+  },
+  {
+    "id": "bow",
+    "file": "bow.vmd",
+    "label": "정중한 인사",
+    "description": "허리 숙여 인사 (절)",
+    "seconds": 5
+  },
+  {
+    "id": "nod",
+    "file": "nod.vmd",
+    "label": "끄덕끄덕",
+    "description": "고개를 두 번 끄덕임 (긍정)",
+    "seconds": 2.5
+  },
+  {
+    "id": "head-shake",
+    "file": "head-shake.vmd",
+    "label": "도리도리",
+    "description": "고개를 좌우로 흔듦 (부정)",
+    "seconds": 2.5
+  },
+  {
+    "id": "happy-bounce",
+    "file": "happy-bounce.vmd",
+    "label": "신나는 점프",
+    "description": "기쁨 표현 — 통통 뛰기",
+    "seconds": 4
+  },
+  {
+    "id": "look-around",
+    "file": "look-around.vmd",
+    "label": "두리번",
+    "description": "좌우를 둘러보는 시선 이동",
+    "seconds": 6
+  },
+  {
+    "id": "sway-dance",
+    "file": "sway-dance.vmd",
+    "label": "리듬 스윙",
+    "description": "좌우로 스텝 밟는 가벼운 춤",
+    "seconds": 8
+  }
+]
