@@ -25,11 +25,12 @@
  * is recorded.
  */
 
-import { type Zippable, zipSync } from "fflate";
+import type { Zippable } from "fflate";
 import type { AvatarAdapter } from "../adapters/AvatarAdapter";
 import type { Avatar, Layer, LayerId } from "../avatar/types";
 import { loadPuppet, loadPuppetAnimationConfig, type PuppetId } from "../persistence/db";
 import type { BundleEntry } from "../upload/types";
+import { zipAsync } from "../utils/zipAsync";
 import { type BakedAtlasPage, bakeAtlasPages } from "./bakeAtlas";
 
 /** Sidecar JSON file emitted at the zip root. Geny's install endpoint
@@ -252,7 +253,9 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
     `${JSON.stringify(sidecar, null, 2)}\n`,
   );
 
-  const zipBytes = zipSync(zippable, { level: 6 });
+  // worker-offloaded — zipSync here blocked the main thread for
+  // seconds per bake on MMD-sized bundles (see lib/utils/zipAsync)
+  const zipBytes = await zipAsync(zippable as Record<string, Uint8Array>);
   const zipBlob = new Blob([new Uint8Array(zipBytes).buffer], { type: "application/zip" });
   const filename = makeFilename(row.name);
 

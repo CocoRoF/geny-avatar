@@ -1,6 +1,6 @@
-import { unzipSync } from "fflate";
 import type { AdapterLoadInput, FormatDetectionResult } from "../adapters/AvatarAdapter";
 import { detectFromFilenames } from "../adapters/AvatarRegistry";
+import { unzipAsync } from "../utils/zipAsync";
 import { rewriteLive2DManifest, rewriteSpineAtlas } from "./rewrite";
 import type { BundleEntry, ParsedBundle } from "./types";
 
@@ -131,7 +131,8 @@ function fileToEntry(file: File): BundleEntry {
 
 async function unpackZip(zipFile: File): Promise<BundleEntry[]> {
   const buffer = new Uint8Array(await zipFile.arrayBuffer());
-  const unzipped = unzipSync(buffer);
+  // worker-offloaded — a 38MB zip took ~1s of main-thread block sync
+  const unzipped = await unzipAsync(buffer);
   const out: BundleEntry[] = [];
   for (const [rawPath, bytes] of Object.entries(unzipped)) {
     // skip directory entries — fflate emits them as zero-byte trailing-slash names

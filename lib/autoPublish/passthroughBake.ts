@@ -24,9 +24,10 @@
  * would see if they viewed the puppet straight after upload.
  */
 
-import { type Zippable, zipSync } from "fflate";
+import type { Zippable } from "fflate";
 import { AVATAR_EDITOR_SCHEMA_VERSION, AVATAR_EDITOR_SIDECAR_FILE } from "../export/buildModelZip";
 import { loadPuppet, loadPuppetAnimationConfig, type PuppetId } from "../persistence/db";
+import { zipAsync } from "../utils/zipAsync";
 
 export interface PassthroughBakeResult {
   zip: Blob;
@@ -105,7 +106,7 @@ export async function buildPassthroughZip(
     `${JSON.stringify(sidecar, null, 2)}\n`,
   );
 
-  const bytes = zipSync(zippable, { level: 6 });
+  const bytes = await zipAsync(zippable as Record<string, Uint8Array>);
   const blob = new Blob([new Uint8Array(bytes).buffer], { type: "application/zip" });
   const safeName = (row.name || "puppet").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "");
   return {

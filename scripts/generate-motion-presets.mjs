@@ -89,11 +89,6 @@ const window_ = (t, a, b, c, d) => {
   if (t <= c) return 1;
   return 1 - ss((t - c) / (d - c));
 };
-/** one eased hump between a..b (sine arc) */
-const hump = (t, a, b) => {
-  if (t <= a || t >= b) return 0;
-  return Math.sin(Math.PI * ((t - a) / (b - a)));
-};
 
 /** yaw(Y)→pitch(X)→roll(Z) quaternion — same composition Babylon's
  *  RotationYawPitchRoll uses, matching the runtime's idle driver. */
@@ -325,7 +320,7 @@ const PRESETS = [
 ];
 
 // ── VMD encoder ────────────────────────────────────────────────────
-function encodeVmd(modelName, boneFrames) {
+function encodeVmd(boneFrames) {
   const HEADER = 30 + 20;
   const size = HEADER + 4 + boneFrames.length * 111 + 4 * 5;
   const buf = new ArrayBuffer(size);
@@ -387,7 +382,7 @@ for (const preset of PRESETS) {
       });
     }
   }
-  const bytes = encodeVmd("geny preset", frames);
+  const bytes = encodeVmd(frames);
   writeFileSync(join(OUT_DIR, `${preset.id}.vmd`), bytes);
   manifest.push({
     id: preset.id,

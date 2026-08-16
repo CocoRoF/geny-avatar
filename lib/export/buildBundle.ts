@@ -9,7 +9,7 @@
  * Output is one Blob ready for `URL.createObjectURL` + `<a download>`.
  */
 
-import { type Zippable, zipSync } from "fflate";
+import type { Zippable } from "fflate";
 import type { Layer } from "../avatar/types";
 import {
   type AIJobRow,
@@ -19,6 +19,7 @@ import {
   type PuppetId,
   type PuppetRow,
 } from "../persistence/db";
+import { zipAsync } from "../utils/zipAsync";
 import {
   type ExportedSession,
   type ExportedVariant,
@@ -170,7 +171,7 @@ export async function buildExportZip(input: BuildExportInput): Promise<BuildExpo
     zippable[pagesPaths[idx]] = new Uint8Array(await blob.arrayBuffer());
   }
 
-  const zipBytes = zipSync(zippable, { level: 6 });
+  const zipBytes = await zipAsync(zippable as Record<string, Uint8Array>);
   // The Blob ctor's BlobPart typing rejects `Uint8Array<ArrayBufferLike>` in
   // strict TS configs (the ctor wants ArrayBufferView<ArrayBuffer>). Wrap as
   // a fresh Uint8Array over a copied ArrayBuffer to satisfy the type — the

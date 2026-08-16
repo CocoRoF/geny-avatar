@@ -14,7 +14,6 @@
  * upload path.
  */
 
-import { unzipSync } from "fflate";
 import {
   GENY_AVATAR_BUNDLE_DIR,
   GENY_AVATAR_MARKER_FILE,
@@ -29,6 +28,7 @@ import {
   saveVariant,
 } from "../persistence/db";
 import type { BundleEntry } from "../upload/types";
+import { unzipAsync } from "../utils/zipAsync";
 
 export type RestoreResult = {
   puppetId: PuppetId;
@@ -54,7 +54,7 @@ export async function tryRestoreGenyAvatarZip(file: File): Promise<RestoreResult
   if (!file.name.toLowerCase().endsWith(".zip")) return null;
 
   const buffer = new Uint8Array(await file.arrayBuffer());
-  const unzipped = unzipSync(buffer);
+  const unzipped = await unzipAsync(buffer);
   const markerBytes = unzipped[GENY_AVATAR_MARKER_FILE];
   if (!markerBytes) return null;
 

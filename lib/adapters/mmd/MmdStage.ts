@@ -136,7 +136,6 @@ export class MmdStage {
   private mmdRuntime: MmdRuntime | null = null;
   private physicsRuntime: { dispose(): void } | null = null;
   private mmdModel: MmdModel | null = null;
-  private rootMesh: MmdMesh | null = null;
   private materialMeshes: Mesh[] = [];
   private materials: Material[] = [];
   private morphCatalog: MorphCatalogEntry[] = [];
@@ -243,7 +242,6 @@ export class MmdStage {
     container.addAllToScene();
 
     const rootMesh = container.meshes[0] as MmdMesh;
-    this.rootMesh = rootMesh;
     const metadata = rootMesh.metadata;
     this.materialMeshes = [...(metadata.meshes as Mesh[])];
     this.materials = [...(metadata.materials as Material[])];
