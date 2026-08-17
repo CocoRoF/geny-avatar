@@ -160,9 +160,19 @@ export class MmdAdapter implements AvatarAdapter {
   }
 
   playAnimation(name: string): void {
-    void this.stage?.playAnimation(name).catch((e) => {
-      console.warn(`[MmdAdapter] failed to play VMD "${name}"`, e);
-    });
+    void this.stage
+      ?.playAnimation(name)
+      .then(() => {
+        // the stage zeroes all morphs on switch (stale-face guard) —
+        // restore UI-held weights; VMD-tracked morphs are re-driven by
+        // the runtime every frame anyway, so this can't fight playback
+        for (const [morph, weight] of this.morphWeights) {
+          if (weight !== 0) this.stage?.setMorphWeight(morph, weight);
+        }
+      })
+      .catch((e) => {
+        console.warn(`[MmdAdapter] failed to play VMD "${name}"`, e);
+      });
   }
 
   stopAnimation(): void {

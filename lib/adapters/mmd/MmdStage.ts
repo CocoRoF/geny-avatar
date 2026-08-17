@@ -305,25 +305,20 @@ export class MmdStage {
     let physicsEnabled = false;
     let physics: ConstructorParameters<typeof MmdRuntime>[1] = null;
     try {
-      const [
-        { GetMmdWasmInstance },
-        { MmdWasmInstanceTypeSPR },
-        { MultiPhysicsRuntime },
-        { MmdBulletPhysics },
-      ] = await Promise.all([
-        import("babylon-mmd/esm/Runtime/Optimized/mmdWasmInstance"),
-        import("babylon-mmd/esm/Runtime/Optimized/InstanceType/singlePhysicsRelease"),
-        import("babylon-mmd/esm/Runtime/Optimized/Physics/Bind/Impl/multiPhysicsRuntime"),
-        import("babylon-mmd/esm/Runtime/Optimized/Physics/mmdBulletPhysics"),
-      ]);
-      const wasmInstance = await GetMmdWasmInstance(new MmdWasmInstanceTypeSPR());
+      const { MmdBulletPhysics } = await import(
+        "babylon-mmd/esm/Runtime/Optimized/Physics/mmdBulletPhysics"
+      );
+      // the page-global runtime — per-load instances would leak an
+      // entire wasm physics world on every model switch (dispose is
+      // forbidden, see getSharedPhysicsRuntime)
+      const shared = await getSharedPhysicsRuntime();
       if (this.disposed) throw new Error("MmdStage disposed during load");
-      const physicsRuntime = new MultiPhysicsRuntime(wasmInstance);
-      physicsRuntime.setGravity(new Vector3(0, -98, 0));
-      physicsRuntime.register(this.scene);
-      this.physicsRuntime = physicsRuntime;
-      physics = new MmdBulletPhysics(physicsRuntime);
-      physicsEnabled = true;
+      if (shared) {
+        shared.register(this.scene);
+        this.physicsRuntime = shared;
+        physics = new MmdBulletPhysics(shared as never);
+        physicsEnabled = true;
+      }
     } catch (e) {
       console.warn("[MmdStage] physics unavailable — continuing without", e);
     }
@@ -529,6 +524,12 @@ export class MmdStage {
     }
     const handle = await (pending as Promise<unknown>);
     if (this.disposed || this.playingAnimation !== name) return; // retargeted
+    // Switching motions directly (A→B without stop) must not leak A's
+    // facial state: the runtime only writes morphs present in the
+    // CURRENT animation's tracks, so a grin authored only in A would
+    // stay frozen through all of B. Zero the catalog first; the caller
+    // (adapter) re-applies UI-held morph weights on top.
+    for (const m of this.morphCatalog) this.setMorphWeight(m.name, 0);
     model.setRuntimeAnimation(handle as never);
     await rt.seekAnimation(0, true);
     await rt.playAnimation();

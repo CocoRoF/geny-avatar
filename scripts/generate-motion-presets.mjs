@@ -11,6 +11,16 @@
  * Output: public/motions/<id>.vmd + public/motions/manifest.json
  * Regenerate: `pnpm gen:motions` (deterministic — no RNG).
  *
+ * ── Face rules (v4 — expression pass) ──────────────────────────────
+ * Bones alone read as robotic no matter how good the easing is; the
+ * face has to join the gesture. Every preset therefore also authors
+ * MORPH tracks using the de-facto standard Japanese morph names
+ * (笑い/にこり/まばたき/困る/あ). Models missing a name simply skip that
+ * track (babylon-mmd binds by name), so this degrades gracefully.
+ * Blinks are AUTHORED IN THE VMD, timed to the motion's beats — the
+ * runtimes already yield procedural blinking to VMDs that carry morph
+ * tracks, so the file must bring its own.
+ *
  * ── Articulation rules (v2 — "관절을 제대로" feedback) ──────────────
  * A motion reads as natural only when whole JOINT CHAINS move:
  *   - arms: 肩(shoulder ~25%) → 腕(upper arm) → ひじ(elbow) together
@@ -54,6 +64,7 @@ const BONE_SJIS = {
   センター: [131, 90, 131, 147, 131, 94, 129, 91],
   下半身: [137, 186, 148, 188, 144, 103],
   上半身: [143, 227, 148, 188, 144, 103],
+  上半身2: [143, 227, 148, 188, 144, 103, 50],
   首: [142, 241],
   頭: [147, 170],
   両目: [151, 188, 150, 218],
@@ -66,6 +77,15 @@ const BONE_SJIS = {
   // leg IK targets — fullwidth ＩＫ, the standard MMD naming
   右足ＩＫ: [137, 69, 145, 171, 130, 104, 130, 106],
   左足ＩＫ: [141, 182, 145, 171, 130, 104, 130, 106],
+};
+
+// ── Shift-JIS morph name bytes (de-facto standard facial morphs) ───
+const MORPH_SJIS = {
+  笑い: [143, 206, 130, 162], // smiling eyes
+  にこり: [130, 201, 130, 177, 130, 232], // soft smile (mouth)
+  まばたき: [130, 220, 130, 206, 130, 189, 130, 171], // blink / eyes closed
+  困る: [141, 162, 130, 233], // troubled brows
+  あ: [130, 160], // open mouth "a"
 };
 
 // canonical MMD default interpolation block (64 bytes)
@@ -115,6 +135,16 @@ const sharp = (x, p) => Math.sign(x) * Math.abs(x) ** p;
 /** decaying envelope over t∈[0,1] — gestures lose energy naturally */
 const decay = (t, k = 1.6) => Math.exp(-k * t);
 
+/** natural blink at `atSec`: fast close (~70ms) · micro-hold · slower
+ *  open (~130ms). `tSec` is absolute seconds into the motion. */
+const blink = (tSec, atSec) => {
+  const dt = tSec - atSec;
+  if (dt < 0 || dt > 0.22) return 0;
+  if (dt < 0.07) return ss(dt / 0.07);
+  if (dt < 0.1) return 1;
+  return 1 - ss((dt - 0.1) / 0.12);
+};
+
 // ── articulation helpers ───────────────────────────────────────────
 // Arms as a chain: shoulder carries ~25% of the intent, elbow adds a
 // soft bend so the arm never reads as a rigid rod.
@@ -133,6 +163,15 @@ const headChain = (yaw = 0, pitch = 0, roll = 0) => ({
   首: { yaw: yaw * 0.35, pitch: pitch * 0.35, roll: roll * 0.35 },
   頭: { yaw: yaw * 0.65, pitch: pitch * 0.65, roll: roll * 0.65 },
 });
+// Torso as a chain: 上半身 keeps the full validated intent (models with
+// only one spine bone look exactly as strip-verified); 上半身2 — present
+// on virtually every modern model — adds a gentle extra segment so the
+// back CURVES instead of hinging at one joint. Missing bones are
+// skipped by name, so this is a pure upgrade.
+const torsoChain = (yaw = 0, pitch = 0, roll = 0) => ({
+  上半身: { yaw, pitch, roll },
+  上半身2: { yaw: yaw * 0.3, pitch: pitch * 0.3, roll: roll * 0.3 },
+});
 
 const PRESETS = [
   {
@@ -148,7 +187,7 @@ const PRESETS = [
       return {
         センター: { pos: [0.32 * sway, -0.16 + 0.14 * Math.cos(TAU * 2 * t), 0] },
         下半身: { yaw: -0.02 * sway, roll: 0.03 * sway },
-        上半身: { pitch: 0.05 * breath, yaw: 0.035 * sway, roll: -0.02 * sway },
+        ...torsoChain(0.035 * sway, 0.05 * breath, -0.02 * sway),
         ...headChain(-0.05 * sway, -0.035 * breath, 0.02 * sway),
         右肩: { roll: -0.02 * breath },
         右腕: { roll: ARM + 0.035 * breath },
@@ -156,6 +195,14 @@ const PRESETS = [
         左肩: { roll: 0.02 * armPhL },
         左腕: { roll: -(ARM + 0.035 * armPhL) },
         左ひじ: { yaw: -(0.09 + 0.03 * armPhL) },
+      };
+    },
+    face(t, S) {
+      // resting warmth + irregular blinks (single, then a double)
+      const s = t * S;
+      return {
+        にこり: 0.12,
+        まばたき: blink(s, 2.6) + blink(s, 5.4) + blink(s, 5.78),
       };
     },
   },
@@ -173,7 +220,7 @@ const PRESETS = [
       return {
         センター: { pos: [0.1 * lean, -0.95 * bob, 0] },
         下半身: { roll: -0.05 * lean, pitch: -0.03 * bob },
-        上半身: { roll: 0.09 * lean, pitch: -0.06 * bob },
+        ...torsoChain(0, -0.06 * bob, 0.09 * lean),
         ...headChain(0.04 * lean, 0.07 * bob, -0.06 * lean),
         右肩: { roll: -0.05 * bob },
         右腕: { roll: ARM + 0.14 * bob + 0.05 * armSw },
@@ -182,6 +229,9 @@ const PRESETS = [
         左腕: { roll: -(ARM + 0.14 * bob - 0.05 * armSw) },
         左ひじ: { yaw: -(0.12 + 0.14 * bob) },
       };
+    },
+    face(t, S) {
+      return { にこり: 0.32, まばたき: blink(t * S, 1.8) };
     },
   },
   {
@@ -202,7 +252,7 @@ const PRESETS = [
         // weight shifts off the waving side; body joins the greeting
         センター: { pos: [-0.35 * lift, -0.12 * lift, 0] },
         下半身: { roll: 0.05 * lift },
-        上半身: { roll: -0.13 * lift, yaw: 0.05 * lift },
+        ...torsoChain(0.05 * lift, 0, -0.13 * lift),
         ...headChain(0.12 * lift, -0.05 * nodBeat, 0.16 * lift),
         右肩: { roll: -0.3 * lift },
         右腕: { pitch: 0.5 * lift, roll: ARM + lift * (-1.22 - ARM) + 0.1 * wave },
@@ -211,6 +261,11 @@ const PRESETS = [
         左腕: { roll: -(ARM + 0.06 * lift) },
         左ひじ: { yaw: -(0.09 + 0.05 * lift) },
       };
+    },
+    face(t, S) {
+      // the smile blooms with the raise and lingers slightly past it
+      const lift = window_(t, 0.0, 0.16, 0.8, 0.98);
+      return { 笑い: 0.7 * lift, にこり: 0.25 * lift, まばたき: blink(t * S, 0.35) };
     },
   },
   {
@@ -226,7 +281,7 @@ const PRESETS = [
       return {
         センター: { pos: [0, -0.55 * w, 0] },
         下半身: { pitch: -0.14 * w },
-        上半身: { pitch: -0.52 * w + settle },
+        ...torsoChain(0, -0.52 * w + settle, 0),
         ...headChain(0, -0.3 * wHead + settle, 0),
         右肩: { roll: 0.05 * w },
         右腕: { roll: ARM + 0.16 * w, pitch: 0.1 * w },
@@ -235,6 +290,11 @@ const PRESETS = [
         左腕: { roll: -(ARM + 0.16 * w), pitch: 0.1 * w },
         左ひじ: { yaw: -(0.1 + 0.1 * w) },
       };
+    },
+    face(t) {
+      // eyes close gently through the bow — classic polite MMD bow
+      const w = window_(t, 0.08, 0.28, 0.58, 0.9);
+      return { まばたき: 0.9 * w, にこり: 0.22 * w };
     },
   },
   {
@@ -248,11 +308,15 @@ const PRESETS = [
       const nod = sharp(Math.max(0, Math.sin(TAU * 2 * t)), 0.7) * g;
       return {
         センター: { pos: [0, -0.06 * nod, 0] },
-        上半身: { pitch: -0.06 * nod },
+        ...torsoChain(0, -0.06 * nod, 0),
         ...headChain(0, -0.42 * nod, 0),
         ...armChainR(0.02 * nod, 0.09),
         ...armChainL(0.02 * nod, 0.09),
       };
+    },
+    face(t, S) {
+      const g = window_(t, 0.04, 0.16, 0.82, 0.96);
+      return { にこり: 0.4 * g, まばたき: blink(t * S, 1.55) };
     },
   },
   {
@@ -265,12 +329,17 @@ const PRESETS = [
       const env = decay(Math.max(0, t - 0.14) / 0.86, 1.1); // swings die down
       const shake = Math.sin(TAU * 2.6 * t) * g * env;
       return {
-        上半身: { yaw: 0.06 * shake },
+        ...torsoChain(0.06 * shake, 0, 0),
         ...headChain(0.42 * shake, 0, -0.04 * shake),
         両目: { yaw: 0.1 * shake },
         ...armChainR(0, 0.09),
         ...armChainL(0, 0.09),
       };
+    },
+    face(t, S) {
+      // troubled brows sell the "no" — released with a closing blink
+      const g = window_(t, 0.04, 0.14, 0.78, 0.94);
+      return { 困る: 0.65 * g, まばたき: blink(t * S, 2.12) };
     },
   },
   {
@@ -287,7 +356,7 @@ const PRESETS = [
       return {
         センター: { pos: [0, -1.35 * dip + 0.3 * pop, 0] },
         下半身: { pitch: -0.06 * dip },
-        上半身: { pitch: -0.1 * dip + 0.09 * pop, roll: 0.05 * Math.sin(TAU * t) * g },
+        ...torsoChain(0, -0.1 * dip + 0.09 * pop, 0.05 * Math.sin(TAU * t) * g),
         ...headChain(0, 0.16 * dip - 0.12 * pop, 0.04 * Math.sin(TAU * t) * g),
         右肩: { roll: -0.16 * pop },
         右腕: { roll: ARM + 0.2 * dip - 0.62 * pop },
@@ -296,6 +365,13 @@ const PRESETS = [
         左腕: { roll: -(ARM + 0.2 * dip - 0.62 * pop) },
         左ひじ: { yaw: -(0.14 + 0.18 * dip + 0.3 * pop) },
       };
+    },
+    face(t, S) {
+      // full joy: beaming eyes, mouth pops open on each hop
+      const beat = TAU * 2 * t;
+      const g = window_(t, 0.02, 0.1, 0.88, 0.98);
+      const pop = sharp(Math.max(0, -Math.sin(beat)), 0.8) * g;
+      return { 笑い: 0.85 * g, あ: 0.3 * pop, まばたき: blink(t * S, 0.28) };
     },
   },
   {
@@ -315,12 +391,17 @@ const PRESETS = [
       return {
         センター: { pos: [0.2 * dir, 0, 0] },
         下半身: { yaw: -0.06 * dir },
-        上半身: { yaw: 0.2 * dir, roll: -0.03 * dir },
+        ...torsoChain(0.2 * dir, 0, -0.03 * dir),
         ...headChain(0.52 * dir, 0.03 * (L + R), 0),
         両目: { yaw: 0.16 * eyeDir },
         ...armChainR(0.02 * (L + R), 0.09),
         ...armChainL(0.02 * (L + R), 0.09),
       };
+    },
+    face(t, S) {
+      // blink exactly at each gaze hand-off — how real eyes re-target
+      const s = t * S;
+      return { まばたき: blink(s, 2.7) + blink(s, 5.3) };
     },
   },
   {
@@ -337,7 +418,7 @@ const PRESETS = [
       return {
         センター: { pos: [1.15 * side, -0.55 * (1 - dipB) * g, 0] },
         下半身: { roll: -0.09 * side, yaw: 0.05 * Math.sin(beat / 2) * g },
-        上半身: { roll: 0.14 * side, yaw: -0.06 * Math.sin(beat / 2) * g },
+        ...torsoChain(-0.06 * Math.sin(beat / 2) * g, 0, 0.14 * side),
         ...headChain(0.08 * side, 0, -0.1 * side),
         右肩: { roll: -0.06 * Math.max(0, -armSw) },
         右腕: { roll: ARM + 0.3 * armSw },
@@ -347,13 +428,18 @@ const PRESETS = [
         左ひじ: { yaw: -(0.14 + 0.16 * Math.max(0, -armSw)) },
       };
     },
+    face(t, S) {
+      const g = window_(t, 0.02, 0.08, 0.9, 0.98);
+      const s = t * S;
+      return { にこり: 0.45 * g, まばたき: blink(s, 2.3) + blink(s, 5.9) };
+    },
   },
 ];
 
 // ── VMD encoder ────────────────────────────────────────────────────
-function encodeVmd(boneFrames) {
+function encodeVmd(boneFrames, morphFrames = []) {
   const HEADER = 30 + 20;
-  const size = HEADER + 4 + boneFrames.length * 111 + 4 * 5;
+  const size = HEADER + 4 + boneFrames.length * 111 + 4 + morphFrames.length * 23 + 4 * 4;
   const buf = new ArrayBuffer(size);
   const view = new DataView(buf);
   const bytes = new Uint8Array(buf);
@@ -384,8 +470,19 @@ function encodeVmd(boneFrames) {
     bytes.set(INTERP, off);
     off += 64;
   }
-  // morph / camera / light / self-shadow / ik-display sections: empty
-  for (let i = 0; i < 5; i++) {
+  // morph section: 15B Shift-JIS name + u32 frame + f32 weight
+  view.setUint32(off, morphFrames.length, true);
+  off += 4;
+  for (const f of morphFrames) {
+    bytes.set(f.nameSjis, off);
+    off += 15;
+    view.setUint32(off, f.frame, true);
+    off += 4;
+    view.setFloat32(off, f.weight, true);
+    off += 4;
+  }
+  // camera / light / self-shadow / ik-display sections: empty
+  for (let i = 0; i < 4; i++) {
     view.setUint32(off, 0, true);
     off += 4;
   }
@@ -413,7 +510,20 @@ for (const preset of PRESETS) {
       });
     }
   }
-  const bytes = encodeVmd(frames);
+  // face tracks: every frame (blinks are ~7 frames total and need the
+  // full 30fps density; 23B/key keeps files tiny anyway)
+  const morphFrames = [];
+  if (preset.face) {
+    for (let frame = 0; frame <= totalFrames; frame += 1) {
+      const weights = preset.face(frame / totalFrames, preset.seconds);
+      for (const [name, weight] of Object.entries(weights)) {
+        const nameSjis = MORPH_SJIS[name];
+        if (!nameSjis) throw new Error(`no Shift-JIS bytes for morph ${name}`);
+        morphFrames.push({ nameSjis, frame, weight: Math.min(1, Math.max(0, weight)) });
+      }
+    }
+  }
+  const bytes = encodeVmd(frames, morphFrames);
   writeFileSync(join(OUT_DIR, `${preset.id}.vmd`), bytes);
   manifest.push({
     id: preset.id,
@@ -422,7 +532,9 @@ for (const preset of PRESETS) {
     description: preset.description,
     seconds: preset.seconds,
   });
-  console.log(`  ${preset.id}.vmd — ${frames.length} keys, ${bytes.length} bytes`);
+  console.log(
+    `  ${preset.id}.vmd — ${frames.length} bone keys + ${morphFrames.length} morph keys, ${bytes.length} bytes`,
+  );
 }
 writeFileSync(join(OUT_DIR, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`wrote ${PRESETS.length} presets + manifest → public/motions/`);
