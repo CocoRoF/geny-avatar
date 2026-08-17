@@ -5,6 +5,7 @@ import type { MmdAdapter } from "@/lib/adapters/MmdAdapter";
 import { fetchPresetFile, type MotionPreset } from "@/lib/mmd/motionPresets";
 import { type MotionEditParams, NEUTRAL_EDIT, transformVmd } from "@/lib/mmd/vmdTransform";
 import { addPuppetFiles, type PuppetId } from "@/lib/persistence/db";
+import { MotionMakerSection } from "./MotionMaker";
 
 /**
  * Motion Studio — in-app motion editor. Pick any motion (built-in
@@ -97,6 +98,7 @@ const SLIDERS: SliderSpec[] = [
 export const UNSAFE_MOTION_NAME = /[\\/#%?*:"<>|\u0000-\u001f]|^\./;
 
 export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSaved }: Props) {
+  const [tab, setTab] = useState<"maker" | "edit">("maker");
   const [sourceKey, setSourceKey] = useState<string>("");
   const [params, setParams] = useState<MotionEditParams>(NEUTRAL_EDIT);
   const [saveName, setSaveName] = useState("");
@@ -273,11 +275,44 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
     <section>
       <h3
         className="mb-2 text-[10px] uppercase tracking-widest"
-        title="모션을 골라 속도·크기·표정을 조절해 나만의 모션으로 저장합니다. 저장된 모션은 일반 모션과 똑같이 export/아이들 지정에 쓸 수 있습니다."
+        title="모션 제작: 포즈를 잡아 키프레임 애니메이션을 직접 만듭니다. 빠른 편집: 기존 모션의 속도·크기·표정을 조절합니다."
       >
         모션 스튜디오
       </h3>
-      <div className="flex flex-col gap-2 rounded border border-white/10 bg-white/[0.03] p-2">
+      <div className="mb-2 flex gap-1">
+        <button
+          type="button"
+          onClick={() => setTab("maker")}
+          className={`rounded px-2 py-1 text-[11px] ${tab === "maker" ? "bg-[var(--color-accent)]/20 text-[var(--color-accent)]" : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"}`}
+        >
+          모션 제작
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("edit")}
+          className={`rounded px-2 py-1 text-[11px] ${tab === "edit" ? "bg-[var(--color-accent)]/20 text-[var(--color-accent)]" : "border border-[var(--color-border)] text-[var(--color-fg-dim)]"}`}
+        >
+          빠른 편집
+        </button>
+      </div>
+      {tab === "maker" && (
+        <div className="rounded border border-white/10 bg-white/[0.03] p-2">
+          <MotionMakerSection
+            adapter={adapter}
+            puppetKey={puppetKey}
+            motions={motions}
+            presetIds={presets.map((p) => p.id)}
+            onSaved={onSaved}
+          />
+        </div>
+      )}
+      <div
+        className={
+          tab === "edit"
+            ? "flex flex-col gap-2 rounded border border-white/10 bg-white/[0.03] p-2"
+            : "hidden"
+        }
+      >
         <select
           className="w-full rounded bg-black/30 px-2 py-1 text-xs"
           value={sourceKey}

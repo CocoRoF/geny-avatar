@@ -123,7 +123,7 @@ const ARM_L_BONE = "左腕";
  * takes over these bones completely; the rest pose only drives them
  * while no motion is active.
  */
-const ARM_DOWN_RAD = 0.6;
+const ARM_DOWN_RAD = 1.0;
 
 /** Backbuffer long-edge cap — see {@link MmdStage.updateScaling}. */
 const MAX_RENDER_EDGE_PX = 2200;
@@ -688,12 +688,16 @@ export class MmdStage {
     const eyesBone = bone(EYES_BONE);
     const armR = bone(ARM_R_BONE);
     const armL = bone(ARM_L_BONE);
+    const elbowR = bone("右ひじ");
+    const elbowL = bone("左ひじ");
     const rest = (b: BoneLike | null) => (b ? b.rotationQuaternion.clone() : null);
     const breathRest = rest(breathBone);
     const headRest = rest(headBone);
     const eyesRest = rest(eyesBone);
     const armRRest = rest(armR);
     const armLRest = rest(armL);
+    const elbowRRest = rest(elbowR);
+    const elbowLRest = rest(elbowL);
     const tmp = new Quaternion();
     const tmp2 = new Quaternion();
     const outQ = new Quaternion();
@@ -723,6 +727,18 @@ export class MmdStage {
         Quaternion.RotationYawPitchRollToRef(0, 0, -(ARM_DOWN_RAD + armDrift), tmp);
         armLRest.multiplyToRef(tmp, outQ);
         armL.rotationQuaternion = outQ;
+      }
+      // soft elbows — a straight-locked arm reads as a rod even at the
+      // natural hang angle (probe-validated 0.09 rad)
+      if (elbowR && elbowRRest) {
+        Quaternion.RotationYawPitchRollToRef(0.09 + armDrift * 0.5, 0, 0, tmp);
+        elbowRRest.multiplyToRef(tmp, outQ);
+        elbowR.rotationQuaternion = outQ;
+      }
+      if (elbowL && elbowLRest) {
+        Quaternion.RotationYawPitchRollToRef(-(0.09 + armDrift * 0.5), 0, 0, tmp);
+        elbowLRest.multiplyToRef(tmp, outQ);
+        elbowL.rotationQuaternion = outQ;
       }
 
       // torso — breath pitch + slow yaw sway

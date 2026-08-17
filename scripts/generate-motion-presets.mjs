@@ -139,7 +139,8 @@ function quatYPR(yaw, pitch, roll) {
   ];
 }
 
-const ARM = 0.6; // rest-pose arm-down angle
+const ARM = 1.0; // rest-pose arm-down angle (probe-validated: arms
+// hang naturally beside the body; 0.6 still read as an A/T-pose)
 
 /** asymmetric shaping: p<1 = fast attack / slow release (gravity feel),
  *  p>1 = slow build / snappy end. Applied to a 0..1 signal. */
@@ -267,16 +268,17 @@ const PRESETS = [
         下半身: { roll: 0.05 * lift },
         ...torsoChain(0.05 * lift, 0, -0.13 * lift),
         ...headChain(0.12 * lift, -0.05 * nodBeat, 0.16 * lift),
-        右肩: { roll: -0.25 * lift },
-        // side-probed hold: hand above the head IN the body plane; the
-        // wave itself is the whole arm swinging side-to-side (roll) with
-        // the elbow breathing in its side-safe range (0.10..0.60)
+        右肩: { roll: -0.2 * lift },
+        // v6 hold (front+side probed): DIAGONAL raise with the hand
+        // flexed upward — 腕{yaw−0.9, pitch−0.1, roll−1.1} + ひじ0.9.
+        // Total roll never passes vertical even at the wave extreme
+        // (−1.1−0.15−肩0.2 ≈ 83°), so no backward-bend from the side.
         右腕: {
-          yaw: -0.3 * lift,
+          yaw: -0.9 * lift,
           pitch: -0.1 * lift,
-          roll: ARM + lift * (-1.3 - ARM) + 0.16 * wave,
+          roll: ARM + lift * (-1.1 - ARM) + 0.15 * wave,
         },
-        右ひじ: { yaw: 0.09 + lift * (0.35 - 0.09) + 0.25 * wave * lift },
+        右ひじ: { yaw: 0.09 + lift * (0.9 - 0.09) + 0.15 * wave * lift },
         左肩: { roll: 0.03 * lift },
         左腕: { roll: -(ARM + 0.06 * lift) },
         左ひじ: { yaw: -(0.09 + 0.05 * lift) },
@@ -455,6 +457,65 @@ const PRESETS = [
       const g = window_(t, 0.02, 0.08, 0.9, 0.98);
       const s = t * S;
       return { にこり: 0.45 * g, まばたき: blink(s, 2.3) + blink(s, 5.9) };
+    },
+  },
+  {
+    id: "idle-calm",
+    label: "차분한 손모음",
+    description: "손을 앞으로 모은 얌전한 대기 자세 (호흡·미소)",
+    seconds: 8,
+    // STANCE idle: loops on the clasped pose (probe-validated
+    // 腕{yaw±0.25, roll±0.95} + ひじ∓0.6, hands meeting at the skirt).
+    // Boundary = the clasp itself, so the loop is seamless; the one-time
+    // ease-in from rest happens on entry and is intentional.
+    channels(t) {
+      const breath = Math.sin(TAU * 2 * t);
+      const sway = Math.sin(TAU * t);
+      return {
+        センター: { pos: [0.1 * sway, -0.1 + 0.09 * Math.cos(TAU * 2 * t), 0] },
+        下半身: { roll: 0.015 * sway },
+        ...torsoChain(0, 0.045 * breath, -0.015 * sway),
+        ...headChain(0.04 * sway, -0.03 * breath, 0.015 * sway),
+        右肩: { roll: -0.015 * breath },
+        右腕: { yaw: 0.25, roll: 0.95 + 0.02 * breath },
+        右ひじ: { yaw: -0.6 - 0.025 * breath },
+        左肩: { roll: 0.015 * breath },
+        左腕: { yaw: -0.25, roll: -(0.95 + 0.02 * breath) },
+        左ひじ: { yaw: 0.6 + 0.025 * breath },
+      };
+    },
+    face(t, S) {
+      const s = t * S;
+      return { にこり: 0.18, まばたき: blink(s, 2.2) + blink(s, 5.1) + blink(s, 5.45) };
+    },
+  },
+  {
+    id: "idle-lively",
+    label: "활기찬 대기",
+    description: "체중을 옮기며 두리번거리는 생기있는 대기",
+    seconds: 6,
+    channels(t) {
+      const beat = TAU * t; // one full weight cycle per loop
+      const shift = Math.sin(beat);
+      const bounce = Math.abs(Math.sin(TAU * 2 * t));
+      const lookBeat = window_(t, 0.3, 0.4, 0.52, 0.64) - window_(t, 0.68, 0.78, 0.86, 0.95);
+      return {
+        センター: { pos: [0.55 * shift, -0.25 * bounce, 0] },
+        下半身: { roll: -0.05 * shift, yaw: 0.03 * shift },
+        ...torsoChain(0.05 * shift, -0.02 * bounce, 0.07 * shift),
+        ...headChain(0.3 * lookBeat - 0.05 * shift, 0.02 * bounce, -0.08 * shift),
+        両目: { yaw: 0.12 * lookBeat },
+        右肩: { roll: -0.03 * bounce },
+        右腕: { roll: ARM + 0.05 * shift + 0.03 * bounce },
+        右ひじ: { yaw: 0.09 + 0.05 * bounce },
+        左肩: { roll: 0.03 * bounce },
+        左腕: { roll: -(ARM - 0.05 * shift + 0.03 * bounce) },
+        左ひじ: { yaw: -(0.09 + 0.05 * bounce) },
+      };
+    },
+    face(t, S) {
+      const s = t * S;
+      return { にこり: 0.3, まばたき: blink(s, 1.7) + blink(s, 4.6) };
     },
   },
 ];

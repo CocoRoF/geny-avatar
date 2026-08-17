@@ -61,5 +61,19 @@
     "label": "리듬 스윙",
     "description": "실제 스텝 폭으로 체중을 옮기는 좌우 스윙",
     "seconds": 8
+  },
+  {
+    "id": "idle-calm",
+    "file": "idle-calm.vmd",
+    "label": "차분한 손모음",
+    "description": "손을 앞으로 모은 얌전한 대기 자세 (호흡·미소)",
+    "seconds": 8
+  },
+  {
+    "id": "idle-lively",
+    "file": "idle-lively.vmd",
+    "label": "활기찬 대기",
+    "description": "체중을 옮기며 두리번거리는 생기있는 대기",
+    "seconds": 6
   }
 ]
