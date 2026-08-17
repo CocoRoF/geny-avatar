@@ -7,6 +7,7 @@ import type { AnimationConfigValue } from "@/lib/avatar/usePuppetAnimationConfig
 import { fetchMotionPresets, fetchPresetFile, type MotionPreset } from "@/lib/mmd/motionPresets";
 import { addPuppetFiles, type PuppetId } from "@/lib/persistence/db";
 import { EMOTION_KEYS, type EmotionKey } from "./ExpressionsSection";
+import { MotionStudioSection } from "./MotionStudio";
 
 /**
  * Animation-tab sections for the MMD runtime. The Cubism sections don't
@@ -398,6 +399,17 @@ function MmdMotionsSection({
           </label>
         </>
       )}
+
+      {/* Motion Studio — parametric editor over presets + saved VMDs */}
+      <div className="mt-3">
+        <MotionStudioSection
+          adapter={adapter}
+          puppetKey={puppetKey}
+          presets={presets}
+          motions={motions}
+          onSaved={(stem) => setMotions((prev) => (prev.includes(stem) ? prev : [...prev, stem]))}
+        />
+      </div>
     </section>
   );
 }

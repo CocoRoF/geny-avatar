@@ -206,6 +206,11 @@ export class MmdAdapter implements AvatarAdapter {
     return this.stage?.getMotionNames() ?? [];
   }
 
+  /** Raw registered VMD file — Motion Studio's transform source. */
+  getMotionFile(name: string): File | null {
+    return this.stage?.getMotionFile(name) ?? null;
+  }
+
   getMotionState(): { name: string | null; paused: boolean; frame: number; duration: number } {
     return this.stage?.getMotionState() ?? { name: null, paused: false, frame: 0, duration: 0 };
   }

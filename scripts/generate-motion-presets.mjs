@@ -40,9 +40,17 @@
  *     probe (scratchpad rig), never through direct-bone probing alone.
  *   - probed file-space facts on a real PMX:
  *       腕 roll +0.6 lowers the RIGHT arm (−0.6 left) · torso/head
- *       pitch − = bow/nod forward · articulated raised wave =
- *       肩 roll −0.25 + 腕 {pitch +0.45, roll −1.15} + ひじ yaw +1.0
- *       (pitch −0.45 turns the same combo into a straight-arm pole)
+ *       pitch − = bow/nod forward
+ *   - RAISED-ARM PLANE (side-probe matrix, v5): with the arm raised via
+ *       roll, 腕 pitch + and ひじ yaw ≳0.6 both push the hand BEHIND the
+ *       body plane — invisible from the front, ugly from the side (the
+ *       "팔이 뒤로 꺾임" bug). Validated raised wave hold:
+ *       肩 roll −0.25 + 腕 {yaw −0.3, pitch −0.1, roll −1.3} + ひじ 0.35,
+ *       hand lands above the head IN the body plane. Keep ひじ ≤0.6 and
+ *       腕 pitch ≤0 while the arm is up; wave by oscillating 腕 roll
+ *       (side-to-side), not ひじ yaw (fore-aft when raised).
+ *   - EVERY pose must be validated from BOTH cameras (front + side=1) —
+ *       a frontal-only check cannot see fore/aft tilt at all.
  *   - センター y is negative-down, MMD units (≈0.08 m per unit)
  *   - every preset starts AND ends at the neutral arms-down stance so
  *     seamless looping never pops
@@ -242,9 +250,6 @@ const PRESETS = [
     channels(t) {
       // snappy raise (0→0.16) · wave ×3 (0.16→0.78) · settle (0.78→0.97)
       const lift = window_(t, 0.0, 0.16, 0.78, 0.97);
-      // the elbow leads: it bends EARLIER than the arm finishes rising,
-      // so the hand arcs forward-up instead of a stiff T-sweep
-      const elbowLead = window_(t, 0.0, 0.1, 0.8, 0.95);
       const wavePhase = Math.min(1, Math.max(0, (t - 0.16) / 0.62));
       const wave = Math.sin(TAU * 3 * wavePhase) * window_(t, 0.14, 0.22, 0.72, 0.8);
       const nodBeat = Math.max(0, Math.sin(TAU * 3 * wavePhase)) * window_(t, 0.16, 0.3, 0.7, 0.8);
@@ -254,18 +259,27 @@ const PRESETS = [
         下半身: { roll: 0.05 * lift },
         ...torsoChain(0.05 * lift, 0, -0.13 * lift),
         ...headChain(0.12 * lift, -0.05 * nodBeat, 0.16 * lift),
-        右肩: { roll: -0.3 * lift },
-        右腕: { pitch: 0.5 * lift, roll: ARM + lift * (-1.22 - ARM) + 0.1 * wave },
-        右ひじ: { yaw: elbowLead * 1.05 + 0.55 * wave * lift },
+        右肩: { roll: -0.25 * lift },
+        // side-probed hold: hand above the head IN the body plane; the
+        // wave itself is the whole arm swinging side-to-side (roll) with
+        // the elbow breathing in its side-safe range (0.10..0.60)
+        右腕: {
+          yaw: -0.3 * lift,
+          pitch: -0.1 * lift,
+          roll: ARM + lift * (-1.3 - ARM) + 0.16 * wave,
+        },
+        右ひじ: { yaw: 0.09 + lift * (0.35 - 0.09) + 0.25 * wave * lift },
         左肩: { roll: 0.03 * lift },
         左腕: { roll: -(ARM + 0.06 * lift) },
         左ひじ: { yaw: -(0.09 + 0.05 * lift) },
       };
     },
     face(t, S) {
-      // the smile blooms with the raise and lingers slightly past it
-      const lift = window_(t, 0.0, 0.16, 0.8, 0.98);
-      return { 笑い: 0.7 * lift, にこり: 0.25 * lift, まばたき: blink(t * S, 0.35) };
+      // 笑い at PARTIAL weight reads as droopy/sleepy eyes (half-lidded),
+      // not a smile — so ramp fast and hold at FULL closed-smile arcs,
+      // with a real mouth smile underneath
+      const smile = window_(t, 0.04, 0.16, 0.8, 0.95);
+      return { 笑い: smile, にこり: 0.55 * smile, まばたき: blink(t * S, 0.12) };
     },
   },
   {
@@ -371,7 +385,8 @@ const PRESETS = [
       const beat = TAU * 2 * t;
       const g = window_(t, 0.02, 0.1, 0.88, 0.98);
       const pop = sharp(Math.max(0, -Math.sin(beat)), 0.8) * g;
-      return { 笑い: 0.85 * g, あ: 0.3 * pop, まばたき: blink(t * S, 0.28) };
+      // full-weight 笑い — partial weights read as sleepy, not joyful
+      return { 笑い: g, あ: 0.3 * pop, まばたき: blink(t * S, 0.28) };
     },
   },
   {

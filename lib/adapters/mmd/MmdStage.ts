@@ -602,6 +602,11 @@ export class MmdStage {
     return [...this.vmdFiles.keys()];
   }
 
+  /** Raw registered VMD file (Motion Studio reads bytes to transform). */
+  getMotionFile(name: string): File | null {
+    return this.vmdFiles.get(name) ?? null;
+  }
+
   /** Transport state for the Animation tab's seek bar. Frames are MMD
    *  30fps units; duration 0 means "nothing loaded/playing". */
   getMotionState(): { name: string | null; paused: boolean; frame: number; duration: number } {
