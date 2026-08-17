@@ -147,7 +147,9 @@ function MmdMotionsSection({
     setPresetBusy(preset.id);
     try {
       const file = await fetchPresetFile(preset);
-      adapter.addMotionFile(preset.id, file);
+      // ephemeral: a preview must never resurface as a persisted motion
+      // when the panel remounts and re-seeds from the adapter registry
+      adapter.addMotionFile(preset.id, file, { ephemeral: !motions.includes(preset.id) });
       adapter.playAnimation(preset.id);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
@@ -186,27 +188,41 @@ function MmdMotionsSection({
         setUploadError(".vmd 파일이 아닙니다");
         return;
       }
+      // Sanitize filenames: '#'/'%'/'?' etc. survive the zip + server
+      // extract but break the static-URL fetch in Geny's live view, so
+      // an unsanitized upload becomes an idle motion that never loads.
+      const safeName = (n: string) => {
+        const stem = n
+          .replace(/\.vmd$/i, "")
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
+          .replace(/[\\/#%?*:"<>|\u0000-\u001f]/g, "-")
+          .replace(/^\.+/, "");
+        return stem.length > 0 ? stem : "motion";
+      };
+      const stems = vmds.map((f) => safeName(f.name));
       // Persist first (IDB → auto-publish → export zips), then register
       // on the live stage for immediate playback without a reload.
       if (canPersist && puppetKey) {
         await addPuppetFiles(
           puppetKey as PuppetId,
-          vmds.map((f) => ({
-            name: f.name,
-            path: `motions/${f.name}`,
+          vmds.map((f, i) => ({
+            name: `${stems[i]}.vmd`,
+            path: `motions/${stems[i]}.vmd`,
             size: f.size,
             blob: f,
           })),
         );
       }
-      const stems = vmds.map((f) => f.name.replace(/\.vmd$/i, ""));
       for (let i = 0; i < vmds.length; i++) {
         adapter.addMotionFile(stems[i], vmds[i]);
       }
-      // track persisted names explicitly — adapter.getMotionNames()
-      // also contains preview-only registrations that must NOT show as
-      // "추가됨" / become idle-designatable (they die on reload)
-      setMotions((prev) => [...prev, ...stems.filter((n) => !prev.includes(n))]);
+      // track persisted names explicitly; keep the array identity when
+      // nothing new was added — a fresh reference here resets the
+      // Motion Studio's in-progress edit state for no reason
+      setMotions((prev) => {
+        const fresh = stems.filter((n) => !prev.includes(n));
+        return fresh.length === 0 ? prev : [...prev, ...fresh];
+      });
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {

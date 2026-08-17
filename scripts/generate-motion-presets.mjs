@@ -52,8 +52,12 @@
  *   - EVERY pose must be validated from BOTH cameras (front + side=1) —
  *       a frontal-only check cannot see fore/aft tilt at all.
  *   - センター y is negative-down, MMD units (≈0.08 m per unit)
- *   - every preset starts AND ends at the neutral arms-down stance so
- *     seamless looping never pops
+ *   - every preset starts AND ends at the neutral arms-down stance
+ *     (canonical rest: 腕 roll ±ARM, ひじ ±0.09, everything else 0) so
+ *     loops never pop AND chaining any two presets never steps a joint.
+ *     Idle oscillators keep their carriers zero at t=0/1 for the same
+ *     reason; sub-0.03 rad phase residue is accepted where killing it
+ *     would flatten the asymmetry that breaks the metronome feel
  *   - VMD quats generated here behave sign-identical to Babylon bone
  *     quats (verified live)
  *
@@ -156,12 +160,12 @@ const blink = (tSec, atSec) => {
 // ── articulation helpers ───────────────────────────────────────────
 // Arms as a chain: shoulder carries ~25% of the intent, elbow adds a
 // soft bend so the arm never reads as a rigid rod.
-const armChainR = (lower = 0, elbow = 0.06, shoulder = 0) => ({
+const armChainR = (lower = 0, elbow = 0.09, shoulder = 0) => ({
   右肩: { roll: shoulder },
   右腕: { roll: ARM + lower },
   右ひじ: { yaw: elbow },
 });
-const armChainL = (lower = 0, elbow = 0.06, shoulder = 0) => ({
+const armChainL = (lower = 0, elbow = 0.09, shoulder = 0) => ({
   左肩: { roll: -shoulder },
   左腕: { roll: -(ARM + lower) },
   左ひじ: { yaw: -elbow },
@@ -188,9 +192,11 @@ const PRESETS = [
     description: "호흡·불규칙 체중 이동 — 기본 대기 모션",
     seconds: 8,
     channels(t) {
-      // two incommensurate-feeling cycles so it never reads as a metronome
+      // two harmonics so it never reads as a metronome; both zero at
+      // t=0/1 so the entry pose sits on the neutral stance (no pop
+      // when the idle starts after a stop or another motion)
       const breath = Math.sin(TAU * 2 * t);
-      const sway = 0.7 * Math.sin(TAU * t) + 0.3 * Math.sin(TAU * 2 * t + 1.1);
+      const sway = 0.7 * Math.sin(TAU * t) + 0.3 * Math.sin(TAU * 2 * t);
       const armPhL = Math.sin(TAU * 2 * t + 0.5); // left arm lags — breaks mirror symmetry
       return {
         センター: { pos: [0.32 * sway, -0.16 + 0.14 * Math.cos(TAU * 2 * t), 0] },
@@ -223,7 +229,9 @@ const PRESETS = [
       const beat = TAU * 2 * t;
       // gravity: fast drop, slow recover
       const bob = sharp((1 - Math.cos(beat)) / 2, 0.65);
-      const lean = Math.sin(beat / 2 + Math.PI / 4);
+      // no phase offset — lean must be 0 at t=0/1 so entering the idle
+      // from a stop/another motion doesn't pop (boundary ≈ neutral)
+      const lean = Math.sin(beat / 2);
       const armSw = Math.sin(beat + 0.6);
       return {
         センター: { pos: [0.1 * lean, -0.95 * bob, 0] },
@@ -232,10 +240,10 @@ const PRESETS = [
         ...headChain(0.04 * lean, 0.07 * bob, -0.06 * lean),
         右肩: { roll: -0.05 * bob },
         右腕: { roll: ARM + 0.14 * bob + 0.05 * armSw },
-        右ひじ: { yaw: 0.12 + 0.14 * bob },
+        右ひじ: { yaw: 0.09 + 0.17 * bob },
         左肩: { roll: 0.05 * bob },
         左腕: { roll: -(ARM + 0.14 * bob - 0.05 * armSw) },
-        左ひじ: { yaw: -(0.12 + 0.14 * bob) },
+        左ひじ: { yaw: -(0.09 + 0.17 * bob) },
       };
     },
     face(t, S) {
@@ -299,10 +307,10 @@ const PRESETS = [
         ...headChain(0, -0.3 * wHead + settle, 0),
         右肩: { roll: 0.05 * w },
         右腕: { roll: ARM + 0.16 * w, pitch: 0.1 * w },
-        右ひじ: { yaw: 0.1 + 0.1 * w },
+        右ひじ: { yaw: 0.09 + 0.11 * w },
         左肩: { roll: -0.05 * w },
         左腕: { roll: -(ARM + 0.16 * w), pitch: 0.1 * w },
-        左ひじ: { yaw: -(0.1 + 0.1 * w) },
+        左ひじ: { yaw: -(0.09 + 0.11 * w) },
       };
     },
     face(t) {
@@ -374,10 +382,10 @@ const PRESETS = [
         ...headChain(0, 0.16 * dip - 0.12 * pop, 0.04 * Math.sin(TAU * t) * g),
         右肩: { roll: -0.16 * pop },
         右腕: { roll: ARM + 0.2 * dip - 0.62 * pop },
-        右ひじ: { yaw: 0.14 + 0.18 * dip + 0.3 * pop },
+        右ひじ: { yaw: 0.09 + 0.23 * dip + 0.35 * pop },
         左肩: { roll: 0.16 * pop },
         左腕: { roll: -(ARM + 0.2 * dip - 0.62 * pop) },
-        左ひじ: { yaw: -(0.14 + 0.18 * dip + 0.3 * pop) },
+        左ひじ: { yaw: -(0.09 + 0.23 * dip + 0.35 * pop) },
       };
     },
     face(t, S) {
@@ -437,10 +445,10 @@ const PRESETS = [
         ...headChain(0.08 * side, 0, -0.1 * side),
         右肩: { roll: -0.06 * Math.max(0, -armSw) },
         右腕: { roll: ARM + 0.3 * armSw },
-        右ひじ: { yaw: 0.14 + 0.16 * Math.max(0, armSw) },
+        右ひじ: { yaw: 0.09 + 0.21 * Math.max(0, armSw) },
         左肩: { roll: 0.06 * Math.max(0, armSw) },
         左腕: { roll: -(ARM - 0.3 * armSw) },
-        左ひじ: { yaw: -(0.14 + 0.16 * Math.max(0, -armSw)) },
+        左ひじ: { yaw: -(0.09 + 0.21 * Math.max(0, -armSw)) },
       };
     },
     face(t, S) {
@@ -511,7 +519,13 @@ for (const preset of PRESETS) {
   const totalFrames = Math.round(preset.seconds * 30);
   const SAMPLE_EVERY = 2; // dense keys — VMD lerp stays imperceptible
   const frames = [];
-  for (let frame = 0; frame <= totalFrames; frame += SAMPLE_EVERY) {
+  // sample points: every 2nd frame PLUS the terminal frame — an odd
+  // totalFrames would otherwise drop the authored end pose (the bone
+  // track would stop one frame short of the clip/morph tracks)
+  const samplePoints = [];
+  for (let frame = 0; frame <= totalFrames; frame += SAMPLE_EVERY) samplePoints.push(frame);
+  if (samplePoints[samplePoints.length - 1] !== totalFrames) samplePoints.push(totalFrames);
+  for (const frame of samplePoints) {
     const t = frame / totalFrames;
     const channels = preset.channels(t);
     for (const [bone, ch] of Object.entries(channels)) {

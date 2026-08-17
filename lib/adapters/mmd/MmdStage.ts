@@ -138,6 +138,30 @@ const MAX_RENDER_EDGE_PX = 2200;
  */
 let sharedPhysicsRuntime: { register(s: Scene): void; unregister(): void } | null = null;
 let sharedPhysicsFailed = false;
+/** Which stage currently owns the scene binding. babylon-mmd's
+ *  register() silently NO-OPS when the runtime is already bound to any
+ *  scene, and unregister() detaches whatever is bound — so overlapping
+ *  stage lifecycles (React strict-mode double mount) need explicit
+ *  ownership: the newest binder steals the binding, and a disposer only
+ *  unbinds if it still owns it. */
+let sharedPhysicsOwner: object | null = null;
+
+function bindSharedPhysics(owner: object, scene: Scene): void {
+  if (!sharedPhysicsRuntime) return;
+  sharedPhysicsRuntime.unregister(); // safe no-op when unbound
+  sharedPhysicsRuntime.register(scene);
+  sharedPhysicsOwner = owner;
+}
+
+function unbindSharedPhysics(owner: object): void {
+  if (sharedPhysicsOwner !== owner) return; // a newer stage owns it now
+  try {
+    sharedPhysicsRuntime?.unregister();
+  } catch {
+    /* best-effort */
+  }
+  sharedPhysicsOwner = null;
+}
 
 async function getSharedPhysicsRuntime(): Promise<typeof sharedPhysicsRuntime> {
   if (sharedPhysicsRuntime) return sharedPhysicsRuntime;
@@ -173,6 +197,7 @@ export class MmdStage {
   private materials: Material[] = [];
   private morphCatalog: MorphCatalogEntry[] = [];
   private vmdFiles = new Map<string, File>();
+  private ephemeralMotions = new Set<string>();
   private animationHandles = new Map<string, unknown>();
   private playingAnimation: string | null = null;
   private motionPaused = false;
@@ -314,8 +339,8 @@ export class MmdStage {
       const shared = await getSharedPhysicsRuntime();
       if (this.disposed) throw new Error("MmdStage disposed during load");
       if (shared) {
-        shared.register(this.scene);
-        this.physicsRuntime = shared;
+        bindSharedPhysics(this, this.scene);
+        this.physicsRuntime = { unregister: () => unbindSharedPhysics(this) };
         physics = new MmdBulletPhysics(shared as never);
         physicsEnabled = true;
       }
@@ -532,6 +557,10 @@ export class MmdStage {
     for (const m of this.morphCatalog) this.setMorphWeight(m.name, 0);
     model.setRuntimeAnimation(handle as never);
     await rt.seekAnimation(0, true);
+    // the user may have hit pause while the VMD was still parsing —
+    // honor it: leave the motion loaded at frame 0 instead of playing
+    // while the transport claims "paused"
+    if (this.motionPaused) return;
     await rt.playAnimation();
   }
 
@@ -582,24 +611,39 @@ export class MmdStage {
   /**
    * Register an additional VMD at runtime (Animation tab upload). A
    * same-name replace drops the cached runtime animation so the next
-   * play re-parses the new bytes.
+   * play re-parses the new bytes. `ephemeral` marks preview-only
+   * registrations (studio preview, preset preview) that must never
+   * surface as persisted motions.
    */
-  addVmdFile(name: string, file: File): void {
+  addVmdFile(name: string, file: File, opts?: { ephemeral?: boolean }): void {
     const stale = this.animationHandles.get(name);
     if (stale !== undefined) {
       if (this.playingAnimation === name) this.stopAnimation();
-      try {
-        this.mmdModel?.destroyRuntimeAnimation(stale as never);
-      } catch {
-        /* handle already destroyed with a prior model */
-      }
+      // the cache holds the in-flight PROMISE, not the handle — resolve
+      // it first or destroyRuntimeAnimation silently no-ops and the old
+      // parsed animation (full keyframe tables) leaks on every replace
+      const model = this.mmdModel;
+      void Promise.resolve(stale as Promise<unknown>)
+        .then((handle) => {
+          try {
+            model?.destroyRuntimeAnimation(handle as never);
+          } catch {
+            /* handle already destroyed with a prior model */
+          }
+        })
+        .catch(() => {
+          /* parse failed — nothing to destroy */
+        });
       this.animationHandles.delete(name);
     }
     this.vmdFiles.set(name, file);
+    if (opts?.ephemeral) this.ephemeralMotions.add(name);
+    else this.ephemeralMotions.delete(name);
   }
 
+  /** Persisted motion names only — preview registrations excluded. */
   getMotionNames(): string[] {
-    return [...this.vmdFiles.keys()];
+    return [...this.vmdFiles.keys()].filter((n) => !this.ephemeralMotions.has(n));
   }
 
   /** Raw registered VMD file (Motion Studio reads bytes to transform). */

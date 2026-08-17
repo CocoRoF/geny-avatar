@@ -118,7 +118,12 @@ export function parseVmd(bytes: Uint8Array): ParsedVmd {
       const frame = u32();
       const start = off;
       off += 1; // visible
+      // k comes from the file — bound it or a crafted count leaps past
+      // EOF and we'd emit an ik record whose embedded k contradicts its
+      // actual bytes (silent structural corruption on re-encode)
+      if (off + 4 > bytes.length) throw new Error("VMD ik 섹션이 손상되었습니다");
       const k = view.getUint32(off, true);
+      if (off + 4 + k * 21 > bytes.length) throw new Error("VMD ik 섹션이 손상되었습니다");
       off += 4 + k * 21;
       iks.push({ frame, rest: bytes.subarray(start, off) });
     }
@@ -253,9 +258,49 @@ function quatConj(q: [number, number, number, number]): [number, number, number,
   return [-q[0], -q[1], -q[2], q[3]];
 }
 
-/** frame → frame under a speed change, collision-safe ordering left to
- *  the caller (later keys win in MMD runtimes on equal frames). */
+/** frame → frame under a speed change. Many-to-one for speed>1 — the
+ *  caller MUST dedupe per track afterwards (see dedupeRetimed). */
 const retime = (frame: number, speed: number) => Math.max(0, Math.round(frame / speed));
+
+const fin = (x: number, fallback = 0) => (Number.isFinite(x) ? x : fallback);
+const IDENTITY_Q: [number, number, number, number] = [0, 0, 0, 1];
+function saneQuat(q: [number, number, number, number]): [number, number, number, number] {
+  return q.every(Number.isFinite) ? q : IDENTITY_Q;
+}
+
+/** After a retime, several source keys can land on the same output
+ *  frame. Keep the TEMPORALLY LAST source key per (track, frame) —
+ *  otherwise the winner depends on record order in the file and a
+ *  collision can freeze on a stale pose — and emit each track sorted
+ *  by frame so downstream parsers see a canonical ordering. */
+function dedupeRetimed<T extends { frame: number }>(
+  items: T[],
+  trackKey: (item: T) => string,
+  origFrame: (item: T) => number,
+): T[] {
+  const tracks = new Map<string, Map<number, { item: T; orig: number }>>();
+  const trackOrder: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const key = trackKey(item);
+    let track = tracks.get(key);
+    if (!track) {
+      track = new Map();
+      tracks.set(key, track);
+      trackOrder.push(key);
+    }
+    const prev = track.get(item.frame);
+    const orig = origFrame(item);
+    if (!prev || orig >= prev.orig) track.set(item.frame, { item, orig });
+  }
+  const out: T[] = [];
+  for (const key of trackOrder) {
+    const entries = [...(tracks.get(key) as Map<number, { item: T; orig: number }>).values()];
+    entries.sort((a, b) => a.item.frame - b.item.frame);
+    for (const e of entries) out.push(e.item);
+  }
+  return out;
+}
 
 /** Apply parametric edits to a VMD. Returns fresh bytes. */
 export function transformVmd(bytes: Uint8Array, params: MotionEditParams): Uint8Array {
@@ -270,7 +315,8 @@ export function transformVmd(bytes: Uint8Array, params: MotionEditParams): Uint8
     if (!ref || b.frame < ref.frame) refByName.set(key, b);
   }
 
-  const bones: BoneFrame[] = v.bones.map((b) => {
+  const origFrames = new Map<object, number>();
+  let bones: BoneFrame[] = v.bones.map((b) => {
     const name = decodeName(b.name);
     const key = name || String(b.name.join(","));
     const group = groupOf(name);
@@ -284,35 +330,78 @@ export function transformVmd(bytes: Uint8Array, params: MotionEditParams): Uint8
             : 1;
     const s = Math.max(0, params.overall * gScale);
     const ref = refByName.get(key);
-    let pos = b.pos;
-    let quat = b.quat;
+    // corrupt floats (NaN/Inf) must not poison the math or the output —
+    // sanitize to rest values before any arithmetic
+    let pos: [number, number, number] = [fin(b.pos[0]), fin(b.pos[1]), fin(b.pos[2])];
+    let quat = saneQuat(b.quat);
     if (ref && s !== 1) {
+      const rp: [number, number, number] = [fin(ref.pos[0]), fin(ref.pos[1]), fin(ref.pos[2])];
+      const rq = saneQuat(ref.quat);
       pos = [
-        ref.pos[0] + (b.pos[0] - ref.pos[0]) * s,
-        ref.pos[1] + (b.pos[1] - ref.pos[1]) * s,
-        ref.pos[2] + (b.pos[2] - ref.pos[2]) * s,
+        rp[0] + (pos[0] - rp[0]) * s,
+        rp[1] + (pos[1] - rp[1]) * s,
+        rp[2] + (pos[2] - rp[2]) * s,
       ];
       // q' = q0 ⊗ (q0⁻¹ ⊗ q)^s — scale the deviation, keep the stance
-      const delta = quatMul(quatConj(ref.quat), b.quat);
-      quat = quatMul(ref.quat, quatPow(delta, s));
+      const delta = quatMul(quatConj(rq), quat);
+      quat = quatMul(rq, quatPow(delta, s));
     }
-    return { ...b, frame: retime(b.frame, speed), pos, quat };
+    const next = { ...b, frame: retime(b.frame, speed), pos, quat };
+    origFrames.set(next, b.frame);
+    return next;
   });
+  // retime is injective for speed ≤ 1 (gaps ≥ 1/speed > 1 frame), so
+  // dedupe only when collisions are possible — keeping the source's
+  // record order otherwise preserves byte-identity for no-op edits
+  if (speed > 1)
+    bones = dedupeRetimed(
+      bones,
+      (b) => decodeName(b.name) || String(b.name.join(",")),
+      (b) => origFrames.get(b) ?? b.frame,
+    );
 
-  const morphs: MorphFrame[] = v.morphs.map((m) => ({
-    ...m,
-    frame: retime(m.frame, speed),
-    weight: Math.min(1, Math.max(0, m.weight * Math.max(0, params.face))),
-  }));
+  // face === 1 must be a true identity (bones already skip on s === 1):
+  // community VMDs legitimately carry out-of-range corrective weights
+  // that a silent clamp would rewrite behind the user's back
+  const faceScale = Math.max(0, params.face);
+  let morphs: MorphFrame[] = v.morphs.map((m) => {
+    const next = {
+      ...m,
+      frame: retime(m.frame, speed),
+      weight: faceScale === 1 ? fin(m.weight) : Math.min(1, Math.max(0, fin(m.weight) * faceScale)),
+    };
+    origFrames.set(next, m.frame);
+    return next;
+  });
+  if (speed > 1)
+    morphs = dedupeRetimed(
+      morphs,
+      (m) => decodeName(m.name) || String(m.name.join(",")),
+      (m) => origFrames.get(m) ?? m.frame,
+    );
+
+  const retimeSection = <T extends { frame: number }>(items: T[]): T[] => {
+    const mapped = items.map((x) => {
+      const next = { ...x, frame: retime(x.frame, speed) };
+      origFrames.set(next, x.frame);
+      return next;
+    });
+    if (speed <= 1) return mapped;
+    return dedupeRetimed(
+      mapped,
+      () => "",
+      (x) => origFrames.get(x) ?? x.frame,
+    );
+  };
 
   return encodeVmd({
     ...v,
     bones,
     morphs,
-    cameras: v.cameras.map((c) => ({ ...c, frame: retime(c.frame, speed) })),
-    lights: v.lights.map((l) => ({ ...l, frame: retime(l.frame, speed) })),
-    shadows: v.shadows.map((s) => ({ ...s, frame: retime(s.frame, speed) })),
-    iks: v.iks.map((ik) => ({ ...ik, frame: retime(ik.frame, speed) })),
+    cameras: retimeSection(v.cameras),
+    lights: retimeSection(v.lights),
+    shadows: retimeSection(v.shadows),
+    iks: retimeSection(v.iks),
   });
 }
 

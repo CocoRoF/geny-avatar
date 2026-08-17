@@ -89,17 +89,27 @@ const SLIDERS: SliderSpec[] = [
   },
 ];
 
+/** Characters that would NOT survive the whole chain (zip entry →
+ *  server extract → sidecar path → static URL): '#'/'?'/'%' break
+ *  URL parsing, the rest are zip/filesystem-hostile; leading dots hide
+ *  files, control characters are never legitimate. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control chars is the point
+export const UNSAFE_MOTION_NAME = /[\\/#%?*:"<>|\u0000-\u001f]|^\./;
+
 export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSaved }: Props) {
   const [sourceKey, setSourceKey] = useState<string>("");
   const [params, setParams] = useState<MotionEditParams>(NEUTRAL_EDIT);
   const [saveName, setSaveName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savedTick, setSavedTick] = useState(0);
-  // source bytes cache — sliders re-transform without re-fetching
-  const sourceBytesRef = useRef<Uint8Array | null>(null);
+  const [savedStem, setSavedStem] = useState<string | null>(null);
+  const [overwriteArmed, setOverwriteArmed] = useState(false);
+  // source bytes cache, stamped with the key it was fetched for — a
+  // late fetch from a previous source must never poison the cache
+  const sourceBytesRef = useRef<{ key: string; bytes: Uint8Array } | null>(null);
   const sourceKeyRef = useRef<string>("");
   const previewTimer = useRef<number | null>(null);
+  const aliveRef = useRef(true);
 
   const sources: { key: string; label: string; ref: SourceRef }[] = useMemo(() => {
     const p = presets.map((preset) => ({
@@ -115,6 +125,9 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
     return [...p, ...m];
   }, [presets, motions]);
 
+  const sourcesRef = useRef(sources);
+  sourcesRef.current = sources;
+
   const source = sources.find((s) => s.key === sourceKey) ?? null;
   const dirty = useMemo(
     () =>
@@ -125,32 +138,45 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
   );
 
   useEffect(() => {
-    // switching source resets edits and the byte cache
+    // switching source resets edits and the byte cache — keyed on the
+    // sourceKey ONLY (an unrelated motions-list refresh must not wipe
+    // in-progress slider state; see sourcesRef for lookups)
     sourceBytesRef.current = null;
     sourceKeyRef.current = sourceKey;
     setParams(NEUTRAL_EDIT);
     setError(null);
-    const s = sources.find((x) => x.key === sourceKey);
+    setSavedStem(null);
+    setOverwriteArmed(false);
+    const s = sourcesRef.current.find((x) => x.key === sourceKey);
     if (s) {
       const base = s.ref.kind === "preset" ? s.ref.preset.id : s.ref.name;
-      setSaveName(`${base}-커스텀`);
+      // default name avoids clobbering an earlier save of the same base
+      const taken = new Set(
+        sourcesRef.current.map((x) => (x.ref.kind === "motion" ? x.ref.name : x.ref.preset.id)),
+      );
+      let candidate = `${base}-커스텀`;
+      for (let i = 2; taken.has(candidate); i++) candidate = `${base}-커스텀-${i}`;
+      setSaveName(candidate);
     }
-  }, [sourceKey, sources]);
+  }, [sourceKey]);
 
-  async function loadSourceBytes(ref: SourceRef): Promise<Uint8Array> {
-    if (sourceBytesRef.current) return sourceBytesRef.current;
+  async function loadSourceBytes(ref: SourceRef, forKey: string): Promise<Uint8Array> {
+    const cached = sourceBytesRef.current;
+    if (cached && cached.key === forKey) return cached.bytes;
     let file: File | null = null;
     if (ref.kind === "preset") file = await fetchPresetFile(ref.preset);
     else file = adapter.getMotionFile(ref.name);
     if (!file) throw new Error("모션 파일을 찾을 수 없습니다");
     const bytes = new Uint8Array(await file.arrayBuffer());
-    sourceBytesRef.current = bytes;
+    // write the cache only if this key is STILL the selected source —
+    // otherwise a slow fetch for source A would serve A's bytes to B
+    if (sourceKeyRef.current === forKey) sourceBytesRef.current = { key: forKey, bytes };
     return bytes;
   }
 
   async function buildFile(name: string): Promise<File> {
     if (!source) throw new Error("모션을 먼저 선택하세요");
-    const bytes = await loadSourceBytes(source.ref);
+    const bytes = await loadSourceBytes(source.ref, source.key);
     const out = transformVmd(bytes, params);
     const buf = new ArrayBuffer(out.length);
     new Uint8Array(buf).set(out);
@@ -160,23 +186,26 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
   /** live preview — debounced so slider drags don't re-encode per tick */
   function schedulePreview(next: MotionEditParams) {
     setParams(next);
+    setOverwriteArmed(false);
     if (previewTimer.current !== null) window.clearTimeout(previewTimer.current);
+    const forKey = sourceKey;
+    const ref = source?.ref;
     previewTimer.current = window.setTimeout(() => {
       void (async () => {
         try {
-          if (!source) return;
-          const bytes = await loadSourceBytes(source.ref);
-          // guard: source switched while fetching
-          if (sourceKeyRef.current !== sourceKey) return;
+          if (!ref) return;
+          const bytes = await loadSourceBytes(ref, forKey);
+          // guards: source switched or studio unmounted while fetching
+          if (!aliveRef.current || sourceKeyRef.current !== forKey) return;
           const out = transformVmd(bytes, next);
           const buf = new ArrayBuffer(out.length);
           new Uint8Array(buf).set(out);
           const file = new File([buf], "studio-preview.vmd");
-          adapter.addMotionFile(PREVIEW_NAME, file);
+          adapter.addMotionFile(PREVIEW_NAME, file, { ephemeral: true });
           adapter.playAnimation(PREVIEW_NAME);
           setError(null);
         } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
+          if (aliveRef.current) setError(e instanceof Error ? e.message : String(e));
         }
       })();
     }, 220);
@@ -194,14 +223,25 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
       setError("저장할 이름을 입력하세요");
       return;
     }
-    if (/[\\/]/.test(stem)) {
-      setError("이름에 경로 문자는 쓸 수 없습니다");
+    if (UNSAFE_MOTION_NAME.test(stem)) {
+      setError('이름에 쓸 수 없는 문자가 있습니다 (\\ / # % ? * : " < > | 또는 맨 앞의 점)');
       return;
     }
+    // overwriting an existing motion (or shadowing a preset id) needs
+    // an explicit second click — a silent replace destroys the prior
+    // blob in IDB and syncs the destruction outward
+    const exists = motions.includes(stem) || presets.some((p) => p.id === stem);
+    if (exists && !overwriteArmed) {
+      setOverwriteArmed(true);
+      setError(`"${stem}" 이(가) 이미 있습니다 — 한 번 더 누르면 덮어씁니다`);
+      return;
+    }
+    setOverwriteArmed(false);
     setBusy(true);
     setError(null);
     try {
       const file = await buildFile(stem);
+      if (!aliveRef.current) return;
       if (canPersist && puppetKey) {
         await addPuppetFiles(puppetKey as PuppetId, [
           { name: file.name, path: `motions/${file.name}`, size: file.size, blob: file },
@@ -209,17 +249,20 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
       }
       adapter.addMotionFile(stem, file);
       onSaved(stem);
-      setSavedTick((t) => t + 1);
+      setSavedStem(stem);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (aliveRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      if (aliveRef.current) setBusy(false);
     }
   }
 
-  // leaving the studio (unmount) stops a still-looping preview
+  // leaving the studio (unmount) stops a still-looping preview; the
+  // aliveRef also cancels in-flight debounced work past its await
   useEffect(() => {
+    aliveRef.current = true;
     return () => {
+      aliveRef.current = false;
       if (previewTimer.current !== null) window.clearTimeout(previewTimer.current);
       const state = adapter.getMotionState();
       if (state.name === PREVIEW_NAME) adapter.stopAnimation();
@@ -306,9 +349,9 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
                 </button>
               </div>
             )}
-            {savedTick > 0 && !error && (
+            {savedStem !== null && !error && (
               <p className="text-[10px] text-emerald-300/80">
-                저장됨 — 모션 목록에서 재생·아이들 지정할 수 있습니다.
+                &quot;{savedStem}&quot; 저장됨 — 모션 목록에서 재생·아이들 지정할 수 있습니다.
               </p>
             )}
           </>

@@ -197,9 +197,10 @@ export class MmdAdapter implements AvatarAdapter {
     this.stage?.seekAnimation(frame);
   }
 
-  /** Register an extra VMD uploaded after load (Animation tab). */
-  addMotionFile(name: string, file: File): void {
-    this.stage?.addVmdFile(name, file);
+  /** Register an extra VMD uploaded after load (Animation tab).
+   *  `ephemeral` = preview-only, excluded from getMotionNames(). */
+  addMotionFile(name: string, file: File, opts?: { ephemeral?: boolean }): void {
+    this.stage?.addVmdFile(name, file, opts);
   }
 
   getMotionNames(): string[] {
