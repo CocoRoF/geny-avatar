@@ -138,10 +138,20 @@ export function schedulePuppetPublish(
   existing.generation = generation;
   existing.timer = setTimeout(() => {
     existing.timer = null;
-    existing.inflight = _bakeAndPublish(puppetId).catch((err) => ({
-      status: "error" as const,
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    // SERIALIZE per puppet: MMD bundles take seconds to bake + POST, so
+    // an edit landing while a publish is in flight must CHAIN, never
+    // race — two concurrent POSTs finish in arbitrary order and the
+    // server keeps whichever wrote last (a stale zip could clobber the
+    // fresh one; observed as "idle designated but motion missing").
+    // The chained bake re-reads IDB, so it always ships the newest
+    // state; intermediate generations collapse into that single rerun.
+    const prior = existing.inflight ?? Promise.resolve();
+    existing.inflight = prior
+      .then(() => _bakeAndPublish(puppetId))
+      .catch((err) => ({
+        status: "error" as const,
+        error: err instanceof Error ? err.message : String(err),
+      }));
     void existing.inflight.finally(() => {
       const current = _pending.get(puppetId);
       if (current && current.generation === generation && !current.timer) {

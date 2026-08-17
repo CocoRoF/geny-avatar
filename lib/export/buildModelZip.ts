@@ -80,6 +80,16 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
   const loaded = await loadPuppet(input.puppetId);
   if (!loaded) throw new Error(`puppet ${input.puppetId} not found in library`);
   const { row, entries } = loaded;
+  // Snapshot the animation config ADJACENT to the file entries — a bake
+  // that reads entries now but the config after seconds of atlas work
+  // can ship a sidecar referencing state the entries don't contain
+  // (e.g. an idle name whose VMD isn't in the zip).
+  let animationConfig: Awaited<ReturnType<typeof loadPuppetAnimationConfig>> = null;
+  try {
+    animationConfig = await loadPuppetAnimationConfig(input.puppetId);
+  } catch {
+    /* absent config is fine */
+  }
   const warnings: string[] = [];
 
   // Resolve bundlePath ← pageIndex up front so the bake loop knows
@@ -175,15 +185,8 @@ export async function buildModelZip(input: BuildModelZipInput): Promise<BuildMod
   }
 
   // Phase 8.8 — sidecar metadata file at zip root. Geny's install
-  // peeks this for runtime / display / emotion mapping. Best-effort:
-  // failure to read animation config never blocks the export, just
-  // emits a v1-style metadata block (puppet info only).
-  let animationConfig: Awaited<ReturnType<typeof loadPuppetAnimationConfig>> = null;
-  try {
-    animationConfig = await loadPuppetAnimationConfig(input.puppetId);
-  } catch (e) {
-    warnings.push(`animation config load failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  // peeks this for runtime / display / emotion mapping. (Loaded at the
+  // top of the bake, adjacent to the entries snapshot, for coherence.)
   const sidecar: Record<string, unknown> = {
     schemaVersion: AVATAR_EDITOR_SCHEMA_VERSION,
     exporter: `geny-avatar/${row.runtime}`,
