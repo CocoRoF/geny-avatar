@@ -128,13 +128,46 @@ const ARM_DOWN_RAD = 0.6;
 /** Backbuffer long-edge cap — see {@link MmdStage.updateScaling}. */
 const MAX_RENDER_EDGE_PX = 2200;
 
+/**
+ * ONE physics runtime per page, shared across every stage instance.
+ * `MultiPhysicsRuntime.dispose()` spin-waits on a wasm lock whose
+ * timeout is compiled out — disposing it hard-locks the main thread
+ * forever (the "switching puppets freezes the editor" class of bug;
+ * A/B-proven in a minimal harness, reuse across scenes proven safe).
+ * Create once, register/unregister per scene, never dispose.
+ */
+let sharedPhysicsRuntime: { register(s: Scene): void; unregister(): void } | null = null;
+let sharedPhysicsFailed = false;
+
+async function getSharedPhysicsRuntime(): Promise<typeof sharedPhysicsRuntime> {
+  if (sharedPhysicsRuntime) return sharedPhysicsRuntime;
+  if (sharedPhysicsFailed) return null;
+  try {
+    const [{ GetMmdWasmInstance }, { MmdWasmInstanceTypeSPR }, { MultiPhysicsRuntime }] =
+      await Promise.all([
+        import("babylon-mmd/esm/Runtime/Optimized/mmdWasmInstance"),
+        import("babylon-mmd/esm/Runtime/Optimized/InstanceType/singlePhysicsRelease"),
+        import("babylon-mmd/esm/Runtime/Optimized/Physics/Bind/Impl/multiPhysicsRuntime"),
+      ]);
+    const wasmInstance = await GetMmdWasmInstance(new MmdWasmInstanceTypeSPR());
+    const runtime = new MultiPhysicsRuntime(wasmInstance);
+    runtime.setGravity(new Vector3(0, -98, 0));
+    sharedPhysicsRuntime = runtime as unknown as typeof sharedPhysicsRuntime;
+    return sharedPhysicsRuntime;
+  } catch (e) {
+    console.warn("[MmdStage] physics wasm unavailable — rigid fallback", e);
+    sharedPhysicsFailed = true;
+    return null;
+  }
+}
+
 export class MmdStage {
   readonly canvas: HTMLCanvasElement;
   private readonly engine: Engine;
   private readonly scene: Scene;
   private readonly camera: ArcRotateCamera;
   private mmdRuntime: MmdRuntime | null = null;
-  private physicsRuntime: { dispose(): void } | null = null;
+  private physicsRuntime: { unregister(): void } | null = null;
   private mmdModel: MmdModel | null = null;
   private materialMeshes: Mesh[] = [];
   private materials: Material[] = [];
@@ -296,9 +329,8 @@ export class MmdStage {
     }
 
     if (this.disposed) {
-      // physics may have just been created — release it before bailing
       try {
-        this.physicsRuntime?.dispose();
+        this.physicsRuntime?.unregister();
       } catch {
         /* best-effort */
       }
@@ -714,15 +746,19 @@ export class MmdStage {
       this.scene.onBeforeRenderObservable.remove(this.idleObserver);
       this.idleObserver = null;
     }
+    // ORDER MATTERS: model out of the physics world first, then detach
+    // the shared physics runtime from this scene (it is NEVER disposed
+    // — its dispose() spin-waits forever, see getSharedPhysicsRuntime),
+    // then the scene/engine.
     try {
       if (this.mmdModel && this.mmdRuntime) this.mmdRuntime.destroyMmdModel(this.mmdModel);
     } catch {
       /* model already gone */
     }
     try {
-      this.physicsRuntime?.dispose();
+      this.physicsRuntime?.unregister();
     } catch {
-      /* physics teardown is best-effort */
+      /* physics detach is best-effort */
     }
     this.scene.dispose();
     this.engine.dispose();

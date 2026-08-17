@@ -109,6 +109,12 @@ function quatYPR(yaw, pitch, roll) {
 
 const ARM = 0.6; // rest-pose arm-down angle
 
+/** asymmetric shaping: p<1 = fast attack / slow release (gravity feel),
+ *  p>1 = slow build / snappy end. Applied to a 0..1 signal. */
+const sharp = (x, p) => Math.sign(x) * Math.abs(x) ** p;
+/** decaying envelope over t∈[0,1] — gestures lose energy naturally */
+const decay = (t, k = 1.6) => Math.exp(-k * t);
+
 // ── articulation helpers ───────────────────────────────────────────
 // Arms as a chain: shoulder carries ~25% of the intent, elbow adds a
 // soft bend so the arm never reads as a rigid rod.
@@ -132,188 +138,213 @@ const PRESETS = [
   {
     id: "idle-breeze",
     label: "잔잔한 아이들",
-    description: "호흡·체중 이동·어깨 결 — 기본 대기 모션",
+    description: "호흡·불규칙 체중 이동 — 기본 대기 모션",
     seconds: 8,
     channels(t) {
+      // two incommensurate-feeling cycles so it never reads as a metronome
       const breath = Math.sin(TAU * 2 * t);
-      const sway = Math.sin(TAU * t);
+      const sway = 0.7 * Math.sin(TAU * t) + 0.3 * Math.sin(TAU * 2 * t + 1.1);
+      const armPhL = Math.sin(TAU * 2 * t + 0.5); // left arm lags — breaks mirror symmetry
       return {
-        センター: { pos: [0.1 * sway, -0.09 + 0.09 * Math.cos(TAU * 2 * t), 0] },
-        下半身: { yaw: -0.01 * sway, roll: 0.008 * sway },
-        上半身: { pitch: 0.032 * breath, yaw: 0.02 * sway },
-        ...headChain(-0.02 * sway, -0.02 * breath, 0),
-        ...armChainR(0.02 * breath, 0.07 + 0.02 * breath, -0.012 * breath),
-        ...armChainL(0.02 * breath, 0.07 + 0.02 * breath, -0.012 * breath),
+        センター: { pos: [0.32 * sway, -0.16 + 0.14 * Math.cos(TAU * 2 * t), 0] },
+        下半身: { yaw: -0.02 * sway, roll: 0.03 * sway },
+        上半身: { pitch: 0.05 * breath, yaw: 0.035 * sway, roll: -0.02 * sway },
+        ...headChain(-0.05 * sway, -0.035 * breath, 0.02 * sway),
+        右肩: { roll: -0.02 * breath },
+        右腕: { roll: ARM + 0.035 * breath },
+        右ひじ: { yaw: 0.09 + 0.03 * breath },
+        左肩: { roll: 0.02 * armPhL },
+        左腕: { roll: -(ARM + 0.035 * armPhL) },
+        左ひじ: { yaw: -(0.09 + 0.03 * armPhL) },
       };
     },
   },
   {
     id: "idle-groove",
     label: "리듬 아이들",
-    description: "무릎으로 리듬 타는 대기 모션 (다리는 IK 로 자연 굽힘)",
+    description: "무릎으로 리듬 타는 대기 — 빠르게 눌렀다 천천히 올라오기",
     seconds: 4,
     channels(t) {
       const beat = TAU * 2 * t;
-      const bob = (1 - Math.cos(beat)) / 2; // 0..1..0 twice
+      // gravity: fast drop, slow recover
+      const bob = sharp((1 - Math.cos(beat)) / 2, 0.65);
       const lean = Math.sin(beat / 2 + Math.PI / 4);
+      const armSw = Math.sin(beat + 0.6);
       return {
-        センター: { pos: [0, -0.4 * bob, 0] },
-        下半身: { roll: -0.025 * lean },
-        上半身: { roll: 0.05 * lean, pitch: -0.03 * bob },
-        ...headChain(0, 0.03 * bob, -0.035 * lean),
-        ...armChainR(0.09 * bob, 0.1 + 0.08 * bob, -0.03 * bob),
-        ...armChainL(0.09 * bob, 0.1 + 0.08 * bob, -0.03 * bob),
+        センター: { pos: [0.1 * lean, -0.95 * bob, 0] },
+        下半身: { roll: -0.05 * lean, pitch: -0.03 * bob },
+        上半身: { roll: 0.09 * lean, pitch: -0.06 * bob },
+        ...headChain(0.04 * lean, 0.07 * bob, -0.06 * lean),
+        右肩: { roll: -0.05 * bob },
+        右腕: { roll: ARM + 0.14 * bob + 0.05 * armSw },
+        右ひじ: { yaw: 0.12 + 0.14 * bob },
+        左肩: { roll: 0.05 * bob },
+        左腕: { roll: -(ARM + 0.14 * bob - 0.05 * armSw) },
+        左ひじ: { yaw: -(0.12 + 0.14 * bob) },
       };
     },
   },
   {
     id: "greeting-wave",
     label: "손 인사",
-    description: "어깨-팔-팔꿈치가 함께 움직이는 손 인사",
+    description: "손이 앞으로 이끌며 올라가 크게 흔드는 인사",
     seconds: 5,
     channels(t) {
-      // raise (0→0.2) · wave ×3 (0.2→0.76) · lower (0.76→0.98)
-      const lift = window_(t, 0.0, 0.2, 0.76, 0.98);
-      const wavePhase = Math.min(1, Math.max(0, (t - 0.2) / 0.56));
-      const wave = Math.sin(TAU * 3 * wavePhase) * window_(t, 0.18, 0.26, 0.7, 0.78);
+      // snappy raise (0→0.16) · wave ×3 (0.16→0.78) · settle (0.78→0.97)
+      const lift = window_(t, 0.0, 0.16, 0.78, 0.97);
+      // the elbow leads: it bends EARLIER than the arm finishes rising,
+      // so the hand arcs forward-up instead of a stiff T-sweep
+      const elbowLead = window_(t, 0.0, 0.1, 0.8, 0.95);
+      const wavePhase = Math.min(1, Math.max(0, (t - 0.16) / 0.62));
+      const wave = Math.sin(TAU * 3 * wavePhase) * window_(t, 0.14, 0.22, 0.72, 0.8);
+      const nodBeat = Math.max(0, Math.sin(TAU * 3 * wavePhase)) * window_(t, 0.16, 0.3, 0.7, 0.8);
       return {
-        センター: { pos: [0, -0.06 * lift, 0] },
-        下半身: { roll: 0.02 * lift },
-        上半身: { roll: -0.06 * lift },
-        ...headChain(0.06 * lift, 0, 0.1 * lift),
-        // probed articulated pose: shoulder −0.25 · arm {pitch −0.45,
-        // roll −1.15} · elbow ~1.0, oscillating at the elbow + wrist arc
-        右肩: { roll: -0.25 * lift },
-        右腕: { pitch: 0.45 * lift, roll: ARM + lift * (-1.15 - ARM) + 0.05 * wave },
-        右ひじ: { yaw: lift * (1.0 + 0.32 * wave) },
-        ...armChainL(0.02 * lift, 0.08, -0.02 * lift),
+        // weight shifts off the waving side; body joins the greeting
+        センター: { pos: [-0.35 * lift, -0.12 * lift, 0] },
+        下半身: { roll: 0.05 * lift },
+        上半身: { roll: -0.13 * lift, yaw: 0.05 * lift },
+        ...headChain(0.12 * lift, -0.05 * nodBeat, 0.16 * lift),
+        右肩: { roll: -0.3 * lift },
+        右腕: { pitch: 0.5 * lift, roll: ARM + lift * (-1.22 - ARM) + 0.1 * wave },
+        右ひじ: { yaw: elbowLead * 1.05 + 0.55 * wave * lift },
+        左肩: { roll: 0.03 * lift },
+        左腕: { roll: -(ARM + 0.06 * lift) },
+        左ひじ: { yaw: -(0.09 + 0.05 * lift) },
       };
     },
   },
   {
     id: "bow",
     label: "정중한 인사",
-    description: "목-허리-엉덩이가 순서대로 접히는 절",
+    description: "목이 먼저, 허리가 따라 깊게 숙이는 절",
     seconds: 5,
     channels(t) {
-      // down (0.08→0.3) · hold (0.3→0.62) · up (0.62→0.9)
-      const w = window_(t, 0.08, 0.3, 0.62, 0.9);
-      // neck bows a beat earlier than the spine — reads as politeness
-      const wHead = window_(t, 0.05, 0.26, 0.64, 0.92);
+      // brisk down (0.08→0.28) · hold (→0.58) · slow rise (→0.9) + settle
+      const w = window_(t, 0.08, 0.28, 0.58, 0.9);
+      const wHead = window_(t, 0.05, 0.24, 0.6, 0.93);
+      const settle = Math.sin(TAU * Math.min(1, Math.max(0, (t - 0.88) / 0.12))) * 0.04;
       return {
-        センター: { pos: [0, -0.32 * w, 0] },
-        下半身: { pitch: -0.1 * w },
-        上半身: { pitch: -0.42 * w },
-        ...headChain(0, -0.22 * wHead, 0),
-        ...armChainR(0.12 * w, 0.1 + 0.06 * w, 0.03 * w),
-        ...armChainL(0.12 * w, 0.1 + 0.06 * w, 0.03 * w),
+        センター: { pos: [0, -0.55 * w, 0] },
+        下半身: { pitch: -0.14 * w },
+        上半身: { pitch: -0.52 * w + settle },
+        ...headChain(0, -0.3 * wHead + settle, 0),
+        右肩: { roll: 0.05 * w },
+        右腕: { roll: ARM + 0.16 * w, pitch: 0.1 * w },
+        右ひじ: { yaw: 0.1 + 0.1 * w },
+        左肩: { roll: -0.05 * w },
+        左腕: { roll: -(ARM + 0.16 * w), pitch: 0.1 * w },
+        左ひじ: { yaw: -(0.1 + 0.1 * w) },
       };
     },
   },
   {
     id: "nod",
     label: "끄덕끄덕",
-    description: "목과 머리가 함께 끄덕임 (긍정)",
+    description: "또렷한 두 번 끄덕임 (긍정)",
     seconds: 2.5,
     channels(t) {
-      const g = window_(t, 0.05, 0.2, 0.8, 0.95);
-      const nod = Math.max(0, Math.sin(TAU * 2 * t)) * g;
+      const g = window_(t, 0.04, 0.16, 0.82, 0.96);
+      // crisp attack per nod
+      const nod = sharp(Math.max(0, Math.sin(TAU * 2 * t)), 0.7) * g;
       return {
-        上半身: { pitch: -0.03 * nod },
-        ...headChain(0, -0.3 * nod, 0),
-        ...armChainR(),
-        ...armChainL(),
+        センター: { pos: [0, -0.06 * nod, 0] },
+        上半身: { pitch: -0.06 * nod },
+        ...headChain(0, -0.42 * nod, 0),
+        ...armChainR(0.02 * nod, 0.09),
+        ...armChainL(0.02 * nod, 0.09),
       };
     },
   },
   {
     id: "head-shake",
     label: "도리도리",
-    description: "목-머리-시선이 함께 도는 부정 표현",
+    description: "점점 잦아드는 좌우 고개 흔들기 (부정)",
     seconds: 2.5,
     channels(t) {
-      const g = window_(t, 0.05, 0.2, 0.8, 0.95);
-      const shake = Math.sin(TAU * 2.5 * t) * g;
+      const g = window_(t, 0.04, 0.14, 0.8, 0.96);
+      const env = decay(Math.max(0, t - 0.14) / 0.86, 1.1); // swings die down
+      const shake = Math.sin(TAU * 2.6 * t) * g * env;
       return {
-        上半身: { yaw: 0.03 * shake },
-        ...headChain(0.3 * shake, 0, 0),
-        両目: { yaw: 0.06 * shake },
-        ...armChainR(),
-        ...armChainL(),
+        上半身: { yaw: 0.06 * shake },
+        ...headChain(0.42 * shake, 0, -0.04 * shake),
+        両目: { yaw: 0.1 * shake },
+        ...armChainR(0, 0.09),
+        ...armChainL(0, 0.09),
       };
     },
   },
   {
     id: "happy-bounce",
     label: "신나는 바운스",
-    description: "무릎으로 통통 튀는 기쁨 표현 (지면 바운스)",
+    description: "무릎을 깊게 튕기며 팔을 활짝 벌리는 기쁨 표현",
     seconds: 4,
     channels(t) {
-      // grounded design: deep knee dips + tiny leg-extension pops —
-      // センター down bends the knees via IK (proven); real airborne
-      // hops are impossible without reliable 足ＩＫ tracks (see header)
-      const beat = TAU * 2 * t; // two bounces
-      const dip = Math.max(0, Math.sin(beat)); // knee dips
-      const popUp = Math.max(0, -Math.sin(beat)) * 0.35; // heel-pop rise
+      const beat = TAU * 2 * t;
       const g = window_(t, 0.02, 0.1, 0.88, 0.98);
-      const d = dip * g;
-      const u = popUp * g;
+      // deep, gravity-shaped dips; pops read as heel lifts
+      const dip = sharp(Math.max(0, Math.sin(beat)), 0.6) * g;
+      const pop = sharp(Math.max(0, -Math.sin(beat)), 0.8) * g;
       return {
-        センター: { pos: [0, -0.6 * d + 0.22 * u, 0] },
-        下半身: { pitch: -0.04 * d },
-        上半身: { pitch: 0.07 * d - 0.04 * u, roll: 0.03 * Math.sin(TAU * t) * g },
-        ...headChain(0, 0.12 * d - 0.06 * u, 0),
-        // arms flare out on the pop, tuck slightly into the dip
-        右肩: { roll: -0.1 * u },
-        右腕: { roll: ARM - 0.5 * u + 0.12 * d },
-        右ひじ: { yaw: 0.12 + 0.2 * u + 0.1 * d },
-        左肩: { roll: 0.1 * u },
-        左腕: { roll: -(ARM - 0.5 * u + 0.12 * d) },
-        左ひじ: { yaw: -(0.12 + 0.2 * u + 0.1 * d) },
+        センター: { pos: [0, -1.35 * dip + 0.3 * pop, 0] },
+        下半身: { pitch: -0.06 * dip },
+        上半身: { pitch: -0.1 * dip + 0.09 * pop, roll: 0.05 * Math.sin(TAU * t) * g },
+        ...headChain(0, 0.16 * dip - 0.12 * pop, 0.04 * Math.sin(TAU * t) * g),
+        右肩: { roll: -0.16 * pop },
+        右腕: { roll: ARM + 0.2 * dip - 0.62 * pop },
+        右ひじ: { yaw: 0.14 + 0.18 * dip + 0.3 * pop },
+        左肩: { roll: 0.16 * pop },
+        左腕: { roll: -(ARM + 0.2 * dip - 0.62 * pop) },
+        左ひじ: { yaw: -(0.14 + 0.18 * dip + 0.3 * pop) },
       };
     },
   },
   {
     id: "look-around",
     label: "두리번",
-    description: "몸통-목-머리-눈이 순서대로 도는 시선 이동",
+    description: "눈이 먼저, 몸이 따라 도는 시선 이동",
     seconds: 6,
     channels(t) {
-      const L = window_(t, 0.06, 0.18, 0.3, 0.42);
-      const R = window_(t, 0.46, 0.58, 0.7, 0.84);
-      const dir = L - R;
+      const L = window_(t, 0.08, 0.2, 0.32, 0.44);
+      const R = window_(t, 0.48, 0.6, 0.72, 0.84);
+      // anticipation: tiny counter-turn right before each look
+      const antiL = window_(t, 0.04, 0.08, 0.08, 0.14);
+      const antiR = window_(t, 0.44, 0.48, 0.48, 0.54);
+      const dir = L - R - 0.12 * antiL + 0.12 * antiR;
+      // eyes lead the head by an earlier window
+      const eyeDir = window_(t, 0.05, 0.14, 0.34, 0.46) - window_(t, 0.45, 0.54, 0.74, 0.86);
       return {
-        下半身: { yaw: -0.04 * dir },
-        上半身: { yaw: 0.14 * dir },
-        ...headChain(0.42 * dir, 0.02 * (L + R), 0),
-        両目: { yaw: 0.12 * dir },
-        ...armChainR(0.01 * (L + R), 0.07, 0),
-        ...armChainL(0.01 * (L + R), 0.07, 0),
+        センター: { pos: [0.2 * dir, 0, 0] },
+        下半身: { yaw: -0.06 * dir },
+        上半身: { yaw: 0.2 * dir, roll: -0.03 * dir },
+        ...headChain(0.52 * dir, 0.03 * (L + R), 0),
+        両目: { yaw: 0.16 * eyeDir },
+        ...armChainR(0.02 * (L + R), 0.09),
+        ...armChainL(0.02 * (L + R), 0.09),
       };
     },
   },
   {
     id: "sway-dance",
     label: "리듬 스윙",
-    description: "체중 이동에 발뒤꿈치가 따라오는 좌우 스윙",
+    description: "실제 스텝 폭으로 체중을 옮기는 좌우 스윙",
     seconds: 8,
     channels(t) {
-      const beat = TAU * 2 * t; // two full L-R cycles
-      const side = Math.sin(beat);
-      const bob = Math.abs(Math.cos(beat));
-      const g = window_(t, 0.02, 0.1, 0.9, 0.98);
-      const s = side * g;
+      const beat = TAU * 2 * t;
+      const g = window_(t, 0.02, 0.08, 0.9, 0.98);
+      const side = Math.sin(beat) * g;
+      const dipB = sharp(Math.abs(Math.cos(beat)), 0.7); // dip at each crossing
+      const armSw = Math.sin(beat + 0.45) * g; // arms trail the hips
       return {
-        センター: { pos: [0.45 * s, -0.22 * (1 - bob) * g, 0] },
-        下半身: { roll: -0.05 * s },
-        上半身: { roll: 0.08 * s, yaw: 0.05 * Math.sin(beat / 2) * g },
-        ...headChain(0, 0, -0.06 * s),
-        右肩: { roll: -0.04 * Math.max(0, -s) },
-        右腕: { roll: ARM + 0.18 * s },
-        右ひじ: { yaw: 0.1 + 0.06 * Math.max(0, s) },
-        左肩: { roll: 0.04 * Math.max(0, s) },
-        左腕: { roll: -(ARM - 0.18 * s) },
-        左ひじ: { yaw: -(0.1 + 0.06 * Math.max(0, -s)) },
+        センター: { pos: [1.15 * side, -0.55 * (1 - dipB) * g, 0] },
+        下半身: { roll: -0.09 * side, yaw: 0.05 * Math.sin(beat / 2) * g },
+        上半身: { roll: 0.14 * side, yaw: -0.06 * Math.sin(beat / 2) * g },
+        ...headChain(0.08 * side, 0, -0.1 * side),
+        右肩: { roll: -0.06 * Math.max(0, -armSw) },
+        右腕: { roll: ARM + 0.3 * armSw },
+        右ひじ: { yaw: 0.14 + 0.16 * Math.max(0, armSw) },
+        左肩: { roll: 0.06 * Math.max(0, armSw) },
+        左腕: { roll: -(ARM - 0.3 * armSw) },
+        左ひじ: { yaw: -(0.14 + 0.16 * Math.max(0, -armSw)) },
       };
     },
   },
