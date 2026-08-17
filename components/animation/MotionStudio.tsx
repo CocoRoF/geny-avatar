@@ -5,7 +5,7 @@ import type { MmdAdapter } from "@/lib/adapters/MmdAdapter";
 import { fetchPresetFile, type MotionPreset } from "@/lib/mmd/motionPresets";
 import { type MotionEditParams, NEUTRAL_EDIT, transformVmd } from "@/lib/mmd/vmdTransform";
 import { addPuppetFiles, type PuppetId } from "@/lib/persistence/db";
-import { MotionMakerSection } from "./MotionMaker";
+import { MotionMakerOverlay } from "./MotionMakerOverlay";
 
 /**
  * Motion Studio — in-app motion editor. Pick any motion (built-in
@@ -99,6 +99,7 @@ export const UNSAFE_MOTION_NAME = /[\\/#%?*:"<>|\u0000-\u001f]|^\./;
 
 export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSaved }: Props) {
   const [tab, setTab] = useState<"maker" | "edit">("maker");
+  const [makerOpen, setMakerOpen] = useState(false);
   const [sourceKey, setSourceKey] = useState<string>("");
   const [params, setParams] = useState<MotionEditParams>(NEUTRAL_EDIT);
   const [saveName, setSaveName] = useState("");
@@ -296,15 +297,29 @@ export function MotionStudioSection({ adapter, puppetKey, presets, motions, onSa
         </button>
       </div>
       {tab === "maker" && (
-        <div className="rounded border border-white/10 bg-white/[0.03] p-2">
-          <MotionMakerSection
-            adapter={adapter}
-            puppetKey={puppetKey}
-            motions={motions}
-            presetIds={presets.map((p) => p.id)}
-            onSaved={onSaved}
-          />
+        <div className="flex flex-col gap-2 rounded border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[11px] leading-relaxed opacity-70">
+            포즈 슬라이더 · 검증된 포즈 라이브러리 · 드래그 타임라인 · 스크럽 미리보기로 나만의
+            모션을 만듭니다. 전체 화면 작업공간이 열립니다.
+          </p>
+          <button
+            type="button"
+            onClick={() => setMakerOpen(true)}
+            className="rounded border border-[var(--color-accent)]/60 px-3 py-2 text-sm text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+          >
+            ✦ 모션 메이커 열기
+          </button>
         </div>
+      )}
+      {makerOpen && (
+        <MotionMakerOverlay
+          adapter={adapter}
+          puppetKey={puppetKey}
+          motions={motions}
+          presetIds={presets.map((p) => p.id)}
+          onSaved={onSaved}
+          onClose={() => setMakerOpen(false)}
+        />
       )}
       <div
         className={
