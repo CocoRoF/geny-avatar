@@ -91,6 +91,8 @@ export type PoseParams = {
   head: { yaw: number; pitch: number; roll: number }; // each −1..1
   torso: { yaw: number; pitch: number; roll: number }; // each −1..1
   center: { x: number; dip: number }; // x −1..1 (·0.9 units) · dip 0..1 (·1.3)
+  /** eye gaze −1..1 (yaw: left/right · pitch: up/down) */
+  eyes: { yaw: number; pitch: number };
   /** face morph name → weight 0..1 (standard names or model morphs) */
   face: Record<string, number>;
 };
@@ -101,6 +103,7 @@ export const REST_POSE: PoseParams = {
   head: { yaw: 0, pitch: 0, roll: 0 },
   torso: { yaw: 0, pitch: 0, roll: 0 },
   center: { x: 0, dip: 0 },
+  eyes: { yaw: 0, pitch: 0 },
   face: {},
 };
 
@@ -153,10 +156,34 @@ export function poseToChannels(p: PoseParams): Channels {
     下半身: { yaw: -torso.yaw * 0.25, roll: -torso.roll * 0.3 },
     上半身: torso,
     上半身2: { yaw: torso.yaw * 0.3, pitch: torso.pitch * 0.3, roll: torso.roll * 0.3 },
+    両目: {
+      yaw: clamp(p.eyes?.yaw ?? 0, -1, 1) * 0.3,
+      pitch: clamp(p.eyes?.pitch ?? 0, -1, 1) * 0.15,
+    },
     首: { yaw: head.yaw * 0.35, pitch: head.pitch * 0.35, roll: head.roll * 0.35 },
     頭: { yaw: head.yaw * 0.65, pitch: head.pitch * 0.65, roll: head.roll * 0.65 },
     ...armChannels(p.rightArm, 1),
     ...armChannels(p.leftArm, -1),
+  };
+}
+
+/** Fill any missing fields with rest values — reopened projects from
+ *  older schema versions stay loadable as the pose space grows. */
+export function normalizePose(p: Partial<PoseParams> | null | undefined): PoseParams {
+  const d = REST_POSE;
+  const arm = (a?: Partial<ArmPose>, base?: ArmPose): ArmPose => ({
+    raise: a?.raise ?? base?.raise ?? 0,
+    spread: a?.spread ?? base?.spread ?? 0,
+    elbow: a?.elbow ?? base?.elbow ?? 0,
+  });
+  return {
+    rightArm: arm(p?.rightArm, d.rightArm),
+    leftArm: arm(p?.leftArm, d.leftArm),
+    head: { yaw: p?.head?.yaw ?? 0, pitch: p?.head?.pitch ?? 0, roll: p?.head?.roll ?? 0 },
+    torso: { yaw: p?.torso?.yaw ?? 0, pitch: p?.torso?.pitch ?? 0, roll: p?.torso?.roll ?? 0 },
+    center: { x: p?.center?.x ?? 0, dip: p?.center?.dip ?? 0 },
+    eyes: { yaw: p?.eyes?.yaw ?? 0, pitch: p?.eyes?.pitch ?? 0 },
+    face: { ...(p?.face ?? {}) },
   };
 }
 
@@ -270,6 +297,10 @@ function lerpPose(a: PoseParams, b: PoseParams, x: number): PoseParams {
       roll: l(a.torso.roll, b.torso.roll),
     },
     center: { x: l(a.center.x, b.center.x), dip: l(a.center.dip, b.center.dip) },
+    eyes: {
+      yaw: l(a.eyes?.yaw ?? 0, b.eyes?.yaw ?? 0),
+      pitch: l(a.eyes?.pitch ?? 0, b.eyes?.pitch ?? 0),
+    },
     face,
   };
 }
